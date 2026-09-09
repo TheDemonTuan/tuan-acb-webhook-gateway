@@ -9,6 +9,7 @@ import { MessageSyncer } from './gmail/syncer.js';
 import { HistoryReconciler } from './gmail/reconciliation.js';
 import { PubSubListener } from './gmail/pubsub-listener.js';
 import { buildServer } from './http/server.js';
+import { GmailOAuthService } from './gmail/oauth-service.js';
 import fs from 'node:fs';
 
 async function bootstrap() {
@@ -27,10 +28,11 @@ async function bootstrap() {
   dispatcher.start();
 
   // 4. Gmail Ingestion Subsystem
-  const gmailService = new GmailService(config);
+  const oauthService = new GmailOAuthService(repository, config);
+  const gmailService = new GmailService(config, oauthService);
   let hasGmailAuth = false;
 
-  if (fs.existsSync(config.GMAIL_CREDENTIALS_PATH) && fs.existsSync(config.GMAIL_TOKEN_PATH)) {
+  if (oauthService.getStatus().connected || (fs.existsSync(config.GMAIL_CREDENTIALS_PATH) && fs.existsSync(config.GMAIL_TOKEN_PATH))) {
     try {
       await gmailService.init();
       hasGmailAuth = true;
@@ -53,32 +55,64 @@ async function bootstrap() {
   const pubsubListener = new PubSubListener(reconciler, config);
 
   let reconcileTimer: NodeJS.Timeout | null = null;
+  let watchRenewTimer: NodeJS.Timeout | null = null;
 
-  if (hasGmailAuth) {
-    // Start Google Cloud Pub/Sub StreamingPull
+  const stopGmailIngestion = async () => {
+    if (reconcileTimer) {
+      clearInterval(reconcileTimer);
+      reconcileTimer = null;
+    }
+    if (watchRenewTimer) {
+      clearInterval(watchRenewTimer);
+      watchRenewTimer = null;
+    }
+    await pubsubListener.stop();
+    gmailService.reset();
+  };
+
+  const startGmailIngestion = async () => {
+    if (reconcileTimer) return;
+    await gmailService.init();
+    hasGmailAuth = true;
     pubsubListener.start();
-
-    // Start periodic fallback reconciliation
     const intervalMs = config.RECONCILE_INTERVAL_SECONDS * 1000;
     logger.info({ intervalSeconds: config.RECONCILE_INTERVAL_SECONDS }, 'Starting periodic reconciliation timer');
-    
-    // Initial sync
-    reconciler.reconcile().catch((err) => {
-      logger.error({ err: err.message }, 'Initial reconciliation failed');
-    });
-
+    reconciler.reconcile().catch((err) => logger.error({ err: err.message }, 'Initial reconciliation failed'));
     reconcileTimer = setInterval(() => {
-      reconciler.reconcile().catch((err) => {
-        logger.error({ err: err.message }, 'Periodic reconciliation failed');
-      });
+      reconciler.reconcile().catch((err) => logger.error({ err: err.message }, 'Periodic reconciliation failed'));
     }, intervalMs);
-  }
+    if (config.PUBSUB_TOPIC_NAME) {
+      const renewWatch = () => gmailService.watch(config.PUBSUB_TOPIC_NAME!).then((watch) => {
+        const current = repository.getGmailState(config.GMAIL_MAILBOX_ID);
+        repository.setGmailState({
+          mailboxId: config.GMAIL_MAILBOX_ID,
+          lastHistoryId: current?.lastHistoryId || watch.historyId,
+          watchExpirationAt: watch.expiration,
+          updatedAt: new Date().toISOString(),
+        });
+      }).catch((err) => logger.error({ err: err.message }, 'Gmail watch renewal failed'));
+      watchRenewTimer = setInterval(renewWatch, config.WATCH_RENEW_INTERVAL_HOURS * 60 * 60 * 1000);
+    }
+  };
 
+  if (hasGmailAuth) {
+    try {
+      await startGmailIngestion();
+    } catch (err: any) {
+      logger.error({ err: err.message }, 'Failed to start Gmail ingestion');
+    }
+  }
   // 5. Start Fastify Loopback Server & Web Dashboard
   const server = buildServer(repository, config, {
     gmailService,
     reconciler,
     dispatcher,
+    oauthService,
+    onGmailConnected: async () => {
+      await stopGmailIngestion();
+      await startGmailIngestion();
+    },
+    onGmailDisconnected: stopGmailIngestion,
   });
 
   try {

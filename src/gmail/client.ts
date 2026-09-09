@@ -2,52 +2,46 @@ import { google, type gmail_v1 } from 'googleapis';
 import fs from 'node:fs';
 import { logger } from '../logger.js';
 import type { Config } from '../config.js';
+import { getGoogleOAuthConfig } from './oauth-config.js';
+import type { GmailOAuthService } from './oauth-service.js';
 
 export class GmailService {
   private gmail: gmail_v1.Gmail | null = null;
   private oauth2Client: any = null;
 
-  constructor(private config: Config) {}
+  constructor(
+    private config: Config,
+    private oauthService?: GmailOAuthService
+  ) {}
 
   async init(): Promise<void> {
     if (this.gmail) return;
 
-    if (!fs.existsSync(this.config.GMAIL_CREDENTIALS_PATH)) {
-      throw new Error(`Gmail credentials file not found at: ${this.config.GMAIL_CREDENTIALS_PATH}`);
-    }
-    if (!fs.existsSync(this.config.GMAIL_TOKEN_PATH)) {
-      throw new Error(
-        `Gmail token file not found at: ${this.config.GMAIL_TOKEN_PATH}. Run CLI 'bootstrap-token' first.`
-      );
-    }
+    const oauth = getGoogleOAuthConfig(this.config);
+    if (!oauth) throw new Error('Google OAuth is not configured.');
+    const token = this.oauthService?.getToken() || this.readLegacyToken();
+    if (!token) throw new Error('Gmail is not connected.');
 
-    const credsRaw = fs.readFileSync(this.config.GMAIL_CREDENTIALS_PATH, 'utf8');
-    const tokenRaw = fs.readFileSync(this.config.GMAIL_TOKEN_PATH, 'utf8');
-
-    const creds = JSON.parse(credsRaw);
-    const clientDetails = creds.installed || creds.web;
-    if (!clientDetails) {
-      throw new Error('Invalid gmail-credentials.json format (missing installed/web block)');
-    }
-
-    const token = JSON.parse(tokenRaw);
-
-    const { client_id, client_secret, redirect_uris } = clientDetails;
-    const redirectUri = redirect_uris?.[0] || 'urn:ietf:wg:oauth:2.0:oob';
-
-    this.oauth2Client = new google.auth.OAuth2(client_id, client_secret, redirectUri);
+    this.oauth2Client = new google.auth.OAuth2(oauth.clientId, oauth.clientSecret, oauth.redirectUri);
     this.oauth2Client.setCredentials(token);
-
-    // Save updated tokens on refresh
     this.oauth2Client.on('tokens', (newTokens: any) => {
       logger.info('Gmail OAuth token refreshed');
-      const currentToken = JSON.parse(fs.readFileSync(this.config.GMAIL_TOKEN_PATH, 'utf8'));
-      const updated = { ...currentToken, ...newTokens };
-      fs.writeFileSync(this.config.GMAIL_TOKEN_PATH, JSON.stringify(updated, null, 2), { mode: 0o600 });
+      const updated = { ...token, ...newTokens };
+      if (this.oauthService) this.oauthService.saveToken(updated);
+      else fs.writeFileSync(this.config.GMAIL_TOKEN_PATH, JSON.stringify(updated, null, 2), { mode: 0o600 });
     });
-
     this.gmail = google.gmail({ version: 'v1', auth: this.oauth2Client });
     logger.info('Gmail API client initialized successfully');
+  }
+
+  reset(): void {
+    this.gmail = null;
+    this.oauth2Client = null;
+  }
+
+  private readLegacyToken(): Record<string, unknown> | null {
+    if (!fs.existsSync(this.config.GMAIL_TOKEN_PATH)) return null;
+    return JSON.parse(fs.readFileSync(this.config.GMAIL_TOKEN_PATH, 'utf8'));
   }
 
   getClient(): gmail_v1.Gmail {

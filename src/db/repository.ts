@@ -8,6 +8,22 @@ export interface GmailState {
   updatedAt: string;
 }
 
+export interface GmailConnection {
+  emailAddress: string;
+  tokenCiphertext: string;
+  clientId: string;
+  connectedAt: string;
+  updatedAt?: string;
+}
+
+export interface GmailOAuthState {
+  stateHash: string;
+  browserNonceHash: string;
+  verifierCiphertext: string;
+  actor: string;
+  expiresAt: number;
+}
+
 export interface SourceMessageRecord {
   id: string;
   mailboxId: string;
@@ -112,6 +128,71 @@ export class Repository {
         watchExpirationAt: state.watchExpirationAt || null,
         updatedAt: state.updatedAt,
       });
+  }
+
+  // ================= Gmail OAuth Connection =================
+  getGmailConnection(): GmailConnection | null {
+    const row = this.db.prepare('SELECT * FROM gmail_connection WHERE id = 1').get() as any;
+    if (!row) return null;
+    return {
+      emailAddress: row.email_address,
+      tokenCiphertext: row.token_ciphertext,
+      clientId: row.client_id,
+      connectedAt: row.connected_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  saveGmailConnection(connection: GmailConnection): void {
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO gmail_connection (id, email_address, token_ciphertext, client_id, connected_at, updated_at)
+      VALUES (1, @emailAddress, @tokenCiphertext, @clientId, @connectedAt, @updatedAt)
+      ON CONFLICT(id) DO UPDATE SET
+        email_address = excluded.email_address,
+        token_ciphertext = excluded.token_ciphertext,
+        client_id = excluded.client_id,
+        connected_at = excluded.connected_at,
+        updated_at = excluded.updated_at
+    `).run({ ...connection, updatedAt: now });
+  }
+
+  deleteGmailConnection(): void {
+    this.db.prepare('DELETE FROM gmail_connection WHERE id = 1').run();
+  }
+
+  createGmailOAuthState(state: GmailOAuthState): void {
+    const now = new Date().toISOString();
+    const transaction = this.db.transaction(() => {
+      this.db.prepare('DELETE FROM gmail_oauth_states WHERE browser_nonce_hash = ? OR expires_at < ?').run(state.browserNonceHash, Date.now());
+      this.db.prepare(`
+        INSERT INTO gmail_oauth_states (state_hash, browser_nonce_hash, verifier_ciphertext, actor, expires_at, created_at)
+        VALUES (@stateHash, @browserNonceHash, @verifierCiphertext, @actor, @expiresAt, @createdAt)
+      `).run({ ...state, createdAt: now });
+    });
+    transaction();
+  }
+
+  consumeGmailOAuthState(stateHash: string, browserNonceHash: string, now: number): GmailOAuthState | null {
+    const transaction = this.db.transaction(() => {
+      const row = this.db.prepare(`
+        DELETE FROM gmail_oauth_states
+        WHERE state_hash = ? AND browser_nonce_hash = ? AND expires_at >= ?
+        RETURNING state_hash, browser_nonce_hash, verifier_ciphertext, actor, expires_at
+      `).get(stateHash, browserNonceHash, now) as any;
+      return row ? {
+        stateHash: row.state_hash,
+        browserNonceHash: row.browser_nonce_hash,
+        verifierCiphertext: row.verifier_ciphertext,
+        actor: row.actor,
+        expiresAt: row.expires_at,
+      } : null;
+    });
+    return transaction();
+  }
+
+  clearGmailOAuthStates(): void {
+    this.db.prepare('DELETE FROM gmail_oauth_states').run();
   }
 
   // ================= Source Messages =================

@@ -33,6 +33,7 @@ export class HistoryReconciler {
         this.repository.setGmailState({
           mailboxId: this.config.GMAIL_MAILBOX_ID,
           lastHistoryId: latestHistoryId,
+          watchExpirationAt: state?.watchExpirationAt,
           updatedAt: new Date().toISOString(),
         });
         return { processed: 0, newHistoryId: latestHistoryId };
@@ -105,6 +106,7 @@ export class HistoryReconciler {
       this.repository.setGmailState({
         mailboxId: this.config.GMAIL_MAILBOX_ID,
         lastHistoryId: highestHistoryId,
+        watchExpirationAt: state.watchExpirationAt,
         updatedAt: new Date().toISOString(),
       });
 
@@ -155,6 +157,7 @@ export class HistoryReconciler {
     this.repository.setGmailState({
       mailboxId: this.config.GMAIL_MAILBOX_ID,
       lastHistoryId: latestHistoryId,
+      watchExpirationAt: this.repository.getGmailState(this.config.GMAIL_MAILBOX_ID)?.watchExpirationAt,
       updatedAt: new Date().toISOString(),
     });
 

@@ -48,6 +48,8 @@ interface GatewayStatus {
     hasToken: boolean;
     clientId?: string | null;
     redirectUri?: string | null;
+    emailAddress?: string | null;
+    reconnectRequired?: boolean;
   };
   gmailSync: {
     lastHistoryId: string | null;
@@ -107,16 +109,6 @@ export default function App() {
   const [newEpName, setNewEpName] = useState('');
   const [newEpUrl, setNewEpUrl] = useState('');
   const [newEpSecret, setNewEpSecret] = useState('');
-
-  // Gmail form state
-  const [credMode, setCredMode] = useState<'fields' | 'json'>('fields');
-  const [clientIdInput, setClientIdInput] = useState('');
-  const [clientSecretInput, setClientSecretInput] = useState('');
-  const [isEditingCreds, setIsEditingCreds] = useState(false);
-  const [isGettingAuthUrl, setIsGettingAuthUrl] = useState(false);
-  const [gmailCredsInput, setGmailCredsInput] = useState('');
-  const [authCodeInput, setAuthCodeInput] = useState('');
-  const [isCodeSectionOpen, setIsCodeSectionOpen] = useState(false);
 
   // Toast
   const [toast, setToast] = useState<{ message: string; isError?: boolean } | null>(null);
@@ -298,99 +290,21 @@ export default function App() {
     }
   };
 
-  const handleSaveGmailCreds = async () => {
-    let body: any;
-    if (credMode === 'fields') {
-      if (!clientIdInput.trim() || !clientSecretInput.trim()) {
-        showToast('Vui lòng nhập đầy đủ cả Client ID và Client Secret', true);
-        return;
-      }
-      body = {
-        mode: 'fields',
-        clientId: clientIdInput.trim(),
-        clientSecret: clientSecretInput.trim(),
-      };
-    } else {
-      if (!gmailCredsInput.trim()) {
-        showToast('Vui lòng dán nội dung file JSON Credentials', true);
-        return;
-      }
-      body = {
-        mode: 'json',
-        credentialsJson: gmailCredsInput.trim(),
-      };
-    }
+  const handleConnectGmail = () => {
+    window.location.assign('/api/gmail/connect');
+  };
 
+  const handleDisconnectGmail = async () => {
+    if (!window.confirm('Ng?t k?t n?i Gmail? �?ng b? email m?i s? d?ng cho t?i khi k?t n?i l?i.')) return;
     try {
-      const res = await apiFetch('/api/gmail/credentials', {
-        method: 'POST',
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        showToast('Đã lưu cấu hình Google OAuth Client thành công!');
-        setGmailCredsInput('');
-        setClientIdInput('');
-        setClientSecretInput('');
-        setIsEditingCreds(false);
-        loadStatus();
-      } else {
-        showToast(data.error || 'Lỗi lưu credentials', true);
-      }
+      const res = await apiFetch('/api/gmail/disconnect', { method: 'POST' });
+      if (!res.ok) throw new Error((await res.json()).error || 'Kh�ng th? ng?t k?t n?i Gmail');
+      showToast('�� ng?t k?t n?i Gmail.');
+      loadStatus();
     } catch (err: any) {
       showToast(err.message, true);
     }
   };
-
-  const handleGetAuthUrl = async () => {
-    if (!status?.gmailAuth.hasCredentials) {
-      showToast('Vui lòng hoàn thành Bước 1 (Cấu hình Client ID & Secret) trước.', true);
-      return;
-    }
-
-    try {
-      setIsGettingAuthUrl(true);
-      const res = await apiFetch('/api/gmail/auth-url');
-      const data = await res.json();
-      if (res.ok && data.authUrl) {
-        window.open(data.authUrl, '_blank');
-        setIsCodeSectionOpen(true);
-        showToast('Đã mở trang đăng nhập Google. Sau khi cấp quyền, hệ thống sẽ tự động kết nối.');
-      } else {
-        showToast(data.error || 'Chưa thể lấy link đăng nhập', true);
-      }
-    } catch (err: any) {
-      showToast(err.message, true);
-    } finally {
-      setIsGettingAuthUrl(false);
-    }
-  };
-
-  const handleSubmitAuthCode = async () => {
-    if (!authCodeInput.trim()) {
-      showToast('Vui lòng nhập Authorization Code', true);
-      return;
-    }
-    try {
-      showToast('Đang xác thực mã OAuth với Google...');
-      const res = await apiFetch('/api/gmail/exchange-code', {
-        method: 'POST',
-        body: JSON.stringify({ code: authCodeInput.trim() }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        showToast('Đăng nhập Gmail thành công! Token đã được lưu an toàn.');
-        setAuthCodeInput('');
-        setIsCodeSectionOpen(false);
-        loadStatus();
-      } else {
-        showToast(data.error || 'Mã xác thực không hợp lệ', true);
-      }
-    } catch (err: any) {
-      showToast(err.message, true);
-    }
-  };
-
   const handleSyncNow = async () => {
     showToast('Đang yêu cầu đồng bộ Gmail...');
     try {
@@ -749,104 +663,50 @@ export default function App() {
           </div>
         )}
 
-        {/* TAB 3: GMAIL CONFIGURATION */}
+        {/* TAB 3: GMAIL CONNECTION */}
         {activeTab === 'gmail' && (
           <div className="space-y-6">
             <div>
-              <h2 className="text-lg font-bold text-white">Thiết lập kết nối Gmail Client</h2>
-              <p className="text-xs text-slate-400">
-                Thực hiện toàn bộ xác thực OAuth2 trực tiếp trên web client — không cần thao tác SSH VPS thủ công
-              </p>
+              <h2 className="text-lg font-bold text-white">K?t n?i Gmail</h2>
+              <p className="text-xs text-slate-400">�ang nh?p Google v� c?p quy?n trong m?t l?n; kh�ng c?n nh?p Client Secret ho?c d�n authorization code.</p>
             </div>
-
-            <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
-              <div className={`xl:col-span-2 bg-slate-900/80 border rounded-2xl p-5 space-y-5 ${status?.gmailAuth.hasCredentials ? 'border-emerald-800/70' : 'border-slate-800'}`}>
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex gap-3">
-                    <span className="shrink-0 w-7 h-7 rounded-full bg-emerald-500/10 text-emerald-400 flex items-center justify-center text-xs font-bold border border-emerald-500/30">1</span>
-                    <div>
-                      <h4 className="font-bold text-white text-sm">Cấu hình ứng dụng Google</h4>
-                      <p className="mt-1 text-xs text-slate-400 leading-relaxed">Dùng thông tin OAuth Client của Google Cloud. Đây là cấu hình ứng dụng, không phải tài khoản Gmail cần đọc.</p>
-                    </div>
+            <div className="max-w-2xl bg-slate-900/80 border border-slate-800 rounded-2xl p-5 space-y-5">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex gap-3">
+                  <span className={`shrink-0 w-10 h-10 rounded-xl flex items-center justify-center ${status?.gmailAuth.hasToken ? 'bg-emerald-500/10 text-emerald-400' : 'bg-slate-800 text-slate-400'}`}>
+                    <Mail className="w-5 h-5" />
+                  </span>
+                  <div>
+                    <h3 className="font-bold text-white">{status?.gmailAuth.hasToken ? 'Gmail d� k?t n?i' : 'Gmail chua k?t n?i'}</h3>
+                    <p className="mt-1 text-xs text-slate-400">
+                      {status?.gmailAuth.hasToken
+                        ? `Mailbox: ${status.gmailAuth.emailAddress || 'dang x�c minh'}`
+                        : status?.gmailAuth.hasCredentials
+                          ? 'B?m n�t b�n du?i d? dang nh?p Google v� c?p quy?n Gmail.'
+                          : 'Google OAuth chua du?c c?u h�nh tr�n server. H�y thi?t l?p bi?n m�i tru?ng c?a server tru?c.'}
+                    </p>
                   </div>
-                  {status?.gmailAuth.hasCredentials ? (
-                    <span className="shrink-0 inline-flex items-center gap-1.5 text-[10px] px-2 py-1 rounded-full font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30"><Check className="w-3 h-3" /> Đã cấu hình</span>
-                  ) : (
-                    <span className="shrink-0 text-[10px] px-2 py-1 rounded-full font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/30">Chưa cấu hình</span>
-                  )}
                 </div>
-
-                {status?.gmailAuth.hasCredentials && !isEditingCreds ? (
-                  <div className="rounded-xl bg-emerald-950/20 border border-emerald-900/50 p-4 flex flex-wrap items-center justify-between gap-3">
-                    <div>
-                      <p className="text-xs font-medium text-emerald-300">Google OAuth Client đã được lưu an toàn.</p>
-                      {status.gmailAuth.clientId && <p className="mt-1 text-[11px] text-slate-400 font-mono break-all">{status.gmailAuth.clientId}</p>}
-                    </div>
-                    <button onClick={() => setIsEditingCreds(true)} className="text-xs px-3 py-2 rounded-lg border border-slate-700 text-slate-200 hover:bg-slate-800 transition">Thay đổi</button>
-                  </div>
-                ) : (
-                  <>
-                    <div className="inline-flex w-full sm:w-auto rounded-xl border border-slate-700 p-1 bg-slate-950/70">
-                      <button onClick={() => setCredMode('fields')} className={`flex-1 sm:flex-none inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs transition ${credMode === 'fields' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'}`}><Key className="w-3.5 h-3.5" />Nhập Client ID & Secret</button>
-                      <button onClick={() => setCredMode('json')} className={`flex-1 sm:flex-none inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs transition ${credMode === 'json' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'}`}><FileText className="w-3.5 h-3.5" />Dán file JSON</button>
-                    </div>
-
-                    {credMode === 'fields' ? (
-                      <div className="grid sm:grid-cols-2 gap-3">
-                        <label className="text-xs text-slate-300">Client ID<input type="text" autoComplete="off" value={clientIdInput} onChange={(e) => setClientIdInput(e.target.value)} placeholder="…apps.googleusercontent.com" className="mt-1.5 w-full text-xs font-mono bg-slate-950 border border-slate-800 rounded-xl p-3 text-slate-200 focus:outline-none focus:border-emerald-500" /></label>
-                        <label className="text-xs text-slate-300">Client Secret<input type="password" autoComplete="new-password" value={clientSecretInput} onChange={(e) => setClientSecretInput(e.target.value)} placeholder="GOCSPX-…" className="mt-1.5 w-full text-xs font-mono bg-slate-950 border border-slate-800 rounded-xl p-3 text-slate-200 focus:outline-none focus:border-emerald-500" /></label>
-                      </div>
-                    ) : (
-                      <textarea rows={5} value={gmailCredsInput} onChange={(e) => setGmailCredsInput(e.target.value)} placeholder='{"web":{"client_id":"...","client_secret":"..."}}' className="w-full text-xs font-mono bg-slate-950 border border-slate-800 rounded-xl p-3 text-slate-200 focus:outline-none focus:border-emerald-500" />
-                    )}
-                    <div className="flex items-center justify-between gap-3">
-                      <p className="text-[11px] text-slate-500">Sau khi lưu, dashboard sẽ hiển thị Redirect URI cần thêm vào Google Cloud.</p>
-                      <div className="flex gap-2 shrink-0">
-                        {status?.gmailAuth.hasCredentials && <button onClick={() => setIsEditingCreds(false)} className="text-xs px-3 py-2 rounded-lg text-slate-400 hover:text-white">Hủy</button>}
-                        <button onClick={handleSaveGmailCreds} className="bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs px-4 py-2 rounded-lg transition">Lưu và tiếp tục</button>
-                      </div>
-                    </div>
-                  </>
-                )}
+                {status?.gmailAuth.hasToken ? <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" /> : <AlertCircle className="w-5 h-5 text-amber-400 shrink-0" />}
               </div>
 
-              <div className={`bg-slate-900/80 border rounded-2xl p-5 space-y-4 ${status?.gmailAuth.hasToken ? 'border-emerald-800/70' : 'border-slate-800'}`}>
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex gap-3"><span className="shrink-0 w-7 h-7 rounded-full bg-emerald-500/10 text-emerald-400 flex items-center justify-center text-xs font-bold border border-emerald-500/30">2</span><div><h4 className="font-bold text-white text-sm">Chọn Gmail nhận mail ACB</h4><p className="mt-1 text-xs text-slate-400 leading-relaxed">Cấp quyền chỉ đọc cho đúng hộp thư nhận thông báo biến động số dư.</p></div></div>
-                  {status?.gmailAuth.hasToken && <span className="shrink-0 inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded-full font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30"><Check className="w-3 h-3" /> Đã kết nối</span>}
+              {status?.gmailAuth.hasToken ? (
+                <div className="flex flex-wrap gap-3">
+                  <button onClick={handleSyncNow} className="text-xs px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white transition inline-flex gap-2 items-center"><RefreshCw className="w-3.5 h-3.5" />�?ng b? ngay</button>
+                  <button onClick={handleRenewWatch} className="text-xs px-3 py-2 rounded-lg border border-slate-700 hover:bg-slate-800 text-slate-200 transition inline-flex gap-2 items-center"><Radio className="w-3.5 h-3.5" />Gia h?n watch</button>
+                  <button onClick={handleDisconnectGmail} className="text-xs px-3 py-2 rounded-lg border border-rose-900/60 hover:bg-rose-950/40 text-rose-300 transition inline-flex gap-2 items-center"><Trash2 className="w-3.5 h-3.5" />Ng?t k?t n?i</button>
                 </div>
-                {status?.gmailAuth.redirectUri && <div className="rounded-lg bg-slate-950 border border-slate-800 p-3"><p className="text-[10px] uppercase tracking-wide text-slate-500">Redirect URI cần thêm trong Google Cloud</p><p className="mt-1 text-[11px] font-mono text-slate-300 break-all">{status.gmailAuth.redirectUri}</p></div>}
-                <button disabled={!status?.gmailAuth.hasCredentials || isGettingAuthUrl} onClick={handleGetAuthUrl} className="w-full disabled:cursor-not-allowed disabled:opacity-45 bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs px-4 py-2.5 rounded-xl transition flex items-center justify-center gap-2"><ExternalLink className="w-4 h-4" /><span>{isGettingAuthUrl ? 'Đang mở Google…' : status?.gmailAuth.hasToken ? 'Đăng nhập Gmail khác' : 'Chọn và đăng nhập Gmail'}</span></button>
-                {!status?.gmailAuth.hasCredentials && <p className="text-[11px] text-amber-400">Hoàn thành Bước 1 để mở khóa bước này.</p>}
-                {isCodeSectionOpen && <details className="border-t border-slate-800 pt-3"><summary className="cursor-pointer text-xs text-slate-400 hover:text-white">Google không quay về tự động? Nhập mã thủ công</summary><div className="space-y-2 mt-3"><input type="text" value={authCodeInput} onChange={(e) => setAuthCodeInput(e.target.value)} placeholder="Authorization code" className="w-full text-xs font-mono bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-slate-200 focus:outline-none focus:border-emerald-500" /><button onClick={handleSubmitAuthCode} className="w-full bg-slate-800 hover:bg-slate-700 text-white font-medium text-xs py-2 rounded-lg transition">Kết nối bằng mã</button></div></details>}
-              </div>
-            </div>
+              ) : (
+                <button disabled={!status?.gmailAuth.hasCredentials} onClick={handleConnectGmail} className="text-sm px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:text-slate-400 text-white font-semibold transition inline-flex gap-2 items-center"><Mail className="w-4 h-4" />K?t n?i Gmail</button>
+              )}
 
-            {/* SYNC ACTIONS */}
-            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 space-y-3">
-              <h4 className="font-bold text-white text-sm">3. Thao tác đồng bộ tức thời</h4>
-              <p className="text-xs text-slate-400">Kích hoạt đồng bộ lịch sử hoặc gia hạn thông báo đẩy Google Pub/Sub</p>
-              <div className="flex flex-wrap gap-3 pt-1">
-                <button
-                  onClick={handleSyncNow}
-                  className="bg-slate-800 hover:bg-slate-700 text-white border border-slate-700 text-xs px-4 py-2 rounded-xl transition flex items-center space-x-2"
-                >
-                  <RefreshCw className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Đồng bộ Gmail ngay (Reconcile History)</span>
-                </button>
-                <button
-                  onClick={handleRenewWatch}
-                  className="bg-slate-800 hover:bg-slate-700 text-white border border-slate-700 text-xs px-4 py-2 rounded-xl transition flex items-center space-x-2"
-                >
-                  <Radio className="w-3.5 h-3.5 text-cyan-400" />
-                  <span>Gia hạn Pub/Sub Watch (users.watch)</span>
-                </button>
+              <div className="border-t border-slate-800 pt-4 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                <div><span className="text-slate-500">Cursor l?ch s?</span><p className="font-mono text-slate-300 mt-1">{status?.gmailSync.lastHistoryId || '--'}</p></div>
+                <div><span className="text-slate-500">Watch h?t h?n</span><p className="text-slate-300 mt-1">{status?.gmailSync.watchExpirationAt ? new Date(status.gmailSync.watchExpirationAt).toLocaleString('vi-VN') : '--'}</p></div>
               </div>
             </div>
           </div>
         )}
-
-        {/* TAB 4: DELIVERIES */}
         {activeTab === 'deliveries' && (
           <div className="space-y-6">
             <div className="flex justify-between items-center">

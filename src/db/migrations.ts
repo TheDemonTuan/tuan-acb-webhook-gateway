@@ -117,6 +117,31 @@ export const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 2,
+    name: '002_gmail_oauth_connection',
+    up: (db: DatabaseInstance) => {
+      db.exec(`
+        CREATE TABLE gmail_connection (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          email_address TEXT NOT NULL,
+          token_ciphertext TEXT NOT NULL,
+          client_id TEXT NOT NULL,
+          connected_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE gmail_oauth_states (
+          state_hash TEXT PRIMARY KEY,
+          browser_nonce_hash TEXT NOT NULL,
+          verifier_ciphertext TEXT NOT NULL,
+          actor TEXT NOT NULL,
+          expires_at INTEGER NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_gmail_oauth_states_expiry ON gmail_oauth_states(expires_at);
+      `);
+    },
+  },
 ];
 
 export function runMigrations(db: DatabaseInstance): void {
