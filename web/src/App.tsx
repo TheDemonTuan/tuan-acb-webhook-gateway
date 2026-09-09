@@ -728,12 +728,20 @@ export default function App() {
                   <div>
                     <h4 className="font-semibold text-slate-100 text-sm">Thiết lập Google OAuth Client</h4>
                     <p className="text-xs text-slate-400 mt-1">Thông tin này được mã hóa trong database. Callback URL tự lấy từ địa chỉ dashboard bạn đang mở.</p>
+                    <ol className="mt-3 space-y-1.5 text-xs text-slate-300 list-decimal list-inside">
+                      <li><a href="https://console.cloud.google.com/apis/library/gmail.googleapis.com" target="_blank" rel="noreferrer" className="text-emerald-400 hover:text-emerald-300 underline">Mở Google Cloud Console để bật Gmail API</a>.</li>
+                      <li><a href="https://console.cloud.google.com/auth/clients" target="_blank" rel="noreferrer" className="text-emerald-400 hover:text-emerald-300 underline">Mở OAuth Clients</a> → Create client → chọn <strong>Web application</strong>.</li>
+                      <li>Dán Callback URL bên dưới vào <strong>Authorized redirect URIs</strong>, rồi copy Client ID và Client Secret vào form này.</li>
+                    </ol>
                   </div>
                   <div className="grid grid-cols-1 gap-3">
                     <input value={googleClientId} onChange={(event) => setGoogleClientId(event.target.value)} placeholder="Google Client ID" className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100" />
                     <input type="password" value={googleClientSecret} onChange={(event) => setGoogleClientSecret(event.target.value)} placeholder="Google Client Secret" className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100" />
                   </div>
-                  <p className="text-xs text-amber-300 break-all">Callback URL: {window.location.origin}/api/gmail/oauth2callback</p>
+                  <div className="rounded-lg bg-slate-950 border border-amber-900/50 p-3">
+                    <p className="text-[11px] uppercase tracking-wide text-amber-300">Authorized redirect URI</p>
+                    <code className="mt-1 block text-xs text-slate-100 break-all">{window.location.origin}/api/gmail/oauth2callback</code>
+                  </div>
                   <button disabled={isSavingGoogleConfig} className="text-xs px-3 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 disabled:opacity-60 text-white">{isSavingGoogleConfig ? 'Đang lưu...' : 'Lưu Google OAuth Client'}</button>
                 </form>
               )}
