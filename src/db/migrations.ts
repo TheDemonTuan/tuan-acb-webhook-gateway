@@ -142,6 +142,21 @@ export const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 3,
+    name: '003_gmail_oauth_config',
+    up: (db: DatabaseInstance) => {
+      db.exec(`
+        CREATE TABLE gmail_oauth_config (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          client_id TEXT NOT NULL,
+          client_secret_ciphertext TEXT NOT NULL,
+          redirect_uri TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+      `);
+    },
+  },
 ];
 
 export function runMigrations(db: DatabaseInstance): void {

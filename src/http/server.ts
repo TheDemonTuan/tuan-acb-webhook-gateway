@@ -157,7 +157,7 @@ export function buildServer(
         hasCredentials: gmailConnection.configured,
         hasToken: gmailConnection.connected,
         clientId: gmailConnection.clientId,
-        redirectUri: gmailConnection.configured ? `${config.APP_BASE_URL}/api/gmail/oauth2callback` : null,
+        redirectUri: services.oauthService?.getConfig()?.redirectUri || null,
         emailAddress: gmailConnection.emailAddress,
         reconnectRequired: gmailConnection.reconnectRequired,
       },
@@ -399,6 +399,42 @@ export function buildServer(
     }
 
     return { success: true, id };
+  });
+
+  app.post('/api/gmail/config', async (req, reply) => {
+    if (!services.oauthService) {
+      reply.status(503);
+      return { error: 'Gmail OAuth service is unavailable.' };
+    }
+    if (services.oauthService.getStatus().connected) {
+      reply.status(409);
+      return { error: 'Disconnect Gmail before changing its OAuth client.' };
+    }
+    const body = req.body as { clientId?: string; clientSecret?: string; redirectUri?: string };
+    const clientId = body?.clientId?.trim();
+    const clientSecret = body?.clientSecret?.trim();
+    const redirectUri = body?.redirectUri?.trim();
+    if (!clientId || !clientSecret || !redirectUri) {
+      reply.status(400);
+      return { error: 'Client ID, Client Secret, and callback URL are required.' };
+    }
+    try {
+      const parsed = new URL(redirectUri);
+      if ((config.NODE_ENV === 'production' && parsed.protocol !== 'https:') || parsed.pathname !== '/api/gmail/oauth2callback') {
+        throw new Error('Use an HTTPS callback URL ending in /api/gmail/oauth2callback.');
+      }
+      services.oauthService.configure({ clientId, clientSecret, redirectUri: parsed.toString().replace(/\/$/, '') });
+      repository.logAudit({
+        entityType: 'GMAIL_OAUTH',
+        entityId: 'default',
+        action: 'CONFIGURE',
+        actor: (req as FastifyRequest & { authUser?: string }).authUser || 'admin',
+      });
+      return { success: true, redirectUri: parsed.toString().replace(/\/$/, '') };
+    } catch (err: any) {
+      reply.status(400);
+      return { error: err.message || 'Invalid callback URL.' };
+    }
   });
 
   app.get('/api/gmail/connect', async (req, reply) => {

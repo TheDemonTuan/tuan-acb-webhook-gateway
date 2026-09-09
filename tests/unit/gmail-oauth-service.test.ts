@@ -3,6 +3,7 @@ import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/db/migrations.js';
 import { Repository } from '../../src/db/repository.js';
 import { GmailOAuthService } from '../../src/gmail/oauth-service.js';
+import { getGoogleOAuthConfig } from '../../src/gmail/oauth-config.js';
 import { loadConfig } from '../../src/config.js';
 
 const masterKey = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
@@ -15,6 +16,23 @@ describe('Gmail OAuth state storage', () => {
     db = new Database(':memory:');
     runMigrations(db);
     repository = new Repository(db);
+  });
+
+  it('stores the Google OAuth client secret encrypted', () => {
+    const config = loadConfig({ NODE_ENV: 'test', APP_MASTER_KEY: masterKey });
+    const service = new GmailOAuthService(repository, config);
+    service.configure({
+      clientId: 'client-id',
+      clientSecret: 'client-secret',
+      redirectUri: 'https://gateway.example.com/api/gmail/oauth2callback',
+    });
+
+    expect(repository.getGmailOAuthConfig()!.clientSecretCiphertext).not.toContain('client-secret');
+    expect(getGoogleOAuthConfig(repository, config)).toEqual({
+      clientId: 'client-id',
+      clientSecret: 'client-secret',
+      redirectUri: 'https://gateway.example.com/api/gmail/oauth2callback',
+    });
   });
 
   it('consumes each OAuth state only once and only for the same browser nonce', () => {

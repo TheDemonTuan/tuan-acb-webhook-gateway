@@ -109,6 +109,9 @@ export default function App() {
   const [newEpName, setNewEpName] = useState('');
   const [newEpUrl, setNewEpUrl] = useState('');
   const [newEpSecret, setNewEpSecret] = useState('');
+  const [googleClientId, setGoogleClientId] = useState('');
+  const [googleClientSecret, setGoogleClientSecret] = useState('');
+  const [isSavingGoogleConfig, setIsSavingGoogleConfig] = useState(false);
 
   // Toast
   const [toast, setToast] = useState<{ message: string; isError?: boolean } | null>(null);
@@ -287,6 +290,36 @@ export default function App() {
       }
     } catch (err: any) {
       showToast(err.message, true);
+    }
+  };
+
+  const handleSaveGoogleConfig = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!googleClientId.trim() || !googleClientSecret.trim()) {
+      showToast('Vui lòng nhập Google Client ID và Client Secret.', true);
+      return;
+    }
+    try {
+      setIsSavingGoogleConfig(true);
+      const redirectUri = `${window.location.origin}/api/gmail/oauth2callback`;
+      const res = await apiFetch('/api/gmail/config', {
+        method: 'POST',
+        body: JSON.stringify({
+          clientId: googleClientId.trim(),
+          clientSecret: googleClientSecret.trim(),
+          redirectUri,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Không thể lưu Google OAuth client');
+      setGoogleClientId('');
+      setGoogleClientSecret('');
+      showToast('Đã lưu Google OAuth Client. Hãy thêm callback URL hiển thị bên dưới trong Google Cloud.');
+      loadStatus();
+    } catch (err: any) {
+      showToast(err.message, true);
+    } finally {
+      setIsSavingGoogleConfig(false);
     }
   };
 
@@ -667,8 +700,8 @@ export default function App() {
         {activeTab === 'gmail' && (
           <div className="space-y-6">
             <div>
-              <h2 className="text-lg font-bold text-white">K?t n?i Gmail</h2>
-              <p className="text-xs text-slate-400">�ang nh?p Google v� c?p quy?n trong m?t l?n; kh�ng c?n nh?p Client Secret ho?c d�n authorization code.</p>
+              <h2 className="text-lg font-bold text-white">Kết nối Gmail</h2>
+              <p className="text-xs text-slate-400">Thiết lập OAuth một lần trên dashboard, sau đó đăng nhập Google và cấp quyền.</p>
             </div>
             <div className="max-w-2xl bg-slate-900/80 border border-slate-800 rounded-2xl p-5 space-y-5">
               <div className="flex items-start justify-between gap-4">
@@ -677,18 +710,33 @@ export default function App() {
                     <Mail className="w-5 h-5" />
                   </span>
                   <div>
-                    <h3 className="font-bold text-white">{status?.gmailAuth.hasToken ? 'Gmail d� k?t n?i' : 'Gmail chua k?t n?i'}</h3>
+                    <h3 className="font-bold text-white">{status?.gmailAuth.hasToken ? 'Gmail đã kết nối' : 'Gmail chưa kết nối'}</h3>
                     <p className="mt-1 text-xs text-slate-400">
                       {status?.gmailAuth.hasToken
-                        ? `Mailbox: ${status.gmailAuth.emailAddress || 'dang x�c minh'}`
+                        ? `Mailbox: ${status.gmailAuth.emailAddress || 'đang xác minh'}`
                         : status?.gmailAuth.hasCredentials
-                          ? 'B?m n�t b�n du?i d? dang nh?p Google v� c?p quy?n Gmail.'
-                          : 'Google OAuth chua du?c c?u h�nh tr�n server. H�y thi?t l?p bi?n m�i tru?ng c?a server tru?c.'}
+                          ? 'Bấm nút bên dưới để đăng nhập Google và cấp quyền Gmail.'
+                          : 'Hãy lưu Google OAuth Client bên dưới trước khi kết nối.'}
                     </p>
                   </div>
                 </div>
                 {status?.gmailAuth.hasToken ? <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" /> : <AlertCircle className="w-5 h-5 text-amber-400 shrink-0" />}
               </div>
+
+              {!status?.gmailAuth.hasCredentials && (
+                <form onSubmit={handleSaveGoogleConfig} className="border border-slate-800 rounded-xl p-4 space-y-3 bg-slate-950/40">
+                  <div>
+                    <h4 className="font-semibold text-slate-100 text-sm">Thiết lập Google OAuth Client</h4>
+                    <p className="text-xs text-slate-400 mt-1">Thông tin này được mã hóa trong database. Callback URL tự lấy từ địa chỉ dashboard bạn đang mở.</p>
+                  </div>
+                  <div className="grid grid-cols-1 gap-3">
+                    <input value={googleClientId} onChange={(event) => setGoogleClientId(event.target.value)} placeholder="Google Client ID" className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100" />
+                    <input type="password" value={googleClientSecret} onChange={(event) => setGoogleClientSecret(event.target.value)} placeholder="Google Client Secret" className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100" />
+                  </div>
+                  <p className="text-xs text-amber-300 break-all">Callback URL: {window.location.origin}/api/gmail/oauth2callback</p>
+                  <button disabled={isSavingGoogleConfig} className="text-xs px-3 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 disabled:opacity-60 text-white">{isSavingGoogleConfig ? 'Đang lưu...' : 'Lưu Google OAuth Client'}</button>
+                </form>
+              )}
 
               {status?.gmailAuth.hasToken ? (
                 <div className="flex flex-wrap gap-3">
@@ -696,9 +744,9 @@ export default function App() {
                   <button onClick={handleRenewWatch} className="text-xs px-3 py-2 rounded-lg border border-slate-700 hover:bg-slate-800 text-slate-200 transition inline-flex gap-2 items-center"><Radio className="w-3.5 h-3.5" />Gia h?n watch</button>
                   <button onClick={handleDisconnectGmail} className="text-xs px-3 py-2 rounded-lg border border-rose-900/60 hover:bg-rose-950/40 text-rose-300 transition inline-flex gap-2 items-center"><Trash2 className="w-3.5 h-3.5" />Ng?t k?t n?i</button>
                 </div>
-              ) : (
-                <button disabled={!status?.gmailAuth.hasCredentials} onClick={handleConnectGmail} className="text-sm px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:text-slate-400 text-white font-semibold transition inline-flex gap-2 items-center"><Mail className="w-4 h-4" />K?t n?i Gmail</button>
-              )}
+              ) : status?.gmailAuth.hasCredentials ? (
+                <button onClick={handleConnectGmail} className="text-sm px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:text-slate-400 text-white font-semibold transition inline-flex gap-2 items-center"><Mail className="w-4 h-4" />Kết nối Gmail</button>
+              ) : null}
 
               <div className="border-t border-slate-800 pt-4 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
                 <div><span className="text-slate-500">Cursor l?ch s?</span><p className="font-mono text-slate-300 mt-1">{status?.gmailSync.lastHistoryId || '--'}</p></div>

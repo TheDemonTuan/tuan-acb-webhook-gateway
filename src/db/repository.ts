@@ -16,6 +16,13 @@ export interface GmailConnection {
   updatedAt?: string;
 }
 
+export interface GmailOAuthConfig {
+  clientId: string;
+  clientSecretCiphertext: string;
+  redirectUri: string;
+  updatedAt?: string;
+}
+
 export interface GmailOAuthState {
   stateHash: string;
   browserNonceHash: string;
@@ -128,6 +135,30 @@ export class Repository {
         watchExpirationAt: state.watchExpirationAt || null,
         updatedAt: state.updatedAt,
       });
+  }
+
+  // ================= Gmail OAuth Configuration =================
+  getGmailOAuthConfig(): GmailOAuthConfig | null {
+    const row = this.db.prepare('SELECT * FROM gmail_oauth_config WHERE id = 1').get() as any;
+    if (!row) return null;
+    return {
+      clientId: row.client_id,
+      clientSecretCiphertext: row.client_secret_ciphertext,
+      redirectUri: row.redirect_uri,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  saveGmailOAuthConfig(oauth: GmailOAuthConfig): void {
+    this.db.prepare(`
+      INSERT INTO gmail_oauth_config (id, client_id, client_secret_ciphertext, redirect_uri, updated_at)
+      VALUES (1, @clientId, @clientSecretCiphertext, @redirectUri, @updatedAt)
+      ON CONFLICT(id) DO UPDATE SET
+        client_id = excluded.client_id,
+        client_secret_ciphertext = excluded.client_secret_ciphertext,
+        redirect_uri = excluded.redirect_uri,
+        updated_at = excluded.updated_at
+    `).run({ ...oauth, updatedAt: new Date().toISOString() });
   }
 
   // ================= Gmail OAuth Connection =================

@@ -2,7 +2,6 @@ import { google, type gmail_v1 } from 'googleapis';
 import fs from 'node:fs';
 import { logger } from '../logger.js';
 import type { Config } from '../config.js';
-import { getGoogleOAuthConfig } from './oauth-config.js';
 import type { GmailOAuthService } from './oauth-service.js';
 
 export class GmailService {
@@ -17,7 +16,7 @@ export class GmailService {
   async init(): Promise<void> {
     if (this.gmail) return;
 
-    const oauth = getGoogleOAuthConfig(this.config);
+    const oauth = this.oauthService?.getConfig() || null;
     if (!oauth) throw new Error('Google OAuth is not configured.');
     const token = this.oauthService?.getToken() || this.readLegacyToken();
     if (!token) throw new Error('Gmail is not connected.');

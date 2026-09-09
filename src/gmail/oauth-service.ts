@@ -4,7 +4,7 @@ import { CodeChallengeMethod } from 'google-auth-library';
 import type { Config } from '../config.js';
 import { decryptSecret, encryptSecret } from '../crypto.js';
 import type { Repository } from '../db/repository.js';
-import { getGoogleOAuthConfig } from './oauth-config.js';
+import { getGoogleOAuthConfig, saveGoogleOAuthConfig } from './oauth-config.js';
 
 const TOKEN_AAD = 'gmail-oauth-token';
 
@@ -25,7 +25,7 @@ export class GmailOAuthService {
   getStatus(): GmailOAuthStatus {
     let oauth;
     try {
-      oauth = getGoogleOAuthConfig(this.config);
+      oauth = getGoogleOAuthConfig(this.repository, this.config);
     } catch {
       return { configured: false, connected: false, emailAddress: null, clientId: null, reconnectRequired: true };
     }
@@ -39,8 +39,16 @@ export class GmailOAuthService {
     };
   }
 
+  configure(values: { clientId: string; clientSecret: string; redirectUri: string }): void {
+    saveGoogleOAuthConfig(this.repository, this.config, values);
+  }
+
+  getConfig() {
+    return getGoogleOAuthConfig(this.repository, this.config);
+  }
+
   begin(browserNonce: string, actor: string): string {
-    const oauth = getGoogleOAuthConfig(this.config);
+    const oauth = getGoogleOAuthConfig(this.repository, this.config);
     if (!oauth) throw new Error('Google OAuth is not configured on this server.');
     const state = crypto.randomBytes(32).toString('base64url');
     const verifier = crypto.randomBytes(48).toString('base64url');
@@ -67,7 +75,7 @@ export class GmailOAuthService {
   async complete(code: string, state: string, browserNonce: string): Promise<{ emailAddress: string }> {
     const record = this.repository.consumeGmailOAuthState(hash(state), hash(browserNonce), Date.now());
     if (!record) throw new Error('OAuth session is invalid, expired, or has already been used.');
-    const oauth = getGoogleOAuthConfig(this.config);
+    const oauth = getGoogleOAuthConfig(this.repository, this.config);
     if (!oauth) throw new Error('Google OAuth is not configured on this server.');
     const verifier = decryptSecret(record.verifierCiphertext, this.config.APP_MASTER_KEY, 'gmail-oauth-verifier');
     const client = new google.auth.OAuth2(oauth.clientId, oauth.clientSecret, oauth.redirectUri);

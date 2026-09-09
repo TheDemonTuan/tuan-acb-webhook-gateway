@@ -15,10 +15,6 @@ const envSchema = z.object({
   GMAIL_MAILBOX_ID: z.string().default('me'),
   GMAIL_CREDENTIALS_PATH: z.string().default('./credentials/gmail-credentials.json'),
   GMAIL_TOKEN_PATH: z.string().default('./credentials/gmail-token.json'),
-  APP_BASE_URL: z.string().url().default('http://localhost:8090'),
-  GOOGLE_OAUTH_CLIENT_ID: z.string().min(1).optional(),
-  GOOGLE_OAUTH_CLIENT_SECRET: z.string().min(1).optional(),
-  GOOGLE_OAUTH_REDIRECT_URI: z.string().url().optional(),
   GMAIL_OAUTH_STATE_TTL_SECONDS: z.coerce.number().int().min(60).max(3600).default(600),
   PUBSUB_CREDENTIALS_PATH: z.string().optional(),
   PUBSUB_SUBSCRIPTION_NAME: z.string().optional(),
@@ -42,25 +38,7 @@ const envSchema = z.object({
 
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
 }).superRefine((value, ctx) => {
-  const hasGoogleClientId = Boolean(value.GOOGLE_OAUTH_CLIENT_ID);
-  const hasGoogleClientSecret = Boolean(value.GOOGLE_OAUTH_CLIENT_SECRET);
-  if (hasGoogleClientId !== hasGoogleClientSecret) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['GOOGLE_OAUTH_CLIENT_ID'],
-      message: 'GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET must be configured together.',
-    });
-  }
-
   if (value.NODE_ENV !== 'production') return;
-
-  if (!value.APP_BASE_URL.startsWith('https://')) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['APP_BASE_URL'],
-      message: 'APP_BASE_URL must use HTTPS in production.',
-    });
-  }
 
   for (const key of ['CLOUDFLARE_ACCESS_TEAM_NAME', 'CLOUDFLARE_ACCESS_AUD'] as const) {
     if (!value[key].trim()) {
