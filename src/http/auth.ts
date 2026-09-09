@@ -41,7 +41,13 @@ export async function authenticateRequest(
   config: Config
 ): Promise<boolean> {
   const path = req.url.split('?')[0];
-  if (path === '/health' || path === '/live' || path === '/ready' || path === '/metrics') {
+  if (
+    path === '/health' ||
+    path === '/live' ||
+    path === '/ready' ||
+    path === '/metrics' ||
+    path === '/api/gmail/oauth2callback'
+  ) {
     return true;
   }
 

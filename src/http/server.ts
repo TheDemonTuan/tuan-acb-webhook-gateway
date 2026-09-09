@@ -27,6 +27,7 @@ export function buildServer(
 ): FastifyInstance {
   const app = Fastify({
     logger: false,
+    trustProxy: true,
   });
 
   // Global Auth Hook for /api/ routes
@@ -132,6 +133,24 @@ export function buildServer(
     const hasCredentials = fs.existsSync(config.GMAIL_CREDENTIALS_PATH);
     const hasToken = fs.existsSync(config.GMAIL_TOKEN_PATH);
 
+    let clientId: string | null = null;
+    if (hasCredentials) {
+      try {
+        const raw = fs.readFileSync(config.GMAIL_CREDENTIALS_PATH, 'utf8');
+        const parsed = JSON.parse(raw);
+        const details = parsed.installed || parsed.web;
+        if (details?.client_id) {
+          clientId = details.client_id;
+        }
+      } catch {
+        // ignore parse error
+      }
+    }
+
+    const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
+    const host = (req.headers['x-forwarded-host'] as string) || req.headers.host || req.hostname;
+    const redirectUri = `${proto}://${host}/api/gmail/oauth2callback`;
+
     return {
       status: 'ok',
       database: 'healthy',
@@ -146,6 +165,8 @@ export function buildServer(
       gmailAuth: {
         hasCredentials,
         hasToken,
+        clientId,
+        redirectUri,
       },
       gmailSync: {
         lastHistoryId: gmailState?.lastHistoryId || null,
@@ -387,24 +408,56 @@ export function buildServer(
     return { success: true, id };
   });
 
-  // POST /api/gmail/credentials - Save Client Credentials JSON
+  // POST /api/gmail/credentials - Save Client Credentials (supports fields or full JSON)
   app.post('/api/gmail/credentials', async (req, reply) => {
-    const body = req.body as { credentialsJson: string };
-    if (!body || !body.credentialsJson) {
+    const body = req.body as {
+      mode?: 'fields' | 'json';
+      credentialsJson?: string;
+      clientId?: string;
+      clientSecret?: string;
+    };
+
+    if (!body) {
       reply.status(400);
-      return { error: 'Nội dung credentials JSON là bắt buộc.' };
+      return { error: 'Dữ liệu credentials là bắt buộc.' };
     }
 
-    let parsed;
-    try {
-      parsed = JSON.parse(body.credentialsJson);
-      const details = parsed.installed || parsed.web;
-      if (!details || !details.client_id || !details.client_secret) {
-        throw new Error('Thiếu installed/web hoặc client_id/client_secret trong JSON.');
+    let parsed: any;
+    const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
+    const host = (req.headers['x-forwarded-host'] as string) || req.headers.host || req.hostname;
+    const defaultCallback = `${proto}://${host}/api/gmail/oauth2callback`;
+
+    if (body.mode === 'fields' || (body.clientId && body.clientSecret)) {
+      const clientId = body.clientId?.trim();
+      const clientSecret = body.clientSecret?.trim();
+      if (!clientId || !clientSecret) {
+        reply.status(400);
+        return { error: 'Client ID và Client Secret không được để trống.' };
       }
-    } catch (err: any) {
+
+      parsed = {
+        web: {
+          client_id: clientId,
+          client_secret: clientSecret,
+          auth_uri: 'https://accounts.google.com/o/oauth2/auth',
+          token_uri: 'https://oauth2.googleapis.com/token',
+          redirect_uris: [defaultCallback, 'http://localhost'],
+        },
+      };
+    } else if (body.credentialsJson) {
+      try {
+        parsed = JSON.parse(body.credentialsJson);
+        const details = parsed.installed || parsed.web;
+        if (!details || !details.client_id || !details.client_secret) {
+          throw new Error('Thiếu installed/web hoặc client_id/client_secret trong JSON.');
+        }
+      } catch (err: any) {
+        reply.status(400);
+        return { error: `JSON không hợp lệ: ${err.message}` };
+      }
+    } else {
       reply.status(400);
-      return { error: `JSON không hợp lệ: ${err.message}` };
+      return { error: 'Vui lòng cung cấp Client ID & Secret hoặc dán file JSON credentials.' };
     }
 
     const dir = path.dirname(config.GMAIL_CREDENTIALS_PATH);
@@ -417,14 +470,16 @@ export function buildServer(
     });
 
     logger.info('Saved Gmail OAuth credentials from Web UI');
-    return { success: true, message: 'Đã lưu file credentials thành công' };
+    return { success: true, message: 'Đã lưu cấu hình Google Client Credentials thành công' };
   });
 
   // GET /api/gmail/auth-url - Generate Google OAuth Consent URL
-  app.get('/api/gmail/auth-url', async (_req, reply) => {
+  app.get('/api/gmail/auth-url', async (req, reply) => {
     if (!fs.existsSync(config.GMAIL_CREDENTIALS_PATH)) {
       reply.status(400);
-      return { error: 'Chưa có file credentials. Hãy lưu credentials trước.' };
+      return {
+        error: 'Chưa có Client Credentials. Vui lòng hoàn thành Bước 1 (nhập Client ID & Secret hoặc dán file JSON) trước khi đăng nhập.',
+      };
     }
 
     try {
@@ -433,7 +488,13 @@ export function buildServer(
       const clientDetails = creds.installed || creds.web;
 
       const { client_id, client_secret, redirect_uris } = clientDetails;
-      const redirectUri = redirect_uris?.[0] || 'urn:ietf:wg:oauth:2.0:oob';
+      const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
+      const host = (req.headers['x-forwarded-host'] as string) || req.headers.host || req.hostname;
+      const defaultCallback = `${proto}://${host}/api/gmail/oauth2callback`;
+
+      const redirectUri = (redirect_uris && redirect_uris[0] && !redirect_uris[0].includes('oob'))
+        ? redirect_uris[0]
+        : defaultCallback;
 
       const oAuth2Client = new google.auth.OAuth2(client_id, client_secret, redirectUri);
       const authUrl = oAuth2Client.generateAuthUrl({
@@ -442,14 +503,71 @@ export function buildServer(
         scope: ['https://www.googleapis.com/auth/gmail.readonly'],
       });
 
-      return { authUrl };
+      return { authUrl, redirectUri };
     } catch (err: any) {
       reply.status(500);
-      return { error: `Không thể tạo URL: ${err.message}` };
+      return { error: `Không thể tạo URL xác thực Google: ${err.message}` };
     }
   });
 
-  // POST /api/gmail/exchange-code - Exchange Code for Token & Save
+  // GET /api/gmail/oauth2callback - Handle Google OAuth Redirect
+  app.get('/api/gmail/oauth2callback', async (req, reply) => {
+    const query = req.query as { code?: string; error?: string };
+    if (query.error) {
+      logger.warn({ error: query.error }, 'Google OAuth returned error on callback');
+      return reply.redirect(`/?gmail_auth=error&message=${encodeURIComponent(query.error)}`);
+    }
+
+    if (!query.code) {
+      return reply.redirect(`/?gmail_auth=error&message=${encodeURIComponent('Thiếu mã authorization code từ Google')}`);
+    }
+
+    if (!fs.existsSync(config.GMAIL_CREDENTIALS_PATH)) {
+      return reply.redirect(`/?gmail_auth=error&message=${encodeURIComponent('Chưa cấu hình credentials trên gateway')}`);
+    }
+
+    try {
+      const credsRaw = fs.readFileSync(config.GMAIL_CREDENTIALS_PATH, 'utf8');
+      const creds = JSON.parse(credsRaw);
+      const clientDetails = creds.installed || creds.web;
+
+      const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
+      const host = (req.headers['x-forwarded-host'] as string) || req.headers.host || req.hostname;
+      const defaultCallback = `${proto}://${host}/api/gmail/oauth2callback`;
+      const redirectUri = (clientDetails.redirect_uris && clientDetails.redirect_uris[0] && !clientDetails.redirect_uris[0].includes('oob'))
+        ? clientDetails.redirect_uris[0]
+        : defaultCallback;
+
+      const oAuth2Client = new google.auth.OAuth2(
+        clientDetails.client_id,
+        clientDetails.client_secret,
+        redirectUri
+      );
+
+      const { tokens } = await oAuth2Client.getToken(query.code);
+      const tokenDir = path.dirname(config.GMAIL_TOKEN_PATH);
+      if (!fs.existsSync(tokenDir)) {
+        fs.mkdirSync(tokenDir, { recursive: true });
+      }
+
+      fs.writeFileSync(config.GMAIL_TOKEN_PATH, JSON.stringify(tokens, null, 2), {
+        mode: 0o600,
+      });
+
+      logger.info('Saved Gmail OAuth tokens from redirect callback');
+
+      if (services.gmailService) {
+        await services.gmailService.init();
+      }
+
+      return reply.redirect('/?gmail_auth=success');
+    } catch (err: any) {
+      logger.error({ err }, 'Failed to exchange OAuth code on callback');
+      return reply.redirect(`/?gmail_auth=error&message=${encodeURIComponent(err.message || 'Lỗi khi đổi mã token với Google')}`);
+    }
+  });
+
+  // POST /api/gmail/exchange-code - Exchange Code for Token & Save (manual fallback)
   app.post('/api/gmail/exchange-code', async (req, reply) => {
     const body = req.body as { code: string };
     if (!body || !body.code) {
@@ -467,10 +585,18 @@ export function buildServer(
       const creds = JSON.parse(credsRaw);
       const clientDetails = creds.installed || creds.web;
 
-      const { client_id, client_secret, redirect_uris } = clientDetails;
-      const redirectUri = redirect_uris?.[0] || 'urn:ietf:wg:oauth:2.0:oob';
+      const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
+      const host = (req.headers['x-forwarded-host'] as string) || req.headers.host || req.hostname;
+      const defaultCallback = `${proto}://${host}/api/gmail/oauth2callback`;
+      const redirectUri = (clientDetails.redirect_uris && clientDetails.redirect_uris[0] && !clientDetails.redirect_uris[0].includes('oob'))
+        ? clientDetails.redirect_uris[0]
+        : defaultCallback;
 
-      const oAuth2Client = new google.auth.OAuth2(client_id, client_secret, redirectUri);
+      const oAuth2Client = new google.auth.OAuth2(
+        clientDetails.client_id,
+        clientDetails.client_secret,
+        redirectUri
+      );
       const { tokens } = await oAuth2Client.getToken(body.code.trim());
 
       const tokenDir = path.dirname(config.GMAIL_TOKEN_PATH);
@@ -482,7 +608,7 @@ export function buildServer(
         mode: 0o600,
       });
 
-      logger.info('Saved Gmail OAuth tokens from Web UI');
+      logger.info('Saved Gmail OAuth tokens from Web UI code exchange');
 
       // Re-init Gmail Service if available
       if (services.gmailService) {
