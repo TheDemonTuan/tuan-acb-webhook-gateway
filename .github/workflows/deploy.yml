@@ -44,15 +44,12 @@ jobs:
   build-and-push:
     name: Build & Push GHCR Image (ARM64)
     needs: [verify]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     outputs:
       image_ref: ${{ steps.image-ref.outputs.image_ref }}
       image_digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -79,7 +76,6 @@ jobs:
         with:
           context: .
           push: true
-          platforms: linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
