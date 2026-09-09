@@ -85,29 +85,31 @@ jobs:
         run: |
           echo "image_ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}" >> $GITHUB_OUTPUT
 
-  deploy-notice:
-    name: Check VPS Configuration
-    needs: [build-and-push]
-    if: ${{ !inputs.skip_deploy && secrets.VPS_HOST == '' }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Inform missing VPS secrets
-        run: |
-          echo "::notice title=VPS Deploy Setup Required::Image was successfully published to GHCR (${{ needs.build-and-push.outputs.image_ref }}). To auto-deploy to your VPS, add these secrets to repo Settings > Secrets and variables > Actions: VPS_HOST, VPS_USER, VPS_SSH_KEY, VPS_KNOWN_HOSTS."
-
   deploy:
     name: Deploy to VPS
     needs: [build-and-push]
-    if: ${{ !inputs.skip_deploy && secrets.VPS_HOST != '' }}
+    if: ${{ !inputs.skip_deploy }}
     environment: production
     concurrency:
       group: deploy-vps-production
       cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
+      - name: Check VPS secrets configuration
+        id: check-vps
+        run: |
+          if [ -z "${{ secrets.VPS_HOST }}" ] || [ -z "${{ secrets.VPS_SSH_KEY }}" ]; then
+            echo "configured=false" >> $GITHUB_OUTPUT
+            echo "::notice title=VPS Deploy Pending::Secrets VPS_HOST and VPS_SSH_KEY are not configured yet. Image was pushed to GHCR (${{ needs.build-and-push.outputs.image_ref }}). Add VPS secrets to trigger automatic VPS deployments."
+          else
+            echo "configured=true" >> $GITHUB_OUTPUT
+          fi
+
       - uses: actions/checkout@v4
+        if: steps.check-vps.outputs.configured == 'true'
 
       - name: Setup SSH
+        if: steps.check-vps.outputs.configured == 'true'
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_ed25519
@@ -116,10 +118,12 @@ jobs:
           chmod 644 ~/.ssh/known_hosts
 
       - name: Copy Deploy Scripts to VPS
+        if: steps.check-vps.outputs.configured == 'true'
         run: |
           scp -P "${{ secrets.VPS_PORT || 22 }}" -r deploy/* "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:${{ secrets.DEPLOY_PATH || '/opt/bank-event-gateway' }}/"
 
       - name: Execute Deployment on VPS
+        if: steps.check-vps.outputs.configured == 'true'
         run: |
           ssh -p "${{ secrets.VPS_PORT || 22 }}" "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
             "cd ${{ secrets.DEPLOY_PATH || '/opt/bank-event-gateway' }} && bash deploy.sh '${{ needs.build-and-push.outputs.image_ref }}'"
