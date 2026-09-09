@@ -16,7 +16,7 @@ echo "==> Rolling back to previous image: ${PREVIOUS_IMAGE}"
 
 export IMAGE_REF="${PREVIOUS_IMAGE}"
 
-docker compose -f compose.prod.yaml up -d --remove-orphans
+docker compose --env-file .env.production -f compose.prod.yaml up -d --remove-orphans
 
 echo "==> Verifying previous container health..."
 bash verify-deployment.sh

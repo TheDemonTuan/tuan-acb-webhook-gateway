@@ -68,7 +68,7 @@ docker run --rm \
 # 7. Start/Update Container
 echo "==> Launching container with new image..."
 export IMAGE_REF
-docker compose -f compose.prod.yaml up -d --remove-orphans
+docker compose --env-file .env.production -f compose.prod.yaml up -d --remove-orphans
 
 # 8. Verify Deployment Health
 echo "==> Running health and readiness checks..."
@@ -80,7 +80,7 @@ else
   echo "WARNING: Healthcheck failed! Triggering automatic rollback..."
   if [ -n "$PREV_IMAGE" ]; then
     export IMAGE_REF="$PREV_IMAGE"
-    docker compose -f compose.prod.yaml up -d --remove-orphans
+    docker compose --env-file .env.production -f compose.prod.yaml up -d --remove-orphans
     bash verify-deployment.sh || true
     echo "==> Rolled back to ${PREV_IMAGE}."
   else
