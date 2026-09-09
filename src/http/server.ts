@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -124,7 +124,7 @@ export function buildServer(
   // ==================== DASHBOARD API ====================
 
   // GET /api/status - Extended status for the dashboard
-  app.get('/api/status', async () => {
+  app.get('/api/status', async (req) => {
     const queue = repository.getQueueMetrics();
     const gmailState = repository.getGmailState(config.GMAIL_MAILBOX_ID);
     const endpoints = repository.listWebhookEndpoints();
@@ -139,6 +139,10 @@ export function buildServer(
       endpointsCount: endpoints.length,
       activeEndpointsCount: endpoints.filter((e) => e.enabled === 1).length,
       uptimeSeconds: Math.floor(process.uptime()),
+      cloudflareAccess: {
+        email: (req as FastifyRequest & { authUser?: string }).authUser || null,
+        authenticated: (req as FastifyRequest & { authMethod?: string }).authMethod === 'cloudflare_access_jwt',
+      },
       gmailAuth: {
         hasCredentials,
         hasToken,

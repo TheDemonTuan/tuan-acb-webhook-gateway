@@ -35,6 +35,10 @@ interface GatewayStatus {
   endpointsCount: number;
   activeEndpointsCount: number;
   uptimeSeconds: number;
+  cloudflareAccess: {
+    email: string | null;
+    authenticated: boolean;
+  };
   gmailAuth: {
     hasCredentials: boolean;
     hasToken: boolean;
@@ -416,7 +420,7 @@ export default function App() {
           <div className="flex items-center space-x-3">
             <div className="hidden sm:flex items-center space-x-2 text-xs bg-slate-900/90 border border-slate-800 px-3 py-1.5 rounded-full">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-              <span className="text-slate-300 font-medium">Live & Healthy</span>
+              <span className="text-slate-300 font-medium">{status?.cloudflareAccess.email || 'Cloudflare Access'}</span>
             </div>
 
           </div>
@@ -931,6 +935,13 @@ export default function App() {
                 <p className="text-[11px] text-slate-500">
                   Tách biệt hoàn toàn khỏi tunnel docker-panel. Ingress trỏ trực tiếp về cổng nội bộ gateway.
                 </p>
+              </div>
+
+              <div className="space-y-1 pt-3 border-t border-slate-800">
+                <span className="text-xs text-slate-400 font-medium uppercase tracking-wider">Tài khoản đang đăng nhập</span>
+                <div className="font-mono text-sm font-bold text-emerald-400">
+                  {status?.cloudflareAccess.email || 'Đang tải phiên Cloudflare Access...'}
+                </div>
               </div>
 
               <div className="space-y-1 pt-3 border-t border-slate-800">

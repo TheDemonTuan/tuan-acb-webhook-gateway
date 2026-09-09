@@ -33,6 +33,8 @@ describe('Dashboard Web UI & Management API', () => {
           return true;
         }
         if (req.headers['cf-access-jwt-assertion'] === 'verified-cloudflare-access-jwt') {
+          (req as FastifyRequest & { authUser?: string; authMethod?: string }).authUser = 'admin@example.com';
+          (req as FastifyRequest & { authUser?: string; authMethod?: string }).authMethod = 'cloudflare_access_jwt';
           return true;
         }
         _reply.status(401).send({ error: 'Cloudflare Access authentication is required.' });
@@ -75,6 +77,10 @@ describe('Dashboard Web UI & Management API', () => {
     const json = JSON.parse(res.payload);
     expect(json.status).toBe('ok');
     expect(json.database).toBe('healthy');
+    expect(json.cloudflareAccess).toEqual({
+      email: 'admin@example.com',
+      authenticated: true,
+    });
     expect(json.gmailAuth).toBeDefined();
   });
 
