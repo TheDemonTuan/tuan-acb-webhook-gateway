@@ -124,9 +124,10 @@ Hệ thống tích hợp sẵn giao diện Web Quản trị (Dashboard) hiện �
 
 - **Domain Quản trị**: [https://bank.tuannguyenviet.site](https://bank.tuannguyenviet.site)
 - **Cơ chế xác thực bảo mật**:
-  - Tự động xác thực JWT qua Cloudflare Access Assertion cho email quản trị (`nguyenviettuanbp@gmail.com`).
-  - Hỗ trợ Cloudflare Access API Key (được cấu hình trong biến môi trường `CLOUDFLARE_ACCESS_API_KEY`).
-  - Hỗ trợ nhập trực tiếp trên giao diện hoặc qua Header `cf-access-api-key` (viết thường toàn bộ chữ `c`).
+  - Cloudflare Access xác thực phiên của email quản trị trước khi cho phép truy cập domain.
+  - Cloudflare Access gửi assertion JWT tại header `cf-access-jwt-assertion`; gateway bắt buộc kiểm tra chữ ký qua Cloudflare JWKS, issuer và audience.
+  - Không có API key đăng nhập, không nhận `cf-access-api-key`, Bearer token, cookie tự tạo hoặc token trên query string.
+  - Biến môi trường runtime bắt buộc là `CLOUDFLARE_ACCESS_TEAM_NAME` và `CLOUDFLARE_ACCESS_AUD`; Cloudflare API token chỉ phục vụ thiết lập hạ tầng ban đầu và không thuộc luồng xác thực ứng dụng.
 
 ### Các tính năng trên giao diện:
 1. **Tổng quan (Overview)**: Trạng thái Server, Uptime, Memory, SQLite WAL, Hàng đợi Delivery và Danh sách các sự kiện tiền vào ACB gần đây.

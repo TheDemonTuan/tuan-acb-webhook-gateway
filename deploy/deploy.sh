@@ -1,90 +1,128 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+APP_DIR="${APP_DIR:-$SCRIPT_DIR}"
+COMPOSE="$APP_DIR/compose.prod.yaml"
+APP_ENV="$APP_DIR/.env.production"
+LOCK_FILE="$APP_DIR/.deploy.lock"
+CURRENT_IMAGE_FILE="$APP_DIR/.deployed-image"
+PREVIOUS_IMAGE_FILE="$APP_DIR/.previous-image"
+READY_TIMEOUT="${READY_TIMEOUT:-120}"
 
-LOCK_FILE="/tmp/bank-gateway-deploy.lock"
-exec 200>"$LOCK_FILE"
-flock -n 200 || { echo "ERROR: Another deployment is already in progress."; exit 1; }
+log() { printf '%s  %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*"; }
+die() { log "ERROR: $*" >&2; exit 1; }
 
-echo "==> Starting deployment of Bank Event Gateway..."
+# shellcheck source=deploy/image-retention.sh
+source "$APP_DIR/image-retention.sh"
 
-# 1. Check Arguments / Environment
-IMAGE_REF="${1:-${IMAGE_REF:-}}"
-if [ -z "$IMAGE_REF" ]; then
-  echo "ERROR: IMAGE_REF must be provided as argument or environment variable."
-  exit 1
-fi
+dc() {
+  docker compose --env-file "$APP_ENV" -f "$COMPOSE" "$@"
+}
 
-echo "==> Target Image: ${IMAGE_REF}"
+validate_digest() {
+  local image="$1"
+  [[ "$image" =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$ ]] || \
+    die "image must be an immutable GHCR digest: $image"
+}
 
-# 2. Check Disk Space (at least 1GB free)
-FREE_KB=$(df -k "$SCRIPT_DIR" | tail -1 | awk '{print $4}')
-if [ "$FREE_KB" -lt 1048576 ]; then
-  echo "ERROR: Insufficient disk space. Available: ${FREE_KB}KB, required: 1048576KB"
-  exit 1
-fi
+health_status() {
+  local container_id
+  container_id="$(dc ps -q gateway 2>/dev/null || true)"
+  [[ -n "$container_id" ]] || { printf 'missing\n'; return; }
+  docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+    "$container_id" 2>/dev/null || true
+}
 
-# 3. Check configuration files
-if [ ! -f ".env.production" ]; then
-  echo "ERROR: .env.production file is missing in ${SCRIPT_DIR}"
-  exit 1
-fi
+verify_ready() {
+  local started_at elapsed
+  started_at="$(date +%s)"
 
-mkdir -p ./data ./credentials ./secrets
+  while true; do
+    if [[ "$(health_status)" == 'healthy' ]] && curl --fail --silent --show-error \
+      'http://127.0.0.1:8090/ready' >/dev/null; then
+      return 0
+    fi
 
-# Save previous image if current.manifest exists
-PREV_IMAGE=""
-if [ -f "current.manifest" ]; then
-  PREV_IMAGE=$(cat current.manifest)
-fi
+    elapsed="$(( $(date +%s) - started_at ))"
+    (( elapsed < READY_TIMEOUT )) || return 1
+    sleep 2
+  done
+}
 
-# 4. Pull new image before touching running container
-echo "==> Pulling image: ${IMAGE_REF}"
-docker pull "${IMAGE_REF}"
+rollback() {
+  local previous="$1"
+  log "Rolling back to $previous"
+  IMAGE_REF="$previous" dc up -d --remove-orphans --wait --wait-timeout "$READY_TIMEOUT"
+  verify_ready || die 'rollback readiness verification failed'
+  printf '%s\n' "$previous" > "$CURRENT_IMAGE_FILE"
+}
 
-# 5. Pre-deployment SQLite Database Backup
-if [ -f "./data/gateway.db" ]; then
-  echo "==> Performing pre-deploy database backup..."
-  BACKUP_FILE="./data/backup-pre-deploy-$(date +%Y%m%d%H%M%S).db"
-  # Use sqlite3 CLI if available or copy under WAL
-  cp "./data/gateway.db" "$BACKUP_FILE"
-  if [ -f "./data/gateway.db-wal" ]; then
-    cp "./data/gateway.db-wal" "${BACKUP_FILE}-wal"
-  fi
-  echo "Backup created at ${BACKUP_FILE}"
-fi
+status() {
+  printf '=== Bank Event Gateway deployment status ===\n'
+  printf 'Current image: %s\n' "$(cat "$CURRENT_IMAGE_FILE" 2>/dev/null || echo none)"
+  printf 'Previous image: %s\n' "$(cat "$PREVIOUS_IMAGE_FILE" 2>/dev/null || echo none)"
+  printf 'Gateway: %s\n' "$(health_status)"
+  dc ps
+}
 
-# 6. Run Database Migrations using new container
-echo "==> Running database migrations with new image..."
-docker run --rm \
-  --user "1000:1000" \
-  -v "${SCRIPT_DIR}/data:/app/data" \
-  -v "${SCRIPT_DIR}/credentials:/app/credentials:ro" \
-  --env-file .env.production \
-  "${IMAGE_REF}" node dist/cli.js migrate
-
-# 7. Start/Update Container
-echo "==> Launching container with new image..."
-export IMAGE_REF
-docker compose --env-file .env.production -f compose.prod.yaml up -d --remove-orphans
-
-# 8. Verify Deployment Health
-echo "==> Running health and readiness checks..."
-if bash verify-deployment.sh; then
-  echo "${IMAGE_REF}" > current.manifest
-  echo "==> Deployment SUCCEEDED and recorded to current.manifest."
+if [[ "${1:-}" == '--status' ]]; then
+  status
   exit 0
-else
-  echo "WARNING: Healthcheck failed! Triggering automatic rollback..."
-  if [ -n "$PREV_IMAGE" ]; then
-    export IMAGE_REF="$PREV_IMAGE"
-    docker compose --env-file .env.production -f compose.prod.yaml up -d --remove-orphans
-    bash verify-deployment.sh || true
-    echo "==> Rolled back to ${PREV_IMAGE}."
-  else
-    echo "ERROR: No previous image available to rollback."
-  fi
-  exit 1
 fi
+
+[[ $# -eq 1 ]] || die "usage: $0 <image@sha256:digest> | --status"
+NEW_IMAGE="$1"
+validate_digest "$NEW_IMAGE"
+
+command -v docker >/dev/null || die 'docker is required'
+docker compose version >/dev/null || die 'Docker Compose v2 is required'
+[[ -f "$COMPOSE" ]] || die "missing compose file: $COMPOSE"
+[[ -f "$APP_ENV" ]] || die "missing production environment: $APP_ENV"
+
+exec 200>"$LOCK_FILE"
+flock -n 200 || die 'another deployment is already in progress'
+
+CURRENT_IMAGE="$(cat "$CURRENT_IMAGE_FILE" 2>/dev/null || cat "$APP_DIR/current.manifest" 2>/dev/null || true)"
+if [[ "$NEW_IMAGE" == "$CURRENT_IMAGE" ]]; then
+  log "Image is already deployed: $NEW_IMAGE"
+  verify_ready || die 'current deployment is not ready'
+  exit 0
+fi
+
+log "Pulling $NEW_IMAGE"
+docker pull "$NEW_IMAGE"
+
+if [[ -f "$APP_DIR/data/gateway.db" ]]; then
+  backup="$APP_DIR/data/backup-pre-deploy-$(date -u '+%Y%m%d%H%M%S').db"
+  log "Creating SQLite backup at $backup"
+  cp "$APP_DIR/data/gateway.db" "$backup"
+  [[ ! -f "$APP_DIR/data/gateway.db-wal" ]] || cp "$APP_DIR/data/gateway.db-wal" "$backup-wal"
+fi
+
+log 'Applying schema migrations'
+docker run --rm --user '1000:1000' \
+  -v "$APP_DIR/data:/app/data" \
+  -v "$APP_DIR/credentials:/app/credentials:rw" \
+  -v "$APP_DIR/secrets:/app/secrets:ro" \
+  --env-file "$APP_ENV" \
+  "$NEW_IMAGE" node dist/cli.js migrate
+
+log 'Starting updated services'
+if ! IMAGE_REF="$NEW_IMAGE" dc up -d --remove-orphans --wait --wait-timeout "$READY_TIMEOUT"; then
+  [[ -z "$CURRENT_IMAGE" ]] || rollback "$CURRENT_IMAGE"
+  die 'Docker Compose failed to start the updated deployment'
+fi
+
+if ! verify_ready; then
+  [[ -z "$CURRENT_IMAGE" ]] || rollback "$CURRENT_IMAGE"
+  die 'updated deployment did not become ready'
+fi
+
+if [[ -n "$CURRENT_IMAGE" ]]; then
+  printf '%s\n' "$CURRENT_IMAGE" > "$PREVIOUS_IMAGE_FILE"
+fi
+printf '%s\n' "$NEW_IMAGE" > "$CURRENT_IMAGE_FILE"
+printf '%s\n' "$NEW_IMAGE" > "$APP_DIR/current.manifest"
+cleanup_unused_images
+log "Deployment completed: $NEW_IMAGE"

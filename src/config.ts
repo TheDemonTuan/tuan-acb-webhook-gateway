@@ -10,7 +10,7 @@ const envSchema = z.object({
   HOST: z.string().default('127.0.0.1'),
   DATABASE_PATH: z.string().default('./data/gateway.db'),
   APP_MASTER_KEY: z.string().min(64).max(64).regex(/^[0-9a-fA-F]+$/, 'Must be 64-char hex string (32 bytes)'),
-  
+
   // Gmail & Pub/Sub
   GMAIL_MAILBOX_ID: z.string().default('me'),
   GMAIL_CREDENTIALS_PATH: z.string().default('./credentials/gmail-credentials.json'),
@@ -18,12 +18,12 @@ const envSchema = z.object({
   PUBSUB_CREDENTIALS_PATH: z.string().optional(),
   PUBSUB_SUBSCRIPTION_NAME: z.string().optional(),
   PUBSUB_TOPIC_NAME: z.string().optional(),
-  
+
   // Bank policy
   ALLOWED_BANK_DOMAINS: z.string().default('acb.com.vn'),
   ALLOWED_RECEIVER_ACCOUNTS: z.string().default(''), // comma-separated if any
   INGEST_START_AT: z.string().optional(), // ISO date string cutoff
-  
+
   // Operational timings
   RECONCILE_INTERVAL_SECONDS: z.coerce.number().min(10).default(60),
   WATCH_RENEW_INTERVAL_HOURS: z.coerce.number().min(1).default(12),
@@ -31,12 +31,23 @@ const envSchema = z.object({
   MAX_RETRY_ATTEMPTS: z.coerce.number().min(1).default(20),
   MAX_RETRY_DURATION_HOURS: z.coerce.number().min(1).default(48),
 
-  // Cloudflare Access Protection
-  CLOUDFLARE_ACCESS_API_KEY: z.string().default(''),
-  CLOUDFLARE_ACCESS_TEAM_NAME: z.string().default('thedemontuan'),
-  CLOUDFLARE_ACCESS_AUD: z.string().default('546ad6f298f280ba4cc513c26558d7dadc9db37cd37926fc2a6afdcbe626b4e3'),
-  
+  // Cloudflare Access assertion validation at the tunnel origin.
+  CLOUDFLARE_ACCESS_TEAM_NAME: z.string().default(''),
+  CLOUDFLARE_ACCESS_AUD: z.string().default(''),
+
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+}).superRefine((value, ctx) => {
+  if (value.NODE_ENV !== 'production') return;
+
+  for (const key of ['CLOUDFLARE_ACCESS_TEAM_NAME', 'CLOUDFLARE_ACCESS_AUD'] as const) {
+    if (!value[key].trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [key],
+        message: 'Required in production for Cloudflare Access JWT validation',
+      });
+    }
+  }
 });
 
 export type Config = z.infer<typeof envSchema>;
@@ -61,21 +72,22 @@ export function loadConfig(overrides?: Partial<Record<string, string>>): Config 
   const result = envSchema.safeParse(rawEnv);
   if (!result.success) {
     console.error('Invalid configuration:', result.error.format());
-    throw new Error(`Configuration validation failed: ${result.error.message}`);
+    throw new Error('Invalid configuration');
   }
 
-  const resolvedConfig = {
+  const config = {
     ...result.data,
     DATABASE_PATH: path.resolve(result.data.DATABASE_PATH),
     GMAIL_CREDENTIALS_PATH: path.resolve(result.data.GMAIL_CREDENTIALS_PATH),
     GMAIL_TOKEN_PATH: path.resolve(result.data.GMAIL_TOKEN_PATH),
-    PUBSUB_CREDENTIALS_PATH: result.data.PUBSUB_CREDENTIALS_PATH 
-      ? path.resolve(result.data.PUBSUB_CREDENTIALS_PATH) 
+    PUBSUB_CREDENTIALS_PATH: result.data.PUBSUB_CREDENTIALS_PATH
+      ? path.resolve(result.data.PUBSUB_CREDENTIALS_PATH)
       : undefined,
   };
 
   if (!overrides) {
-    cachedConfig = resolvedConfig;
+    cachedConfig = config;
   }
-  return resolvedConfig;
+
+  return config;
 }

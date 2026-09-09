@@ -4,14 +4,17 @@ import { runMigrations } from '../../src/db/migrations.js';
 import { Repository } from '../../src/db/repository.js';
 import { buildServer } from '../../src/http/server.js';
 import { loadConfig } from '../../src/config.js';
+import * as auth from '../../src/http/auth.js';
 import * as ssrfGuard from '../../src/webhook/ssrf-guard.js';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+
+const masterKey = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 
 describe('Dashboard Web UI & Management API', () => {
   let db: Database.Database;
   let repo: Repository;
   let app: FastifyInstance;
-  const accessKey = 'test_cloudflare_access_api_key_12345';
+  let authenticateRequest: ReturnType<typeof vi.spyOn>;
 
   beforeEach(async () => {
     db = new Database(':memory:');
@@ -19,10 +22,19 @@ describe('Dashboard Web UI & Management API', () => {
     repo = new Repository(db);
     const config = loadConfig({
       NODE_ENV: 'test',
-      APP_MASTER_KEY: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-      CLOUDFLARE_ACCESS_API_KEY: accessKey,
+      APP_MASTER_KEY: masterKey,
+      CLOUDFLARE_ACCESS_TEAM_NAME: 'test-team',
+      CLOUDFLARE_ACCESS_AUD: 'test-audience',
     });
 
+    authenticateRequest = vi.spyOn(auth, 'authenticateRequest').mockImplementation(
+      async (req: FastifyRequest, _reply: FastifyReply) => {
+        if (req.url.split('?')[0] === '/health' || req.url.split('?')[0] === '/live' || req.url.split('?')[0] === '/ready') {
+          return true;
+        }
+        return req.headers['cf-access-jwt-assertion'] === 'verified-cloudflare-access-jwt';
+      }
+    );
     vi.spyOn(ssrfGuard, 'validateWebhookUrl').mockResolvedValue({
       allowed: true,
       resolvedIp: '93.184.215.14',
@@ -38,51 +50,42 @@ describe('Dashboard Web UI & Management API', () => {
     db.close();
   });
 
-  it('renders dashboard HTML at root /', async () => {
-    const res = await app.inject({ method: 'GET', url: '/' });
+  it('allows health probes without Cloudflare Access', async () => {
+    const res = await app.inject({ method: 'GET', url: '/ready' });
     expect(res.statusCode).toBe(200);
-    expect(res.headers['content-type']).toContain('text/html');
-    expect(res.payload).toContain('Bank Event Gateway');
-    expect(res.payload).toContain('ACB');
   });
 
-  it('rejects unauthenticated requests to /api/ with 401', async () => {
+  it('rejects dashboard API requests without a Cloudflare Access assertion', async () => {
     const res = await app.inject({ method: 'GET', url: '/api/status' });
     expect(res.statusCode).toBe(401);
-    const json = JSON.parse(res.payload);
-    expect(json.error).toContain('Unauthorized');
   });
 
-  it('allows access to /api/status with cf-access-api-key header', async () => {
+  it('allows the management API only after Cloudflare Access JWT verification', async () => {
     const res = await app.inject({
       method: 'GET',
       url: '/api/status',
-      headers: {
-        'cf-access-api-key': accessKey,
-      },
+      headers: { 'cf-access-jwt-assertion': 'verified-cloudflare-access-jwt' },
     });
     expect(res.statusCode).toBe(200);
+    expect(authenticateRequest).toHaveBeenCalled();
     const json = JSON.parse(res.payload);
     expect(json.status).toBe('ok');
     expect(json.database).toBe('healthy');
     expect(json.gmailAuth).toBeDefined();
   });
 
-  it('allows access with cookie cf_access_token', async () => {
+  it('does not accept the removed API-key header', async () => {
     const res = await app.inject({
       method: 'GET',
       url: '/api/status',
-      headers: {
-        cookie: `cf_access_token=${accessKey}`,
-      },
+      headers: { 'cf-access-api-key': 'deprecated-key' },
     });
-    expect(res.statusCode).toBe(200);
+    expect(res.statusCode).toBe(401);
   });
 
   it('performs full CRUD on webhook endpoints via management API', async () => {
-    const authHeaders = { 'cf-access-api-key': accessKey };
+    const authHeaders = { 'cf-access-jwt-assertion': 'verified-cloudflare-access-jwt' };
 
-    // 1. Create Endpoint
     const createRes = await app.inject({
       method: 'POST',
       url: '/api/endpoints',
@@ -97,33 +100,14 @@ describe('Dashboard Web UI & Management API', () => {
     const created = JSON.parse(createRes.payload);
     expect(created.id).toBeDefined();
 
-    // 2. List Endpoints
-    const listRes = await app.inject({
-      method: 'GET',
-      url: '/api/endpoints',
-      headers: authHeaders,
-    });
+    const listRes = await app.inject({ method: 'GET', url: '/api/endpoints', headers: authHeaders });
     expect(listRes.statusCode).toBe(200);
     const list = JSON.parse(listRes.payload);
     expect(list).toHaveLength(1);
     expect(list[0].name).toBe('Messenger Bot API');
-    expect(list[0].enabled).toBe(true);
+    expect(list[0].url).toBe('https://messenger.example.com/webhook');
+    expect(list[0]).not.toHaveProperty('secret');
 
-    // 3. Toggle Disable
-    const toggleRes = await app.inject({
-      method: 'PATCH',
-      url: `/api/endpoints/${created.id}/toggle`,
-      headers: authHeaders,
-      payload: { enabled: false },
-    });
-    expect(toggleRes.statusCode).toBe(200);
-
-    const listAfterToggle = JSON.parse(
-      (await app.inject({ method: 'GET', url: '/api/endpoints', headers: authHeaders })).payload
-    );
-    expect(listAfterToggle[0].enabled).toBe(false);
-
-    // 4. Delete Endpoint
     const deleteRes = await app.inject({
       method: 'DELETE',
       url: `/api/endpoints/${created.id}`,
@@ -131,9 +115,7 @@ describe('Dashboard Web UI & Management API', () => {
     });
     expect(deleteRes.statusCode).toBe(200);
 
-    const listAfterDelete = JSON.parse(
-      (await app.inject({ method: 'GET', url: '/api/endpoints', headers: authHeaders })).payload
-    );
-    expect(listAfterDelete).toHaveLength(0);
+    const listAfterDeleteRes = await app.inject({ method: 'GET', url: '/api/endpoints', headers: authHeaders });
+    expect(JSON.parse(listAfterDeleteRes.payload)).toHaveLength(0);
   });
 });

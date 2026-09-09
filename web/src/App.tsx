@@ -6,8 +6,6 @@ import {
   AlertCircle,
   Copy,
   ExternalLink,
-  Key,
-  Lock,
   Mail,
   Play,
   Plus,
@@ -19,8 +17,7 @@ import {
   Clock,
   Database,
   Globe,
-  Radio,
-  Power
+  Radio
 } from 'lucide-react';
 
 interface QueueMetrics {
@@ -86,13 +83,8 @@ interface WebhookDelivery {
   createdAt: string;
 }
 
-const AUTH_KEY_STORAGE = 'bank_gateway_cf_key';
-
 export default function App() {
   const [activeTab, setActiveTab] = useState<'overview' | 'endpoints' | 'gmail' | 'deliveries' | 'security'>('overview');
-  const [authKey, setAuthKey] = useState<string>(() => localStorage.getItem(AUTH_KEY_STORAGE) || '');
-  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
-  const [authKeyInput, setAuthKeyInput] = useState('');
 
   const [status, setStatus] = useState<GatewayStatus | null>(null);
   const [events, setEvents] = useState<BankEvent[]>([]);
@@ -119,23 +111,15 @@ export default function App() {
     setTimeout(() => setToast(null), 3500);
   };
 
-  const getHeaders = useCallback((): HeadersInit => {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (authKey) {
-      headers['cf-access-api-key'] = authKey;
-    }
-    return headers;
-  }, [authKey]);
-
   const apiFetch = useCallback(async (url: string, options: RequestInit = {}) => {
-    const headers = { ...getHeaders(), ...(options.headers || {}) };
+    const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
     const res = await fetch(url, { ...options, headers });
     if (res.status === 401) {
-      setIsAuthModalOpen(true);
-      throw new Error('Yêu cầu xác thực API Key');
+      showToast('Phiên Cloudflare Access đã hết hạn. Hãy đăng nhập lại qua Cloudflare Access.', true);
+      throw new Error('Cloudflare Access authentication is required');
     }
     return res;
-  }, [getHeaders]);
+  }, []);
 
   const loadStatus = useCallback(async () => {
     try {
@@ -201,24 +185,6 @@ export default function App() {
     if (activeTab === 'endpoints') loadEndpoints();
     if (activeTab === 'deliveries') loadDeliveries();
   }, [activeTab, loadEndpoints, loadDeliveries]);
-
-  const handleSaveAuthKey = () => {
-    if (!authKeyInput.trim()) return;
-    const cleanKey = authKeyInput.trim();
-    setAuthKey(cleanKey);
-    localStorage.setItem(AUTH_KEY_STORAGE, cleanKey);
-    document.cookie = `cf_access_token=${encodeURIComponent(cleanKey)}; path=/; max-age=2592000; SameSite=Lax`;
-    setIsAuthModalOpen(false);
-    showToast('Đã lưu API Key xác thực');
-    loadStatus();
-  };
-
-  const handleLogout = () => {
-    setAuthKey('');
-    localStorage.removeItem(AUTH_KEY_STORAGE);
-    document.cookie = 'cf_access_token=; path=/; max-age=0';
-    setIsAuthModalOpen(true);
-  };
 
   const generateSecret = () => {
     const bytes = new Uint8Array(24);
@@ -453,21 +419,6 @@ export default function App() {
               <span className="text-slate-300 font-medium">Live & Healthy</span>
             </div>
 
-            <button
-              onClick={() => setIsAuthModalOpen(true)}
-              className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 px-3 py-1.5 rounded-lg border border-slate-700 transition flex items-center space-x-1.5"
-            >
-              <Key className="w-3.5 h-3.5 text-emerald-400" />
-              <span className="hidden sm:inline">API Key</span>
-            </button>
-
-            <button
-              onClick={handleLogout}
-              className="text-xs text-rose-400 hover:bg-rose-950/40 px-2.5 py-1.5 rounded-lg border border-rose-900/50 transition"
-              title="Đăng xuất"
-            >
-              <Power className="w-3.5 h-3.5" />
-            </button>
           </div>
         </div>
 
@@ -983,12 +934,12 @@ export default function App() {
               </div>
 
               <div className="space-y-1 pt-3 border-t border-slate-800">
-                <span className="text-xs text-slate-400 font-medium uppercase tracking-wider">Cloudflare Access API Key (Token)</span>
+                <span className="text-xs text-slate-400 font-medium uppercase tracking-wider">Cloudflare Access JWT</span>
                 <p className="text-xs text-slate-300">
-                  Cấu hình trong biến môi trường: <code className="font-mono text-emerald-400">CLOUDFLARE_ACCESS_API_KEY</code>
+                  Cloudflare Access tự xác thực phiên đăng nhập và chuyển assertion JWT tới gateway.
                 </p>
                 <p className="text-[11px] text-slate-500">
-                  Hỗ trợ Header: <code className="text-emerald-400">cf-access-api-key: [CLOUDFLARE_ACCESS_API_KEY]</code> (viết thường toàn bộ chữ c).
+                  Gateway chỉ nhận assertion JWT đã ký và kiểm tra issuer, audience và chữ ký qua Cloudflare JWKS.
                 </p>
               </div>
 
@@ -1078,54 +1029,6 @@ export default function App() {
             </form>
           </div>
         </div>
-      )}
-
-      {/* MODAL: AUTH KEY */}
-      {isAuthModalOpen && (
-        <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-md z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-2xl text-center">
-            <div className="w-12 h-12 rounded-xl bg-emerald-500/10 border border-emerald-500/30 mx-auto flex items-center justify-center text-emerald-400">
-              <Lock className="w-6 h-6" />
-            </div>
-            <div>
-              <h3 className="text-base font-bold text-white">Xác thực Cloudflare Access API Key</h3>
-              <p className="text-xs text-slate-400 mt-1">Nhập API Key để mở khóa quyền quản trị Gateway</p>
-            </div>
-            <div className="space-y-3 text-left">
-              <input
-                type="password"
-                value={authKeyInput}
-                onChange={(e) => setAuthKeyInput(e.target.value)}
-                placeholder="Nhập Cloudflare Access API Key..."
-                className="w-full font-mono text-xs bg-slate-950 border border-slate-800 rounded-xl p-3 text-slate-200 focus:outline-none focus:border-emerald-500"
-              />
-              <button
-                onClick={handleSaveAuthKey}
-                className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs py-2.5 rounded-xl transition shadow-lg shadow-emerald-600/20"
-              >
-                Mở khóa Dashboard
-              </button>
-            </div>
-            <p className="text-[11px] text-slate-500">
-              Bảo mật Cloudflare Zero Trust • Header: <code className="text-slate-400">cf-access-api-key</code>
-            </p>
-          </div>
-        </div>
-      )}
-
-      {/* TOAST NOTIFICATION */}
-      {toast && (
-        <div
-          className={`fixed bottom-5 right-5 z-50 px-4 py-2.5 rounded-xl shadow-lg text-xs transition-all flex items-center space-x-2 border ${
-            toast.isError
-              ? 'bg-rose-950/90 border-rose-800 text-rose-200'
-              : 'bg-slate-900/90 border-emerald-800 text-emerald-300'
-          }`}
-        >
-          {toast.isError ? <AlertCircle className="w-4 h-4" /> : <CheckCircle2 className="w-4 h-4" />}
-          <span>{toast.message}</span>
-        </div>
-      )}
-    </div>
+      )}`r`n    </div>
   );
 }

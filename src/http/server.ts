@@ -12,7 +12,6 @@ import type { WebhookDispatcher } from '../webhook/dispatcher.js';
 import { encryptSecret, decryptSecret, signWebhookPayload } from '../crypto.js';
 import { validateWebhookUrl } from '../webhook/ssrf-guard.js';
 import { authenticateRequest } from './auth.js';
-import { getDashboardHtml } from './dashboard-html.js';
 import { logger } from '../logger.js';
 
 export interface ServerServices {
@@ -39,16 +38,20 @@ export function buildServer(
     }
   });
 
-  // 1. Dashboard Web UI (React 19 build or fallback)
+  // 1. Dashboard Web UI (React 19 build)
   const candidateDirs = [
     path.resolve(process.cwd(), 'dist/web'),
     path.resolve(process.cwd(), 'web/dist'),
     path.resolve(import.meta.dirname, '../web'),
     path.resolve(import.meta.dirname, '../../dist/web'),
   ];
-  const webDir = candidateDirs.find((d) => fs.existsSync(path.join(d, 'index.html')));
+  const webDir = candidateDirs.find((directory) => fs.existsSync(path.join(directory, 'index.html')));
 
-  if (webDir) {
+  if (!webDir) {
+    if (config.NODE_ENV === 'production') {
+      throw new Error('React dashboard build not found. Run npm run build before starting the server.');
+    }
+  } else {
     logger.info({ webDir }, 'Serving React 19 Dashboard UI via @fastify/static');
     app.register(fastifyStatic, {
       root: webDir,
@@ -63,14 +66,6 @@ export function buildServer(
       } else {
         reply.sendFile('index.html');
       }
-    });
-  } else {
-    app.get('/', async (_req, reply) => {
-      reply.type('text/html; charset=utf-8').send(getDashboardHtml());
-    });
-
-    app.get('/dashboard', async (_req, reply) => {
-      reply.type('text/html; charset=utf-8').send(getDashboardHtml());
     });
   }
 

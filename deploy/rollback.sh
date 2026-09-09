@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PREVIOUS_IMAGE_FILE="$SCRIPT_DIR/.previous-image"
+CURRENT_IMAGE_FILE="$SCRIPT_DIR/.deployed-image"
 
-echo "==> Initiating rollback..."
-
-if [ ! -f "current.manifest" ]; then
-  echo "ERROR: current.manifest not found. Cannot determine previous image."
+[[ -f "$PREVIOUS_IMAGE_FILE" ]] || {
+  echo 'ERROR: no previous image is recorded.' >&2
   exit 1
+}
+
+previous="$(cat "$PREVIOUS_IMAGE_FILE")"
+[[ "$previous" =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$ ]] || {
+  echo 'ERROR: previous image is not an immutable GHCR digest.' >&2
+  exit 1
+}
+
+current="$(cat "$CURRENT_IMAGE_FILE" 2>/dev/null || true)"
+"$SCRIPT_DIR/deploy.sh" "$previous"
+
+if [[ -n "$current" && "$current" != "$previous" ]]; then
+  printf '%s\n' "$current" > "$PREVIOUS_IMAGE_FILE"
 fi
-
-PREVIOUS_IMAGE=$(cat current.manifest)
-echo "==> Rolling back to previous image: ${PREVIOUS_IMAGE}"
-
-export IMAGE_REF="${PREVIOUS_IMAGE}"
-
-docker compose --env-file .env.production -f compose.prod.yaml up -d --remove-orphans
-
-echo "==> Verifying previous container health..."
-bash verify-deployment.sh
-
-echo "==> Rollback completed successfully."
