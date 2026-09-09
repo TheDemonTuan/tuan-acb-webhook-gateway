@@ -27,7 +27,7 @@ services:
         reservations:
           memory: 128M
 
-    # Loopback port bind only
+    # Loopback port bind
     ports:
       - "127.0.0.1:8090:8090"
 
@@ -38,12 +38,6 @@ services:
 
     env_file:
       - .env.production
-
-    networks:
-      default:
-      panel-edge:
-        aliases:
-          - bank-gateway
 
     logging:
       driver: "json-file"
@@ -58,8 +52,24 @@ services:
       retries: 3
       start_period: 10s
 
-networks:
-  default:
-  panel-edge:
-    external: true
-    name: docker-panel_panel-edge
+  cloudflared:
+    image: cloudflare/cloudflared:2026.8.3
+    container_name: bank-gateway-cloudflared
+    restart: unless-stopped
+    init: true
+    user: "10001:10001"
+    depends_on:
+      gateway:
+        condition: service_healthy
+    command: tunnel run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    env_file:
+      - .env.production
+    read_only: true
+    pids_limit: 100
+    mem_limit: 128m
+    cpus: 0.25
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

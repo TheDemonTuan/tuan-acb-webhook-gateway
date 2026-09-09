@@ -357,7 +357,7 @@ export function getDashboardHtml(): string {
         <p class="text-xs text-slate-400 mt-1">Nhập Cloudflare Access API Key để mở khóa quyền quản trị</p>
       </div>
       <div class="space-y-3 text-left">
-        <input type="password" id="auth-key-input" placeholder="cfut_..." class="w-full mono text-xs bg-slate-950 border border-slate-800 rounded-lg p-3 text-slate-200 focus:outline-none focus:border-emerald-500">
+        <input type="password" id="auth-key-input" placeholder="Nhập API Key..." class="w-full mono text-xs bg-slate-950 border border-slate-800 rounded-lg p-3 text-slate-200 focus:outline-none focus:border-emerald-500">
         <button onclick="submitAuthKey()" class="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs py-2.5 rounded-lg transition shadow-md">
           Mở khóa Dashboard
         </button>

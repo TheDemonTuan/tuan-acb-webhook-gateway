@@ -43,7 +43,7 @@ describe('Dashboard Web UI & Management API', () => {
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-type']).toContain('text/html');
     expect(res.payload).toContain('Bank Event Gateway');
-    expect(res.payload).toContain('ACB Email');
+    expect(res.payload).toContain('ACB');
   });
 
   it('rejects unauthenticated requests to /api/ with 401', async () => {

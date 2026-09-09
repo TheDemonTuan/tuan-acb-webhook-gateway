@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance } from 'fastify';
+import fastifyStatic from '@fastify/static';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -38,14 +39,40 @@ export function buildServer(
     }
   });
 
-  // 1. Dashboard Web UI
-  app.get('/', async (_req, reply) => {
-    reply.type('text/html; charset=utf-8').send(getDashboardHtml());
-  });
+  // 1. Dashboard Web UI (React 19 build or fallback)
+  const candidateDirs = [
+    path.resolve(process.cwd(), 'dist/web'),
+    path.resolve(process.cwd(), 'web/dist'),
+    path.resolve(import.meta.dirname, '../web'),
+    path.resolve(import.meta.dirname, '../../dist/web'),
+  ];
+  const webDir = candidateDirs.find((d) => fs.existsSync(path.join(d, 'index.html')));
 
-  app.get('/dashboard', async (_req, reply) => {
-    reply.type('text/html; charset=utf-8').send(getDashboardHtml());
-  });
+  if (webDir) {
+    logger.info({ webDir }, 'Serving React 19 Dashboard UI via @fastify/static');
+    app.register(fastifyStatic, {
+      root: webDir,
+      prefix: '/',
+      wildcard: false,
+    });
+
+    app.setNotFoundHandler((req, reply) => {
+      const url = req.url.split('?')[0];
+      if (url.startsWith('/api/')) {
+        reply.status(404).send({ error: 'API route not found' });
+      } else {
+        reply.sendFile('index.html');
+      }
+    });
+  } else {
+    app.get('/', async (_req, reply) => {
+      reply.type('text/html; charset=utf-8').send(getDashboardHtml());
+    });
+
+    app.get('/dashboard', async (_req, reply) => {
+      reply.type('text/html; charset=utf-8').send(getDashboardHtml());
+    });
+  }
 
   // 2. Liveness & Readiness Checks
   app.get('/health', async () => {
