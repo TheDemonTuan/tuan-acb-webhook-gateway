@@ -455,6 +455,83 @@ export class Repository {
       .run(enabled ? 1 : 0, new Date().toISOString(), id);
   }
 
+  deleteWebhookEndpoint(id: string): void {
+    const delTx = this.db.transaction(() => {
+      this.db.prepare('DELETE FROM webhook_deliveries WHERE endpoint_id = ?').run(id);
+      this.db.prepare('DELETE FROM webhook_endpoints WHERE id = ?').run(id);
+    });
+    delTx();
+  }
+
+  listRecentEvents(limit = 50): Array<{
+    id: string;
+    eventType: string;
+    amount: string;
+    accountMasked: string;
+    description: string | null;
+    transactionAt: string;
+    status: string;
+    createdAt: string;
+  }> {
+    return this.db
+      .prepare(`
+        SELECT e.id, e.event_type as eventType, t.amount, t.account_masked as accountMasked,
+               t.description, t.transaction_at as transactionAt, t.status, e.created_at as createdAt
+        FROM bank_events e
+        JOIN bank_transactions t ON e.transaction_id = t.id
+        ORDER BY e.created_at DESC
+        LIMIT ?
+      `)
+      .all(limit) as any[];
+  }
+
+  listRecentDeliveries(limit = 50): Array<{
+    id: string;
+    eventId: string;
+    endpointName: string;
+    endpointUrl: string;
+    status: string;
+    attemptCount: number;
+    nextAttemptAt: string;
+    lastHttpStatus: number | null;
+    lastError: string | null;
+    deliveredAt: string | null;
+    createdAt: string;
+  }> {
+    return this.db
+      .prepare(`
+        SELECT d.id, d.event_id as eventId, ep.name as endpointName, ep.url as endpointUrl,
+               d.status, d.attempt_count as attemptCount, d.next_attempt_at as nextAttemptAt,
+               d.last_http_status as lastHttpStatus, d.last_error as lastError,
+               d.delivered_at as deliveredAt, d.created_at as createdAt
+        FROM webhook_deliveries d
+        JOIN webhook_endpoints ep ON d.endpoint_id = ep.id
+        ORDER BY d.created_at DESC
+        LIMIT ?
+      `)
+      .all(limit) as any[];
+  }
+
+  listRecentAuditLogs(limit = 50): Array<{
+    id: string;
+    entityType: string;
+    entityId: string;
+    action: string;
+    actor: string;
+    detailsJson: string | null;
+    createdAt: string;
+  }> {
+    return this.db
+      .prepare(`
+        SELECT id, entity_type as entityType, entity_id as entityId, action, actor,
+               details_json as detailsJson, created_at as createdAt
+        FROM audit_logs
+        ORDER BY created_at DESC
+        LIMIT ?
+      `)
+      .all(limit) as any[];
+  }
+
   // ================= Audit Logging =================
   logAudit(log: {
     entityType: string;

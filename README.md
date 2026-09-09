@@ -118,7 +118,25 @@ app.post('/api/webhooks/bank', async (req, res) => {
 
 ---
 
-## 5. Cài đặt và Vận hành CLI
+## 5. Giao diện Web Quản trị (Dashboard) & Cloudflare Access
+
+Hệ thống tích hợp sẵn giao diện Web Quản trị (Dashboard) hiện đại, bảo mật cao qua **Cloudflare Zero Trust**:
+
+- **Domain Quản trị**: [https://bank.tuannguyenviet.site](https://bank.tuannguyenviet.site)
+- **Cơ chế xác thực bảo mật**:
+  - Tự động xác thực JWT qua Cloudflare Access Assertion cho email quản trị (`nguyenviettuanbp@gmail.com`).
+  - Hỗ trợ Cloudflare Access API Key (được cấu hình trong biến môi trường `CLOUDFLARE_ACCESS_API_KEY`).
+  - Hỗ trợ nhập trực tiếp trên giao diện hoặc qua Header `cf-access-api-key` (viết thường toàn bộ chữ `c`).
+
+### Các tính năng trên giao diện:
+1. **Tổng quan (Overview)**: Trạng thái Server, Uptime, Memory, SQLite WAL, Hàng đợi Delivery và Danh sách các sự kiện tiền vào ACB gần đây.
+2. **Quản lý Webhook (Endpoints)**: Đăng ký Webhook mới với URL HTTPS và Secret Key, Bật/Tắt Endpoint, và gửi **Test Ping** trực tiếp từ trình duyệt.
+3. **Cấu hình Gmail (Client Helper)**: Dán credentials JSON, tạo link đăng nhập Google OAuth, dán mã Authorization Code để tự động lưu Token và kết nối Gmail mà không cần SSH vào VPS.
+4. **Lịch sử Gửi (Deliveries & Replay)**: Xem chi tiết lỗi các đợt phát Webhook và nút **Replay (Gửi lại)** tiện lợi.
+
+---
+
+## 6. Cài đặt và Vận hành CLI
 
 ### Cài đặt dependencies:
 ```bash

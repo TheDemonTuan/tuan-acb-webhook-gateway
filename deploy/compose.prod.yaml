@@ -33,11 +33,17 @@ services:
 
     volumes:
       - ./data:/app/data:rw
-      - ./credentials:/app/credentials:ro
+      - ./credentials:/app/credentials:rw
       - ./secrets:/app/secrets:ro
 
     env_file:
       - .env.production
+
+    networks:
+      default:
+      panel-edge:
+        aliases:
+          - bank-gateway
 
     logging:
       driver: "json-file"
@@ -51,3 +57,9 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+networks:
+  default:
+  panel-edge:
+    external: true
+    name: docker-panel_panel-edge

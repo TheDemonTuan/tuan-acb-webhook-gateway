@@ -74,8 +74,12 @@ async function bootstrap() {
     }, intervalMs);
   }
 
-  // 5. Start Fastify Loopback Server
-  const server = buildServer(repository, config);
+  // 5. Start Fastify Loopback Server & Web Dashboard
+  const server = buildServer(repository, config, {
+    gmailService,
+    reconciler,
+    dispatcher,
+  });
 
   try {
     await server.listen({ port: config.PORT, host: config.HOST });

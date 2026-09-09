@@ -30,6 +30,11 @@ const envSchema = z.object({
   WEBHOOK_TIMEOUT_MS: z.coerce.number().min(1000).max(60000).default(10000),
   MAX_RETRY_ATTEMPTS: z.coerce.number().min(1).default(20),
   MAX_RETRY_DURATION_HOURS: z.coerce.number().min(1).default(48),
+
+  // Cloudflare Access Protection
+  CLOUDFLARE_ACCESS_API_KEY: z.string().default(''),
+  CLOUDFLARE_ACCESS_TEAM_NAME: z.string().default('thedemontuan'),
+  CLOUDFLARE_ACCESS_AUD: z.string().default('546ad6f298f280ba4cc513c26558d7dadc9db37cd37926fc2a6afdcbe626b4e3'),
   
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
 });
