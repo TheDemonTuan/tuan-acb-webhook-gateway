@@ -132,7 +132,7 @@ Hệ thống tích hợp sẵn giao diện Web Quản trị (Dashboard) hiện �
 ### Các tính năng trên giao diện:
 1. **Tổng quan (Overview)**: Trạng thái Server, Uptime, Memory, SQLite WAL, Hàng đợi Delivery và Danh sách các sự kiện tiền vào ACB gần đây.
 2. **Quản lý Webhook (Endpoints)**: Đăng ký Webhook mới với URL HTTPS và Secret Key, Bật/Tắt Endpoint, và gửi **Test Ping** trực tiếp từ trình duyệt.
-3. **Cấu hình Gmail (Client Helper)**: Dán credentials JSON, tạo link đăng nhập Google OAuth, dán mã Authorization Code để tự động lưu Token và kết nối Gmail mà không cần SSH vào VPS.
+3. **Cấu hình Gmail**: Chọn nhập Client ID/Client Secret hoặc dán file JSON từ Google Cloud, sau đó chọn chính xác Gmail nhận mail ACB. Google quay về dashboard để gateway tự lưu token; ô nhập mã chỉ là phương án dự phòng.
 4. **Lịch sử Gửi (Deliveries & Replay)**: Xem chi tiết lỗi các đợt phát Webhook và nút **Replay (Gửi lại)** tiện lợi.
 
 ---
