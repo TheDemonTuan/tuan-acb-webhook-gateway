@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseAcbEmail, parseVnDateTime, maskAccount } from '../../src/bank/acb-parser.js';
-import { validAcbCreditEmail, validAcbDebitEmail, invalidFormatEmail } from '../fixtures/sample-emails.js';
+import { currentAcbCreditEmail, validAcbCreditEmail, validAcbDebitEmail, invalidFormatEmail } from '../fixtures/sample-emails.js';
 
 describe('ACB Parser', () => {
   it('correctly masks account numbers', () => {
@@ -28,6 +28,17 @@ describe('ACB Parser', () => {
       expect(result.transaction.description).toContain('NGUYEN VAN A chuyen tien REF987654');
       expect(result.transaction.rawReference).toBe('987654');
       expect(result.transaction.fingerprint).toHaveLength(64);
+    }
+  });
+
+  it('parses the current ACB balance-change template without using the balance or date-only timestamp', () => {
+    const result = parseAcbEmail(currentAcbCreditEmail.subject, currentAcbCreditEmail.bodyText);
+    expect(result).toMatchObject({ success: true, status: 'ACCEPTED' });
+    if (result.success && result.status === 'ACCEPTED') {
+      expect(result.transaction.amount).toBe('50000');
+      expect(result.transaction.accountMasked).toBe('404***827');
+      expect(result.transaction.transactionAt).toBe('2026-09-09T19:03:14.000Z');
+      expect(result.transaction.description).toContain('RUT TIEN TU VI MOMO');
     }
   });
 

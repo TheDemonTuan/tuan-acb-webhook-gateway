@@ -94,11 +94,15 @@ export function parseAcbEmail(
   const combined = `${subject}\n${bodyText}`;
 
   // 1. Check if this is an ACB transaction notification
-  const isAcbAlert = 
+  const isAcbAlert =
     /biến động số dư/i.test(combined) ||
     /bien dong so du/i.test(combined) ||
+    /thay đổi số dư/i.test(combined) ||
+    /thay doi so du/i.test(combined) ||
     /báo có/i.test(combined) ||
     /bao co/i.test(combined) ||
+    /ghi có/i.test(combined) ||
+    /ghi co/i.test(combined) ||
     /giao dịch/i.test(combined) ||
     /giao dich/i.test(combined);
 
@@ -119,20 +123,17 @@ export function parseAcbEmail(
     direction = 'CREDIT';
   }
 
-  // 3. Extract Amount
-  // Matches e.g.: "Số tiền giao dịch: +500,000 VND" or "Số tiền: 500.000 đ"
-  const amountRegex = /(?:Số tiền(?: giao dịch)?|Biến động|So tien|Giao dich)[^\r\n\d+\-]*([+\-]?[ ]*[\d,.]+)[ ]*(?:VND|VNĐ|đ|d)?/i;
-  const amountMatch = combined.match(amountRegex);
+  // 3. Extract Amount. Prefer the transaction sentence over the account balance.
+  const transactionAmountMatch = combined.match(/Giao[^\r\n]{0,120}?([+\-]\s*[\d,.]+)\s*VND\b/i);
+  const amountRegex = /(?:So\s*tien|Giao\s*dich)[^\r\n\d+\-]*([+\-]?\s*[\d,.]+)\s*VND\b/i;
+  const amountMatch = transactionAmountMatch || combined.match(amountRegex);
 
   let rawAmountStr = '';
   if (amountMatch) {
     rawAmountStr = amountMatch[1].trim();
   } else {
-    // Fallback look for "+ 500,000 VND" or "- 50,000 VND"
-    const standaloneAmountMatch = combined.match(/([+\-][ ]*[\d,.]+)[ ]*(?:VND|VNĐ|đ|d)\b/i);
-    if (standaloneAmountMatch) {
-      rawAmountStr = standaloneAmountMatch[1].trim();
-    }
+    const standaloneAmountMatch = combined.match(/([+\-]\s*[\d,.]+)\s*(?:VND|VNĐ|đ|d)\b/i);
+    if (standaloneAmountMatch) rawAmountStr = standaloneAmountMatch[1].trim();
   }
 
   if (!rawAmountStr) {
@@ -165,8 +166,10 @@ export function parseAcbEmail(
     };
   }
 
-  // Clean amount: remove +, -, commas, dots, spaces
-  const cleanAmountDigits = rawAmountStr.replace(/[+\-\s,.]/g, '');
+  // ACB's current template formats VND with two decimal places (for example 50,000.00).
+  // Strip only a terminal .00 or ,00 before removing thousands separators.
+  const amountWithoutDecimals = rawAmountStr.replace(/([.,]00)\s*$/, '');
+  const cleanAmountDigits = amountWithoutDecimals.replace(/[+\-\s,.]/g, '');
   if (!/^[1-9]\d*$/.test(cleanAmountDigits)) {
     return {
       success: false,
@@ -176,18 +179,20 @@ export function parseAcbEmail(
   }
 
   // 4. Extract Account Number (requires 4 to 24 numeric/masked digits to avoid matching words like "ACB")
-  const accountRegex = /(?:Số tài khoản|Tài khoản|Tai khoan|So tai khoan)[^\r\n0-9*]*([0-9*]{4,24})/i;
+  const accountRegex = /(?:t\u00e0i\s*kho\u1ea3n|tai\s*khoan)[^\r\n0-9*]*([0-9*]{4,24})/i;
   const accountMatch = combined.match(accountRegex);
   const rawAccount = accountMatch ? accountMatch[1].trim() : 'UNKNOWN';
   const accountMasked = maskAccount(rawAccount);
 
-  // 5. Extract Transaction Date & Time
-  // Explicit format: DD/MM/YYYY HH:mm:ss or DD-MM-YYYY HH:mm:ss
-  const explicitDateRegex = /(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4}(?:[ ]+\d{1,2}:\d{2}(?::\d{2})?)?)/;
+  // 5. Extract Transaction Date & Time. Current ACB mails put the timestamp in the transaction content as DDMMYYYY HH:mm:ss.
+  const compactTimestampMatch = combined.match(/\b(\d{2})(\d{2})(\d{4})\s+(\d{1,2}:\d{2}(?::\d{2})?)\b/);
+  const explicitDateRegex = /(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?)/;
   const dateMatch = combined.match(explicitDateRegex);
 
   let transactionAtIso: string | null = null;
-  if (dateMatch) {
+  if (compactTimestampMatch) {
+    transactionAtIso = parseVnDateTime(`${compactTimestampMatch[1]}/${compactTimestampMatch[2]}/${compactTimestampMatch[3]} ${compactTimestampMatch[4]}`);
+  } else if (dateMatch) {
     transactionAtIso = parseVnDateTime(dateMatch[1].trim());
   }
 
@@ -207,7 +212,7 @@ export function parseAcbEmail(
   }
 
   // 6. Extract Description / Content
-  const descRegex = /(?:Nội dung(?: GD)?|Diễn giải|Noi dung|Lý do)[^\r\n:]*:?[ ]*([^\r\n]+)/i;
+  const descRegex = /(?:N\u1ed9i\s*dung(?:\s*giao\s*d\u1ecbch)?|Noi\s*dung(?:\s*giao\s*dich)?|Dien\s*giai|Ly\s*do)[^\r\n:]*:\s*([^\r\n]+)/i;
   const descMatch = combined.match(descRegex);
   const description = descMatch ? normalizeText(descMatch[1]) : '';
 

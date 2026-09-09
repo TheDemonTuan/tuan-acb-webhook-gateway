@@ -28,6 +28,20 @@ Cảm ơn Quý khách đã sử dụng dịch vụ của ACB.
 `,
 };
 
+export const currentAcbCreditEmail = {
+  subject: 'Thông báo thay đổi số dư tài khoản ACB',
+  bodyText: `
+Kính gửi Quý khách hàng.
+
+ACB trân trọng thông báo tài khoản 40478827 của Quý khách đã thay đổi số dư như sau:
+Số dư mới của tài khoản trên là: 50,000.00 VND tính đến 10/09/2026.
+Giao dịch mới nhất:Ghi có +50,000.00 VND.
+Nội dung giao dịch: RUT TIEN TU VI MOMO 0844343536 CASHOUT 0844343536 146081426274 - 10092026 02:03:14 426274.
+
+Cảm ơn Quý khách hàng đã sử dụng Sản phẩm/ Dịch vụ của ACB.
+`,
+};
+
 export const invalidFormatEmail = {
   subject: 'Khuyến mãi đặc biệt từ ACB mừng sinh nhật',
   bodyText: `
