@@ -29,10 +29,14 @@ describe('Dashboard Web UI & Management API', () => {
 
     authenticateRequest = vi.spyOn(auth, 'authenticateRequest').mockImplementation(
       async (req: FastifyRequest, _reply: FastifyReply) => {
-        if (req.url.split('?')[0] === '/health' || req.url.split('?')[0] === '/live' || req.url.split('?')[0] === '/ready') {
+        if (['/health', '/live', '/ready', '/metrics'].includes(req.url.split('?')[0])) {
           return true;
         }
-        return req.headers['cf-access-jwt-assertion'] === 'verified-cloudflare-access-jwt';
+        if (req.headers['cf-access-jwt-assertion'] === 'verified-cloudflare-access-jwt') {
+          return true;
+        }
+        _reply.status(401).send({ error: 'Cloudflare Access authentication is required.' });
+        return false;
       }
     );
     vi.spyOn(ssrfGuard, 'validateWebhookUrl').mockResolvedValue({

@@ -41,7 +41,7 @@ export async function authenticateRequest(
   config: Config
 ): Promise<boolean> {
   const path = req.url.split('?')[0];
-  if (path === '/health' || path === '/live' || path === '/ready') {
+  if (path === '/health' || path === '/live' || path === '/ready' || path === '/metrics') {
     return true;
   }
 

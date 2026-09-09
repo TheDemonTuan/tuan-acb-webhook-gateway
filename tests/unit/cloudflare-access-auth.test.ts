@@ -1,12 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const jwtVerify = vi.fn();
-const createRemoteJWKSet = vi.fn(() => 'cloudflare-jwks');
-
-vi.mock('jose', () => ({
-  createRemoteJWKSet,
-  jwtVerify,
+const jose = vi.hoisted(() => ({
+  jwtVerify: vi.fn(),
+  createRemoteJWKSet: vi.fn(() => 'cloudflare-jwks'),
 }));
+
+vi.mock('jose', () => jose);
 
 import { authenticateRequest } from '../../src/http/auth.js';
 import type { Config } from '../../src/config.js';
@@ -34,16 +33,16 @@ describe('Cloudflare Access origin authentication', () => {
   it('allows local readiness probes without an assertion', async () => {
     const res = reply();
     await expect(authenticateRequest(request('/ready'), res, config)).resolves.toBe(true);
-    expect(jwtVerify).not.toHaveBeenCalled();
+    expect(jose.jwtVerify).not.toHaveBeenCalled();
   });
 
   it('validates the Cloudflare assertion signature, issuer, and audience', async () => {
-    jwtVerify.mockResolvedValueOnce({ payload: { email: 'admin@example.com' } });
+    jose.jwtVerify.mockResolvedValueOnce({ payload: { email: 'admin@example.com' } });
     const req = request('/api/status', { 'cf-access-jwt-assertion': 'signed-assertion' });
     const res = reply();
 
     await expect(authenticateRequest(req, res, config)).resolves.toBe(true);
-    expect(jwtVerify).toHaveBeenCalledWith('signed-assertion', 'cloudflare-jwks', {
+    expect(jose.jwtVerify).toHaveBeenCalledWith('signed-assertion', 'cloudflare-jwks', {
       audience: 'test-audience',
       issuer: 'https://test-team.cloudflareaccess.com',
     });
@@ -52,7 +51,7 @@ describe('Cloudflare Access origin authentication', () => {
   });
 
   it('fails closed for an invalid assertion or a removed API-key header', async () => {
-    jwtVerify.mockRejectedValueOnce(new Error('invalid signature'));
+    jose.jwtVerify.mockRejectedValueOnce(new Error('invalid signature'));
     const res = reply();
 
     await expect(
