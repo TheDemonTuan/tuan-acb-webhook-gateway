@@ -1,0 +1,50 @@
+{
+  "name": "tuan-acb-email-webhook",
+  "version": "1.0.0",
+  "description": "Standalone Bank Event Gateway - ACB Email to Webhook with HMAC signing and durable outbox",
+  "main": "dist/main.js",
+  "type": "module",
+  "bin": {
+    "bank-gateway": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/main.js",
+    "dev": "tsx watch src/main.ts",
+    "cli": "tsx src/cli.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit"
+  },
+  "keywords": [
+    "acb",
+    "banking",
+    "webhook",
+    "gmail",
+    "gateway"
+  ],
+  "author": "TheDemonTuan",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "@google-cloud/pubsub": "^6.0.1",
+    "better-sqlite3": "^13.0.3",
+    "commander": "^15.0.0",
+    "dotenv": "^17.4.2",
+    "fastify": "^5.12.3",
+    "googleapis": "^178.1.1",
+    "mailparser": "^3.9.23",
+    "pino": "^10.3.1",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/mailparser": "^3.4.6",
+    "@types/node": "^26.5.0",
+    "tsx": "^4.23.13",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.0"
+  }
+}

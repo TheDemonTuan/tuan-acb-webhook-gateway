@@ -1,0 +1,53 @@
+name: bank-event-gateway
+
+services:
+  gateway:
+    image: ${IMAGE_REF:-ghcr.io/thedemontuan/tuan-acb-email-webhook:latest}
+    container_name: bank-event-gateway
+    restart: unless-stopped
+    init: true
+
+    # Security hardening
+    read_only: true
+    user: "1000:1000"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64M,mode=1777
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+          pids: 100
+        reservations:
+          memory: 128M
+
+    # Loopback port bind only
+    ports:
+      - "127.0.0.1:8090:8090"
+
+    volumes:
+      - ./data:/app/data:rw
+      - ./credentials:/app/credentials:ro
+      - ./secrets:/app/secrets:ro
+
+    env_file:
+      - .env.production
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
