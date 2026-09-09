@@ -446,11 +446,22 @@ export function buildServer(
       };
     } else if (body.credentialsJson) {
       try {
-        parsed = JSON.parse(body.credentialsJson);
-        const details = parsed.installed || parsed.web;
+        const uploaded = JSON.parse(body.credentialsJson);
+        const details = uploaded.web || uploaded.installed;
         if (!details || !details.client_id || !details.client_secret) {
-          throw new Error('Thiếu installed/web hoặc client_id/client_secret trong JSON.');
+          throw new Error('Thiếu web/installed hoặc client_id/client_secret trong JSON.');
         }
+
+        // The dashboard always uses a web redirect so the sign-in result returns here automatically.
+        parsed = {
+          web: {
+            client_id: details.client_id,
+            client_secret: details.client_secret,
+            auth_uri: details.auth_uri || 'https://accounts.google.com/o/oauth2/auth',
+            token_uri: details.token_uri || 'https://oauth2.googleapis.com/token',
+            redirect_uris: [defaultCallback],
+          },
+        };
       } catch (err: any) {
         reply.status(400);
         return { error: `JSON không hợp lệ: ${err.message}` };
@@ -492,9 +503,14 @@ export function buildServer(
       const host = (req.headers['x-forwarded-host'] as string) || req.headers.host || req.hostname;
       const defaultCallback = `${proto}://${host}/api/gmail/oauth2callback`;
 
-      const redirectUri = (redirect_uris && redirect_uris[0] && !redirect_uris[0].includes('oob'))
-        ? redirect_uris[0]
-        : defaultCallback;
+      const redirectUri = defaultCallback;
+      if (!redirect_uris?.includes(redirectUri)) {
+        reply.status(400);
+        return {
+          error: `Google OAuth Client chưa cho phép callback ${redirectUri}. Hãy lưu lại Bước 1 hoặc thêm chính xác URI này vào Google Cloud Console.`,
+          redirectUri,
+        };
+      }
 
       const oAuth2Client = new google.auth.OAuth2(client_id, client_secret, redirectUri);
       const authUrl = oAuth2Client.generateAuthUrl({
@@ -534,9 +550,10 @@ export function buildServer(
       const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
       const host = (req.headers['x-forwarded-host'] as string) || req.headers.host || req.hostname;
       const defaultCallback = `${proto}://${host}/api/gmail/oauth2callback`;
-      const redirectUri = (clientDetails.redirect_uris && clientDetails.redirect_uris[0] && !clientDetails.redirect_uris[0].includes('oob'))
-        ? clientDetails.redirect_uris[0]
-        : defaultCallback;
+      const redirectUri = defaultCallback;
+      if (!clientDetails.redirect_uris?.includes(redirectUri)) {
+        return reply.redirect(`/?gmail_auth=error&message=${encodeURIComponent(`Google OAuth Client chưa cho phép callback ${redirectUri}`)}`);
+      }
 
       const oAuth2Client = new google.auth.OAuth2(
         clientDetails.client_id,
@@ -588,9 +605,10 @@ export function buildServer(
       const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
       const host = (req.headers['x-forwarded-host'] as string) || req.headers.host || req.hostname;
       const defaultCallback = `${proto}://${host}/api/gmail/oauth2callback`;
-      const redirectUri = (clientDetails.redirect_uris && clientDetails.redirect_uris[0] && !clientDetails.redirect_uris[0].includes('oob'))
-        ? clientDetails.redirect_uris[0]
-        : defaultCallback;
+      const redirectUri = defaultCallback;
+      if (!clientDetails.redirect_uris?.includes(redirectUri)) {
+        return reply.redirect(`/?gmail_auth=error&message=${encodeURIComponent(`Google OAuth Client chưa cho phép callback ${redirectUri}`)}`);
+      }
 
       const oAuth2Client = new google.auth.OAuth2(
         clientDetails.client_id,
