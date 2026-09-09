@@ -462,8 +462,14 @@ export function buildServer(
     const browserNonce = /(?:^|;\s*)gmail_oauth_nonce=([^;]+)/.exec(cookieHeader)?.[1];
     reply.header('Cache-Control', 'no-store').header('Referrer-Policy', 'no-referrer');
     reply.header('Set-Cookie', 'gmail_oauth_nonce=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
-    if (query.error || !query.code || !query.state || !browserNonce || !services.oauthService) {
-      return reply.redirect('/?gmail_auth=error&message=Google%20OAuth%20was%20cancelled%20or%20expired');
+    if (query.error) {
+      logger.warn({ oauthError: query.error }, 'Google OAuth consent was not completed');
+      return reply.redirect(`/?gmail_auth=error&message=${encodeURIComponent(`Google returned ${query.error}`)}`);
+    }
+    if (!query.code || !query.state || !browserNonce || !services.oauthService) {
+      const reason = !browserNonce ? 'OAuth session cookie is missing or expired. Start again from the dashboard.' : 'OAuth callback is missing required parameters.';
+      logger.warn({ hasCode: Boolean(query.code), hasState: Boolean(query.state), hasBrowserNonce: Boolean(browserNonce) }, 'Gmail OAuth callback validation failed');
+      return reply.redirect(`/?gmail_auth=error&message=${encodeURIComponent(reason)}`);
     }
     try {
       await services.oauthService.complete(query.code, query.state, decodeURIComponent(browserNonce));
@@ -485,7 +491,8 @@ export function buildServer(
       return reply.redirect('/?gmail_auth=success');
     } catch (err: any) {
       logger.warn({ err: err.message }, 'Gmail OAuth callback failed');
-      return reply.redirect('/?gmail_auth=error&message=Unable%20to%20connect%20Gmail');
+      const message = err instanceof Error && err.message ? err.message : 'Unable to connect Gmail';
+      return reply.redirect(`/?gmail_auth=error&message=${encodeURIComponent(message.slice(0, 300))}`);
     }
   });
 
