@@ -122,7 +122,10 @@ export default function App() {
   };
 
   const apiFetch = useCallback(async (url: string, options: RequestInit = {}) => {
-    const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+    const headers = { ...(options.headers || {}) } as Record<string, string>;
+    if (options.body !== undefined && !headers['Content-Type']) {
+      headers['Content-Type'] = 'application/json';
+    }
     const res = await fetch(url, { ...options, headers });
     if (res.status === 401) {
       showToast('Phiên Cloudflare Access đã hết hạn. Hãy đăng nhập lại qua Cloudflare Access.', true);
@@ -328,11 +331,11 @@ export default function App() {
   };
 
   const handleDisconnectGmail = async () => {
-    if (!window.confirm('Ng?t k?t n?i Gmail? �?ng b? email m?i s? d?ng cho t?i khi k?t n?i l?i.')) return;
+    if (!window.confirm('Ngắt kết nối Gmail? Đồng bộ email mới sẽ dừng cho tới khi kết nối lại.')) return;
     try {
       const res = await apiFetch('/api/gmail/disconnect', { method: 'POST' });
-      if (!res.ok) throw new Error((await res.json()).error || 'Kh�ng th? ng?t k?t n?i Gmail');
-      showToast('�� ng?t k?t n?i Gmail.');
+      if (!res.ok) throw new Error((await res.json()).error || 'Không thể ngắt kết nối Gmail');
+      showToast('Đã ngắt kết nối Gmail.');
       loadStatus();
     } catch (err: any) {
       showToast(err.message, true);
