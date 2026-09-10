@@ -57,7 +57,9 @@ services:
     init: true
     user: "1000:1000"
     cap_drop: [ALL]
-    security_opt: ["no-new-privileges:true"]
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:./seccomp-auth-browser.json
     environment:
       HOME: /tmp
     expose: ["8181", "6080"]

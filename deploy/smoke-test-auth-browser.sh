@@ -10,16 +10,18 @@ AUTH_BROWSER_PORT="${AUTH_BROWSER_PORT:-8182}"
 AUTH_BROWSER_VNC_PORT="${AUTH_BROWSER_VNC_PORT:-6082}"
 host="127.0.0.1"
 
-# Environment check: if Docker is not available, explicitly report unrun check and exit cleanly
 if ! command -v docker >/dev/null 2>&1; then
-  echo "[UNRUN] Docker CLI is not installed or not in PATH on this host. Skipping isolated Docker smoke test."
-  exit 0
+  echo "Error: Docker CLI is required for the auth-browser smoke test." >&2
+  exit 1
 fi
 
 if ! docker info >/dev/null 2>&1; then
-  echo "[UNRUN] Docker daemon is not accessible on this host. Skipping isolated Docker smoke test."
-  exit 0
+  echo "Error: Docker daemon is required for the auth-browser smoke test." >&2
+  exit 1
 fi
+
+seccomp_profile="$script_dir/seccomp-auth-browser.json"
+[[ -f "$seccomp_profile" ]] || { echo "Error: Missing Chromium seccomp profile: $seccomp_profile" >&2; exit 1; }
 
 cleanup() {
   local exit_code=$?
@@ -49,6 +51,7 @@ docker run -d \
   --user "1000:1000" \
   --cap-drop ALL \
   --security-opt "no-new-privileges:true" \
+  --security-opt "seccomp=$seccomp_profile" \
   -e HOME=/tmp \
   --tmpfs /tmp:rw,nosuid,nodev,size=1g,mode=1777 \
   --cpus "1.5" \
@@ -142,8 +145,8 @@ fi
 echo "POST /sessions created session: $attempt_id (status: AWAITING_USER_LOGIN)."
 
 # Step 3: Verify POST session survives observer cycles >= ~10s
-echo "Verifying session survives observer cycles for >= 10s (sampling every 2s)..."
-duration=12
+echo "Verifying session survives observer cycles for at least 60s (sampling every 2s)..."
+duration=60
 start_time="$(date +%s)"
 cycle=0
 

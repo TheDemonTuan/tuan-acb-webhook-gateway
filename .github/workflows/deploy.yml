@@ -56,8 +56,6 @@ jobs:
           push: false
           tags: tuan-bank-gateway-auth-browser:deploy-smoke
           load: true
-      - name: Inspect auth-browser production image
-        run: docker image inspect tuan-bank-gateway-auth-browser:deploy-smoke >/dev/null
 
   image:
     name: Build GHCR image
@@ -113,6 +111,10 @@ jobs:
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+      - name: Smoke test published auth-browser image
+        env:
+          AUTH_BROWSER_IMAGE: ${{ steps.meta.outputs.browser_image }}@${{ steps.build_browser.outputs.digest }}
+        run: bash deploy/smoke-test-auth-browser.sh "$AUTH_BROWSER_IMAGE"
 
   deploy:
     name: Deploy to VPS
@@ -143,7 +145,7 @@ jobs:
           ssh -i ~/.ssh/id_ed25519 -p "$VPS_PORT" -o BatchMode=yes \
             "$VPS_USER@$VPS_HOST" "mkdir -p '$DEPLOY_PATH/data' '$DEPLOY_PATH/secrets'"
           scp -i ~/.ssh/id_ed25519 -P "$VPS_PORT" -o BatchMode=yes \
-            deploy/compose.prod.yaml deploy/deploy.sh deploy/rollback.sh \
+            deploy/compose.prod.yaml deploy/seccomp-auth-browser.json deploy/deploy.sh deploy/rollback.sh \
             deploy/verify-deployment.sh deploy/backup.sh deploy/README.md \
             "$VPS_USER@$VPS_HOST:$DEPLOY_PATH/"
           ssh -i ~/.ssh/id_ed25519 -p "$VPS_PORT" -o BatchMode=yes \
