@@ -45,8 +45,18 @@ func New(cfg config.Config, store *storage.Store) *Server {
 		api.Get("/csrf", auth.CSRF)
 		api.With(s.auth.Require(auth.Owner, auth.Operator, auth.Viewer)).Get("/connection", s.connection)
 		api.With(s.auth.Require(auth.Owner, auth.Operator, auth.Viewer)).Get("/webhooks", s.endpoints)
+		api.With(s.auth.Require(auth.Owner, auth.Operator, auth.Viewer)).Get("/transactions", s.transactions)
+		api.With(s.auth.Require(auth.Owner, auth.Operator, auth.Viewer)).Get("/deliveries", s.deliveries)
+		api.With(s.auth.Require(auth.Owner, auth.Operator, auth.Viewer)).Get("/poll-runs", s.pollRuns)
+		api.With(s.auth.Require(auth.Owner, auth.Operator, auth.Viewer)).Get("/audit", s.auditLogs)
+
 		api.With(s.auth.Require(auth.Owner)).Post("/connection/configure", s.configure)
 		api.With(s.auth.Require(auth.Owner, auth.Operator)).Post("/connection/{action:pause|resume|sync}", s.connectionAction)
+		api.With(s.auth.Require(auth.Owner)).Post("/connection/auth/start", s.startAuth)
+		api.With(s.auth.Require(auth.Owner)).Post("/connection/auth/cancel", s.cancelAuth)
+		api.With(s.auth.Require(auth.Owner)).Post("/connection/auth/complete", s.completeAuth)
+		api.With(s.auth.Require(auth.Owner)).Post("/connection/auth/simulate", s.simulateAuth)
+
 		api.With(s.auth.Require(auth.Owner)).Post("/webhooks", s.createEndpoint)
 		api.With(s.auth.Require(auth.Owner)).Post("/webhooks/{id}/{action:enable|disable}", s.endpointAction)
 	})
@@ -127,6 +137,102 @@ func (s *Server) connectionAction(w http.ResponseWriter, r *http.Request) {
 	audit(s.store, r, "connection."+chi.URLParam(r, "action"), c.ID)
 	writeJSON(w, http.StatusAccepted, c)
 }
+func (s *Server) startAuth(w http.ResponseWriter, r *http.Request) {
+	identity, _ := auth.FromContext(r.Context())
+	attempt, err := s.store.StartAuthAttempt(r.Context(), identity.Subject, 15*time.Minute)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	audit(s.store, r, "auth.start", attempt.ID)
+	writeJSON(w, http.StatusCreated, attempt)
+}
+func (s *Server) cancelAuth(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		AttemptID string `json:"attemptId"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	if in.AttemptID == "" {
+		writeError(w, http.StatusBadRequest, "attemptId is required")
+		return
+	}
+	err := s.store.FinishAuthAttempt(r.Context(), in.AttemptID, "CANCELLED")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	audit(s.store, r, "auth.cancel", in.AttemptID)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "CANCELLED"})
+}
+func (s *Server) completeAuth(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		AttemptID string `json:"attemptId"`
+		Session   string `json:"session"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	if in.AttemptID == "" || in.Session == "" {
+		writeError(w, http.StatusBadRequest, "attemptId and session are required")
+		return
+	}
+	conn, err := s.store.CompleteAuthSession(r.Context(), in.AttemptID, []byte(in.Session))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	audit(s.store, r, "auth.complete", conn.ID)
+	writeJSON(w, http.StatusOK, conn)
+}
+func (s *Server) simulateAuth(w http.ResponseWriter, r *http.Request) {
+	identity, _ := auth.FromContext(r.Context())
+	attempt, err := s.store.StartAuthAttempt(r.Context(), identity.Subject, 15*time.Minute)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	conn, err := s.store.CompleteAuthSession(r.Context(), attempt.ID, []byte("simulated_auth_token"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	audit(s.store, r, "auth.simulate", conn.ID)
+	writeJSON(w, http.StatusOK, conn)
+}
+func (s *Server) transactions(w http.ResponseWriter, r *http.Request) {
+	items, err := s.store.ListTransactions(r.Context(), 50)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+func (s *Server) deliveries(w http.ResponseWriter, r *http.Request) {
+	items, err := s.store.ListDeliveries(r.Context(), 50)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+func (s *Server) pollRuns(w http.ResponseWriter, r *http.Request) {
+	items, err := s.store.ListPollRuns(r.Context(), 50)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+func (s *Server) auditLogs(w http.ResponseWriter, r *http.Request) {
+	items, err := s.store.ListAuditLogs(r.Context(), 50)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
 func (s *Server) endpoints(w http.ResponseWriter, r *http.Request) {
 	items, err := s.store.Endpoints(r.Context())
 	if err != nil {
@@ -147,7 +253,7 @@ func (s *Server) createEndpoint(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	e, err := s.store.CreateEndpoint(r.Context(), in.Name, in.URL)
+	e, err := s.store.CreateEndpointWithSecret(r.Context(), in.Name, in.URL)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

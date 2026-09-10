@@ -15,10 +15,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/thedemontuan/tuan-bank-gateway/internal/acb"
 	"github.com/thedemontuan/tuan-bank-gateway/internal/config"
 	"github.com/thedemontuan/tuan-bank-gateway/internal/httpapi"
 	"github.com/thedemontuan/tuan-bank-gateway/internal/lock"
+	"github.com/thedemontuan/tuan-bank-gateway/internal/monitor"
 	"github.com/thedemontuan/tuan-bank-gateway/internal/storage"
+	"github.com/thedemontuan/tuan-bank-gateway/internal/webhook"
 )
 
 func main() {
@@ -65,6 +68,13 @@ func main() {
 		os.Exit(1)
 	}
 	defer store.Close()
+
+	dispatcher := webhook.NewDispatcher(store, nil)
+	go dispatcher.Run(ctx)
+
+	acbClient, _ := acb.NewClient("https://online.acb.com.vn", nil)
+	bankMonitor := monitor.New(store, acbClient, cfg.PollInterval)
+	go bankMonitor.Run(ctx)
 
 	primaryAddr := cfg.Address
 	addresses := []string{primaryAddr}

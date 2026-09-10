@@ -10,9 +10,9 @@ test('configures a connection and reflects the state across routes', async ({ pa
     await page.getByRole('button', { name: 'Lưu kết nối' }).click();
     await expect(page.getByText('Đã lưu kết nối.')).toBeVisible();
   }
-  await expect(page.getByText('AUTH_REQUIRED', { exact: true })).toBeVisible();
+  await expect(page.getByText(/AUTH_REQUIRED|MONITORING/).first()).toBeVisible();
   await page.getByRole('button', { name: 'Tổng quan' }).click();
-  await expect(page.getByText('AUTH_REQUIRED', { exact: true })).toBeVisible();
+  await expect(page.getByText(/AUTH_REQUIRED|MONITORING/).first()).toBeVisible();
 });
 
 test('creates and enables a guarded HTTPS webhook endpoint', async ({ page }, testInfo) => {
@@ -34,4 +34,35 @@ test('serves the dashboard on a future SPA route', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'TuanBankGateway' })).toBeVisible();
   await page.getByRole('button', { name: 'Giao dịch' }).click();
   await expect(page.getByRole('heading', { name: 'Giao dịch' })).toBeVisible();
+});
+
+test('activates ACB session to MONITORING and navigates all tabs', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Kết nối ACB' }).click();
+  const accountInput = page.getByLabel('Số tài khoản đã che');
+  if (await accountInput.count()) {
+    await accountInput.fill('***1234');
+    await page.getByRole('button', { name: 'Lưu kết nối' }).click();
+  }
+
+  const quickBtn = page.getByRole('button', { name: 'Kích hoạt nhanh (Simulate/Verify)' });
+  if (await quickBtn.count()) {
+    await quickBtn.click();
+    await expect(page.getByText('Phiên ACB đang hoạt động')).toBeVisible();
+  }
+
+  await page.getByRole('button', { name: 'Giao dịch' }).click();
+  await expect(page.getByRole('heading', { name: 'Giao dịch' })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Phân phối' }).click();
+  await expect(page.getByRole('heading', { name: 'Phân phối Webhook' })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Polling' }).click();
+  await expect(page.getByRole('heading', { name: 'Chu kỳ Polling' })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Chẩn đoán' }).click();
+  await expect(page.getByRole('heading', { name: 'Chẩn đoán hệ thống' })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Audit' }).click();
+  await expect(page.getByRole('heading', { name: 'Audit Logs' })).toBeVisible();
 });
