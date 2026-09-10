@@ -14,6 +14,7 @@ services:
       APP_ENV: production
       PORT: ${PORT:-8090}
       LISTEN_ADDR: 0.0.0.0:8090
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-https://bank.tuannguyenviet.site}
       DATA_DIR: /data
       DATABASE_PATH: /data/gateway.db
       TZ: Asia/Ho_Chi_Minh

@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"os"
 	"strings"
 
 	"github.com/thedemontuan/tuan-bank-gateway/internal/config"
@@ -161,7 +163,7 @@ func CSRF(w http.ResponseWriter, r *http.Request) {
 	token := make([]byte, 32)
 	_, _ = rand.Read(token)
 	encoded := base64.RawURLEncoding.EncodeToString(token)
-	http.SetCookie(w, &http.Cookie{Name: "tbg_csrf", Value: encoded, Path: "/api/v1", Secure: r.TLS != nil, SameSite: http.SameSiteStrictMode, MaxAge: 3600})
+	http.SetCookie(w, &http.Cookie{Name: "tbg_csrf", Value: encoded, Path: "/api/v1", Secure: publicOrigin(r).Scheme == "https", SameSite: http.SameSiteStrictMode, MaxAge: 3600})
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"token":"` + encoded + `"}`))
@@ -178,9 +180,20 @@ func sameOrigin(r *http.Request) bool {
 	if origin == "" {
 		return false
 	}
+	return strings.TrimSuffix(origin, "/") == publicOrigin(r).String()
+}
+
+// publicOrigin is configured at deployment because Cloudflare terminates TLS
+// before proxying plain HTTP to the gateway.
+func publicOrigin(r *http.Request) *url.URL {
+	if configured := strings.TrimSpace(os.Getenv("PUBLIC_ORIGIN")); configured != "" {
+		if parsed, err := url.Parse(configured); err == nil && parsed.Scheme != "" && parsed.Host != "" {
+			return &url.URL{Scheme: parsed.Scheme, Host: parsed.Host}
+		}
+	}
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
 	}
-	return strings.TrimSuffix(origin, "/") == scheme+"://"+r.Host
+	return &url.URL{Scheme: scheme, Host: r.Host}
 }

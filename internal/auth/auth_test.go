@@ -87,6 +87,30 @@ func TestProductionDoesNotGrantRoleFromJWTSubject(t *testing.T) {
 	}
 }
 
+func TestCSRFBehindHTTPSProxyUsesPublicOrigin(t *testing.T) {
+	t.Setenv("PUBLIC_ORIGIN", "https://bank.tuannguyenviet.site")
+	m := New(config.Config{DevelopmentSubject: "alice"}, nil)
+	h := m.Require(Owner)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+
+	csrfGet := httptest.NewRequest(http.MethodGet, "http://gateway:8090/api/v1/csrf", nil)
+	csrfRec := httptest.NewRecorder()
+	CSRF(csrfRec, csrfGet)
+	cookie := csrfRec.Result().Cookies()[0]
+	if !cookie.Secure {
+		t.Fatal("CSRF cookie must be secure for configured HTTPS public origin")
+	}
+
+	post := httptest.NewRequest(http.MethodPost, "http://gateway:8090/api/v1/connection/configure", nil)
+	post.Header.Set("Origin", "https://bank.tuannguyenviet.site")
+	post.Header.Set("X-CSRF-Token", cookie.Value)
+	post.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, post)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("got %d", rec.Code)
+	}
+}
+
 func TestDevelopmentRejectsBadCSRF(t *testing.T) {
 	m := New(config.Config{DevelopmentSubject: "alice"}, nil)
 	h := m.Require(Owner)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
