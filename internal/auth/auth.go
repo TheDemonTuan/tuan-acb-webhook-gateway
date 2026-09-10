@@ -21,6 +21,7 @@ const (
 )
 
 type Identity struct {
+	Email   string `json:"email,omitempty"`
 	Subject string `json:"subject"`
 	Role    Role   `json:"role"`
 }
@@ -32,12 +33,12 @@ func FromContext(ctx context.Context) (Identity, bool) {
 }
 
 type Verifier interface {
-	Verify(context.Context, string) (string, error)
+	Verify(context.Context, string) (Identity, error)
 }
 type DevelopmentVerifier struct{ Subject string }
 
-func (v DevelopmentVerifier) Verify(_ context.Context, _ string) (string, error) {
-	return v.Subject, nil
+func (v DevelopmentVerifier) Verify(_ context.Context, _ string) (Identity, error) {
+	return Identity{Subject: v.Subject}, nil
 }
 
 type Middleware struct {
@@ -77,15 +78,19 @@ func (m *Middleware) identity(r *http.Request) (Identity, error) {
 	if m.verifier == nil {
 		return Identity{}, errors.New("authentication verifier unavailable")
 	}
-	subject, err := m.verifier.Verify(r.Context(), r.Header.Get("Cf-Access-Jwt-Assertion"))
+	identity, err := m.verifier.Verify(r.Context(), r.Header.Get("Cf-Access-Jwt-Assertion"))
 	if err != nil {
 		return Identity{}, err
 	}
-	role, ok := m.role(subject)
+	role, ok := m.role(identity.Subject)
+	if !ok && identity.Email != "" {
+		role, ok = m.role(identity.Email)
+	}
 	if !ok {
 		return Identity{}, errors.New("subject is not allowed")
 	}
-	return Identity{Subject: subject, Role: role}, nil
+	identity.Role = role
+	return identity, nil
 }
 func (m *Middleware) role(subject string) (Role, bool) {
 	if !m.cfg.Production && subject == m.cfg.DevelopmentSubject {

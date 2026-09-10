@@ -27,21 +27,21 @@ type CloudflareVerifier struct {
 func NewCloudflareVerifier(cfg config.Config) *CloudflareVerifier {
 	return &CloudflareVerifier{issuer: cfg.CloudflareIssuer, audience: cfg.CloudflareAudience, jwksURL: cfg.CloudflareJWKSURL, client: &http.Client{Timeout: 5 * time.Second}}
 }
-func (v *CloudflareVerifier) Verify(ctx context.Context, raw string) (string, error) {
+func (v *CloudflareVerifier) Verify(ctx context.Context, raw string) (Identity, error) {
 	if raw == "" {
-		return "", errors.New("missing Cloudflare Access JWT")
+		return Identity{}, errors.New("missing Cloudflare Access JWT")
 	}
 	signed, err := jwt.ParseSigned(raw, []jose.SignatureAlgorithm{jose.RS256, jose.ES256})
 	if err != nil {
-		return "", errors.New("invalid JWT")
+		return Identity{}, errors.New("invalid JWT")
 	}
 	headers := signed.Headers
 	if len(headers) != 1 || headers[0].KeyID == "" {
-		return "", errors.New("JWT missing key id")
+		return Identity{}, errors.New("JWT missing key id")
 	}
 	keys, err := v.keyset(ctx)
 	if err != nil {
-		return "", err
+		return Identity{}, err
 	}
 	var claims jwt.Claims
 	var private struct {
@@ -52,7 +52,10 @@ func (v *CloudflareVerifier) Verify(ctx context.Context, raw string) (string, er
 		if err := signed.Claims(key.Key, &claims, &private); err == nil {
 			now := time.Now()
 			if err = claims.ValidateWithLeeway(jwt.Expected{Issuer: v.issuer, AnyAudience: jwt.Audience{v.audience}, Time: now}, 30*time.Second); err != nil {
-				return "", fmt.Errorf("JWT claims: %w", err)
+				return Identity{}, fmt.Errorf("JWT claims: %w", err)
+			}
+			if claims.Expiry == nil {
+				return Identity{}, errors.New("JWT missing expiry")
 			}
 			subject := strings.TrimSpace(private.Subject)
 			if subject == "" {
@@ -62,12 +65,12 @@ func (v *CloudflareVerifier) Verify(ctx context.Context, raw string) (string, er
 				subject = strings.TrimSpace(private.Email)
 			}
 			if subject == "" {
-				return "", errors.New("JWT missing subject and email")
+				return Identity{}, errors.New("JWT missing subject and email")
 			}
-			return subject, nil
+			return Identity{Subject: subject, Email: strings.TrimSpace(private.Email)}, nil
 		}
 	}
-	return "", errors.New("JWT signature could not be verified")
+	return Identity{}, errors.New("JWT signature could not be verified")
 }
 func (v *CloudflareVerifier) keyset(ctx context.Context) (jose.JSONWebKeySet, error) {
 	v.mu.Lock()

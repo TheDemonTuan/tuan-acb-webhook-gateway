@@ -8,7 +8,12 @@ type Endpoint = { id: string; name: string; url: string; status: string; revisio
 const nav = ['Tổng quan', 'Kết nối ACB', 'Giao dịch', 'Webhooks', 'Phân phối', 'Polling', 'Chẩn đoán', 'Audit'];
 const api = async <T,>(path: string, init?: RequestInit): Promise<T> => {
   const response = await fetch(`/api/v1${path}`, { credentials: 'same-origin', ...init });
-  if (!response.ok) { const body = await response.json().catch(() => ({ error: response.statusText })); throw new Error(body.error ?? response.statusText); }
+  if (!response.ok) {
+    const text = await response.text();
+    let message = response.statusText || `HTTP ${response.status}`;
+    try { message = JSON.parse(text).error ?? message; } catch { if (text.trim()) message = text.trim(); }
+    throw new Error(message);
+  }
   return response.json() as Promise<T>;
 };
 
@@ -29,13 +34,15 @@ export default function App() {
   const connected = connection?.configured === true;
 
   const load = async () => {
-    try {
-      const [nextStatus, nextConnection, nextEndpoints] = await Promise.all([
-        api<Status>('/status'), api<Connection>('/connection'), api<{ items: Endpoint[] }>('/webhooks'),
-      ]);
-      const token = await api<{ token: string }>('/csrf');
-      setStatus(nextStatus); setConnection(nextConnection); setEndpoints(nextEndpoints.items); setCsrf(token.token);
-    } catch (error) { setNotice({ kind: 'error', text: error instanceof Error ? error.message : 'Không thể tải trạng thái.' }); }
+    const [statusResult, connectionResult, endpointsResult, csrfResult] = await Promise.allSettled([
+      api<Status>('/status'), api<Connection>('/connection'), api<{ items: Endpoint[] }>('/webhooks'), api<{ token: string }>('/csrf'),
+    ]);
+    if (statusResult.status === 'fulfilled') setStatus(statusResult.value);
+    if (connectionResult.status === 'fulfilled') setConnection(connectionResult.value);
+    if (endpointsResult.status === 'fulfilled') setEndpoints(endpointsResult.value.items);
+    if (csrfResult.status === 'fulfilled') setCsrf(csrfResult.value.token);
+    const failed = [statusResult, connectionResult, endpointsResult, csrfResult].find((result) => result.status === 'rejected');
+    if (failed?.status === 'rejected') setNotice({ kind: 'error', text: failed.reason instanceof Error ? failed.reason.message : 'Không thể tải một phần dữ liệu.' });
   };
   useEffect(() => { void load(); const timer = window.setInterval(() => void load(), 15_000); return () => window.clearInterval(timer); }, []);
   const mutate = async (path: string, body?: unknown) => {

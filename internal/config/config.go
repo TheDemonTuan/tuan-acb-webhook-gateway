@@ -72,8 +72,6 @@ func Load() (Config, error) {
 	if len(owners) == 0 {
 		if ownerDefault := os.Getenv("CLOUDFLARE_ACCESS_OWNER_EMAIL"); ownerDefault != "" {
 			owners[ownerDefault] = struct{}{}
-		} else if production {
-			owners["thedemontuan@gmail.com"] = struct{}{}
 		}
 	}
 
@@ -98,6 +96,9 @@ func Load() (Config, error) {
 	if production {
 		if cfg.MasterKeyFile == "" {
 			return Config{}, fmt.Errorf("APP_MASTER_KEY_FILE is required in production")
+		}
+		if len(cfg.Roles.Owners) == 0 {
+			return Config{}, fmt.Errorf("OWNER_SUBJECTS is required in production")
 		}
 		if cfg.CloudflareIssuer == "" || cfg.CloudflareAudience == "" || cfg.CloudflareJWKSURL == "" {
 			return Config{}, fmt.Errorf("Cloudflare Access issuer, audience, and JWKS URL are required in production")
