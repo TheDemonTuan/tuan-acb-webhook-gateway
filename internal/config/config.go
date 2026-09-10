@@ -78,7 +78,7 @@ func Load() (Config, error) {
 	}
 
 	cfg := Config{
-		Address:            value("LISTEN_ADDR", "127.0.0.1:8080"),
+		Address:            value("LISTEN_ADDR", "0.0.0.0:"+value("PORT", "8090")),
 		DatabasePath:       value("DATABASE_PATH", filepath.Join(dataDir, "gateway.db")),
 		MasterKeyFile:      masterKeyFile,
 		Timezone:           loc,

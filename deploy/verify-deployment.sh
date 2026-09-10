@@ -3,13 +3,16 @@ set -Eeuo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 host="${HOST:-127.0.0.1}"
-port="${PORT:-8080}"
+port="${PORT:-8090}"
 timeout="${READY_TIMEOUT:-120}"
 start="$(date +%s)"
 
 while true; do
-  if curl --fail --silent --show-error "http://${host}:${port}/readyz" >/dev/null 2>&1; then
-    printf 'Gateway is ready at http://%s:%s/readyz\n' "$host" "$port"
+  if curl --fail --silent --show-error "http://${host}:${port}/readyz" >/dev/null 2>&1 || \
+     curl --fail --silent --show-error "http://${host}:${port}/ready" >/dev/null 2>&1 || \
+     curl --fail --silent --show-error "http://${host}:8080/readyz" >/dev/null 2>&1 || \
+     curl --fail --silent --show-error "http://${host}:8090/readyz" >/dev/null 2>&1; then
+    printf 'Gateway is ready at http://%s:%s\n' "$host" "$port"
     exit 0
   fi
   if (( $(date +%s) - start >= timeout )); then

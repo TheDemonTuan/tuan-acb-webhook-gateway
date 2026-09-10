@@ -37,7 +37,9 @@ func New(cfg config.Config, store *storage.Store) *Server {
 	r := chi.NewRouter()
 	r.Use(requestID, securityHeaders, recoverer)
 	r.Get("/healthz", s.health)
+	r.Get("/health", s.health)
 	r.Get("/readyz", s.ready)
+	r.Get("/ready", s.ready)
 	r.Route("/api/v1", func(api chi.Router) {
 		api.Get("/status", s.status)
 		api.Get("/csrf", auth.CSRF)

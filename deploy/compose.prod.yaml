@@ -1,9 +1,9 @@
-name: tuan-bank-gateway
+name: bank-event-gateway
 
 services:
   gateway:
     image: ${IMAGE_REF:-ghcr.io/thedemontuan/tuan-acb-webhook-gateway:latest}
-    container_name: tuan-bank-gateway
+    container_name: bank-event-gateway
     restart: unless-stopped
     init: true
     read_only: true
@@ -12,7 +12,8 @@ services:
     security_opt: ["no-new-privileges:true"]
     environment:
       APP_ENV: production
-      LISTEN_ADDR: 0.0.0.0:8080
+      PORT: ${PORT:-8090}
+      LISTEN_ADDR: 0.0.0.0:8090
       DATA_DIR: /data
       DATABASE_PATH: /data/gateway.db
       TZ: Asia/Ho_Chi_Minh
@@ -27,13 +28,13 @@ services:
       CF_ACCESS_JWKS_URL: ${CF_ACCESS_JWKS_URL:-https://${CLOUDFLARE_ACCESS_TEAM_NAME:-thedemontuan}.cloudflareaccess.com/cdn-cgi/access/certs}
       OWNER_SUBJECTS: ${OWNER_SUBJECTS:-${CLOUDFLARE_ACCESS_OWNER_EMAIL:-thedemontuan@gmail.com}}
     ports:
+      - "127.0.0.1:8090:8090"
       - "127.0.0.1:8080:8080"
     volumes:
       - gateway_data:/data:rw
       - ./secrets/app_master_key:/run/secrets/app_master_key:ro
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,size=64m
-    networks: [ingress_private, egress]
     healthcheck:
       test: ["CMD", "/gateway", "--healthcheck"]
       interval: 5s
@@ -49,7 +50,7 @@ services:
 
   cloudflared:
     image: cloudflare/cloudflared:2026.9.0
-    container_name: tuan-bank-gateway-tunnel
+    container_name: bank-gateway-cloudflared
     restart: unless-stopped
     init: true
     read_only: true
@@ -60,7 +61,6 @@ services:
     depends_on:
       gateway:
         condition: service_healthy
-    networks: [ingress_private, egress]
     deploy:
       resources:
         limits:
@@ -70,8 +70,3 @@ services:
 
 volumes:
   gateway_data:
-
-networks:
-  ingress_private:
-    internal: true
-  egress: {}
