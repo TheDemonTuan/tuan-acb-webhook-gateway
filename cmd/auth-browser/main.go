@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/chromedp/cdproto/network"
+	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 	"github.com/thedemontuan/tuan-bank-gateway/internal/authbrowser"
 )
@@ -167,11 +168,29 @@ func (s *server) observeLogin(ctx context.Context, id, debugURL string) {
 		browserCtx, browserCancel := chromedp.NewContext(allocatorCtx)
 		var currentURL string
 		var cookies []*network.Cookie
-		err := chromedp.Run(browserCtx, chromedp.Location(&currentURL), chromedp.ActionFunc(func(runCtx context.Context) error {
-			var cookieErr error
-			cookies, cookieErr = network.GetCookies().WithURLs([]string{acbLoginURL}).Do(runCtx)
-			return cookieErr
+		var targets []*target.Info
+		err := chromedp.Run(browserCtx, chromedp.ActionFunc(func(runCtx context.Context) error {
+			var targetErr error
+			targets, targetErr = target.GetTargets().Do(runCtx)
+			return targetErr
 		}))
+		if err == nil {
+			for _, info := range targets {
+				if info.Type != "page" || !strings.Contains(strings.ToLower(info.URL), "online.acb.com.vn") {
+					continue
+				}
+				pageCtx, pageCancel := chromedp.NewContext(browserCtx, chromedp.WithTargetID(info.TargetID))
+				err = chromedp.Run(pageCtx, chromedp.Location(&currentURL), chromedp.ActionFunc(func(runCtx context.Context) error {
+					var cookieErr error
+					cookies, cookieErr = network.GetCookies().WithURLs([]string{currentURL}).Do(runCtx)
+					return cookieErr
+				}))
+				pageCancel()
+				if err == nil {
+					break
+				}
+			}
+		}
 		browserCancel()
 		cancel()
 		if err != nil || !authenticatedACB(currentURL, cookies) {
@@ -202,7 +221,7 @@ func (s *server) observeLogin(ctx context.Context, id, debugURL string) {
 }
 
 func authenticatedACB(location string, cookies []*network.Cookie) bool {
-	if !strings.Contains(strings.ToLower(location), "online.acb.com.vn") || strings.Contains(strings.ToLower(location), "obkloginop") {
+	if !strings.Contains(strings.ToLower(location), "online.acb.com.vn") || strings.Contains(strings.ToLower(location), "obkloginop") || strings.Contains(strings.ToLower(location), "login") {
 		return false
 	}
 	for _, cookie := range cookies {
