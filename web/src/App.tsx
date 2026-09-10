@@ -465,7 +465,12 @@ export default function App() {
                         <p style={{ margin: '12px 0', fontSize: '0.85rem', color: '#9dabbe' }}>
                           Nhập mật khẩu, OTP và CAPTCHA trực tiếp trong trang ACB. Dashboard không nhận hoặc lưu các giá trị này. Trạng thái: <strong>{authState || 'ĐANG KẾT NỐI'}</strong>.
                         </p>
-                        <iframe title="Đăng nhập ACB" src={activeAttempt.screenURL} style={{ width: '100%', height: 720, border: '1px solid #263750', borderRadius: 8, background: '#fff' }} />
+                        <iframe
+                          title="Đăng nhập ACB"
+                          src={activeAttempt.screenURL}
+                          style={{ width: '100%', height: 750, border: '1px solid #263750', borderRadius: 8, background: '#1a202c' }}
+                          allow="clipboard-read; clipboard-write; fullscreen"
+                        />
                       </div>
                     )}
                   </div>

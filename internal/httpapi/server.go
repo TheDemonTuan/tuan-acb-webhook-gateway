@@ -160,7 +160,7 @@ func (s *Server) startAuth(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "ACB browser is not available")
 		return
 	}
-	session.ScreenURL = "/api/v1/connection/auth/" + attempt.ID + "/screen/vnc.html?autoconnect=true&resize=remote"
+	session.ScreenURL = "/api/v1/connection/auth/" + attempt.ID + "/screen/vnc.html?autoconnect=true&resize=remote&path=api/v1/connection/auth/" + attempt.ID + "/screen/websockify"
 	audit(s.store, r, "auth.start", attempt.ID)
 	writeJSON(w, http.StatusCreated, session)
 }
