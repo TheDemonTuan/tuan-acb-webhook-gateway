@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -29,11 +30,11 @@ func NewCloudflareVerifier(cfg config.Config) *CloudflareVerifier {
 }
 func (v *CloudflareVerifier) Verify(ctx context.Context, raw string) (Identity, error) {
 	if raw == "" {
-		return Identity{}, errors.New("missing Cloudflare Access JWT")
+		return Identity{}, errors.New("missing Cloudflare Access JWT (neither Cf-Access-Jwt-Assertion header nor CF_Authorization cookie found)")
 	}
 	signed, err := jwt.ParseSigned(raw, []jose.SignatureAlgorithm{jose.RS256, jose.ES256})
 	if err != nil {
-		return Identity{}, errors.New("invalid JWT")
+		return Identity{}, fmt.Errorf("invalid JWT: %w", err)
 	}
 	headers := signed.Headers
 	if len(headers) != 1 || headers[0].KeyID == "" {
@@ -41,36 +42,74 @@ func (v *CloudflareVerifier) Verify(ctx context.Context, raw string) (Identity, 
 	}
 	keys, err := v.keyset(ctx)
 	if err != nil {
-		return Identity{}, err
+		return Identity{}, fmt.Errorf("fetch JWKS: %w", err)
 	}
+	matchingKeys := keys.Key(headers[0].KeyID)
+	if len(matchingKeys) == 0 {
+		// Key not in cached set; force-refresh JWKS once
+		v.mu.Lock()
+		v.fetched = time.Time{}
+		v.mu.Unlock()
+		keys, err = v.keyset(ctx)
+		if err != nil {
+			return Identity{}, fmt.Errorf("refresh JWKS: %w", err)
+		}
+		matchingKeys = keys.Key(headers[0].KeyID)
+	}
+	if len(matchingKeys) == 0 {
+		return Identity{}, fmt.Errorf("no matching key in JWKS for key ID %q", headers[0].KeyID)
+	}
+
 	var claims jwt.Claims
 	var private struct {
 		Email   string `json:"email"`
 		Subject string `json:"sub"`
 	}
-	for _, key := range keys.Key(headers[0].KeyID) {
+
+	verified := false
+	for _, key := range matchingKeys {
 		if err := signed.Claims(key.Key, &claims, &private); err == nil {
-			now := time.Now()
-			if err = claims.ValidateWithLeeway(jwt.Expected{Issuer: v.issuer, AnyAudience: jwt.Audience{v.audience}, Time: now}, 30*time.Second); err != nil {
-				return Identity{}, fmt.Errorf("JWT claims: %w", err)
-			}
-			if claims.Expiry == nil {
-				return Identity{}, errors.New("JWT missing expiry")
-			}
-			subject := strings.TrimSpace(private.Subject)
-			if subject == "" {
-				subject = strings.TrimSpace(claims.Subject)
-			}
-			if subject == "" {
-				subject = strings.TrimSpace(private.Email)
-			}
-			if subject == "" {
-				return Identity{}, errors.New("JWT missing subject and email")
-			}
-			return Identity{Subject: subject, Email: strings.TrimSpace(private.Email)}, nil
+			verified = true
+			break
 		}
 	}
-	return Identity{}, errors.New("JWT signature could not be verified")
+	if !verified {
+		return Identity{}, errors.New("JWT signature verification failed")
+	}
+
+	now := time.Now()
+	expected := jwt.Expected{
+		Issuer: v.issuer,
+		Time:   now,
+	}
+	if v.audience != "" && v.audience != "*" && v.audience != "any" {
+		expected.AnyAudience = jwt.Audience{v.audience}
+	}
+	if err = claims.ValidateWithLeeway(expected, 60*time.Second); err != nil {
+		slog.Warn("Cloudflare JWT claims validation failed",
+			"error", err,
+			"expected_issuer", v.issuer,
+			"token_issuer", claims.Issuer,
+			"expected_aud", v.audience,
+			"token_aud", claims.Audience,
+		)
+		return Identity{}, fmt.Errorf("JWT claims validation failed: %w (token aud=%v, expected aud=%q)", err, claims.Audience, v.audience)
+	}
+
+	if claims.Expiry == nil {
+		return Identity{}, errors.New("JWT missing expiry")
+	}
+	subject := strings.TrimSpace(private.Subject)
+	if subject == "" {
+		subject = strings.TrimSpace(claims.Subject)
+	}
+	if subject == "" {
+		subject = strings.TrimSpace(private.Email)
+	}
+	if subject == "" {
+		return Identity{}, errors.New("JWT missing subject and email")
+	}
+	return Identity{Subject: subject, Email: strings.TrimSpace(private.Email)}, nil
 }
 func (v *CloudflareVerifier) keyset(ctx context.Context) (jose.JSONWebKeySet, error) {
 	v.mu.Lock()

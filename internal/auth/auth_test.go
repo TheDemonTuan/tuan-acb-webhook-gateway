@@ -37,6 +37,34 @@ type identityVerifier struct{ identity Identity }
 
 func (v identityVerifier) Verify(context.Context, string) (Identity, error) { return v.identity, nil }
 
+type captureVerifier struct {
+	capturedToken string
+	identity      Identity
+}
+
+func (v *captureVerifier) Verify(_ context.Context, token string) (Identity, error) {
+	v.capturedToken = token
+	return v.identity, nil
+}
+
+func TestTokenExtractionFromCookie(t *testing.T) {
+	v := &captureVerifier{identity: Identity{Subject: "user1", Email: "owner@example.com"}}
+	m := New(config.Config{Production: true, Roles: config.RoleSubjects{Owners: map[string]struct{}{"owner@example.com": {}}}}, v)
+	h := m.Require(Owner)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+
+	r := httptest.NewRequest(http.MethodGet, "https://example.test/api/v1/x", nil)
+	r.AddCookie(&http.Cookie{Name: "CF_Authorization", Value: "jwt-from-cookie"})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if v.capturedToken != "jwt-from-cookie" {
+		t.Fatalf("expected token %q, got %q", "jwt-from-cookie", v.capturedToken)
+	}
+}
+
 func TestProductionAllowsVerifiedCloudflareEmail(t *testing.T) {
 	m := New(config.Config{Production: true, Roles: config.RoleSubjects{Owners: map[string]struct{}{"owner@example.com": {}}}}, identityVerifier{identity: Identity{Subject: "cloudflare-uuid", Email: "owner@example.com"}})
 	h := m.Require(Owner)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))

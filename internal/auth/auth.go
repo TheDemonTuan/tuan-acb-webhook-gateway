@@ -5,7 +5,10 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -57,16 +60,19 @@ func (m *Middleware) Require(roles ...Role) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			identity, err := m.identity(r)
 			if err != nil {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				slog.Warn("auth rejected", "method", r.Method, "path", r.URL.Path, "error", err)
+				writeAuthError(w, http.StatusUnauthorized, "unauthorized: "+err.Error())
 				return
 			}
 			if !allows(identity.Role, roles) {
-				http.Error(w, "forbidden", http.StatusForbidden)
+				slog.Warn("role rejected", "method", r.Method, "path", r.URL.Path, "role", identity.Role, "required", roles)
+				writeAuthError(w, http.StatusForbidden, fmt.Sprintf("forbidden: role %s not permitted", identity.Role))
 				return
 			}
 			if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
 				if !sameOrigin(r) || !csrfValid(r) {
-					http.Error(w, "csrf validation failed", http.StatusForbidden)
+					slog.Warn("csrf rejected", "method", r.Method, "path", r.URL.Path)
+					writeAuthError(w, http.StatusForbidden, "csrf validation failed")
 					return
 				}
 			}
@@ -74,20 +80,46 @@ func (m *Middleware) Require(roles ...Role) func(http.Handler) http.Handler {
 		})
 	}
 }
+
+func extractToken(r *http.Request) string {
+	if h := strings.TrimSpace(r.Header.Get("Cf-Access-Jwt-Assertion")); h != "" {
+		return h
+	}
+	if c, err := r.Cookie("CF_Authorization"); err == nil && strings.TrimSpace(c.Value) != "" {
+		return strings.TrimSpace(c.Value)
+	}
+	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
+		return strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
+	}
+	return ""
+}
+
+func writeAuthError(w http.ResponseWriter, code int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
+}
+
 func (m *Middleware) identity(r *http.Request) (Identity, error) {
 	if m.verifier == nil {
 		return Identity{}, errors.New("authentication verifier unavailable")
 	}
-	identity, err := m.verifier.Verify(r.Context(), r.Header.Get("Cf-Access-Jwt-Assertion"))
+	token := extractToken(r)
+	identity, err := m.verifier.Verify(r.Context(), token)
 	if err != nil {
 		return Identity{}, err
+	}
+	if identity.Email == "" {
+		if headerEmail := strings.TrimSpace(r.Header.Get("Cf-Access-Authenticated-User-Email")); headerEmail != "" {
+			identity.Email = headerEmail
+		}
 	}
 	role, ok := m.role(identity.Subject)
 	if !ok && identity.Email != "" {
 		role, ok = m.role(identity.Email)
 	}
 	if !ok {
-		return Identity{}, errors.New("subject is not allowed")
+		return Identity{}, fmt.Errorf("user %q (email: %q) is not authorized in OWNER_SUBJECTS", identity.Subject, identity.Email)
 	}
 	identity.Role = role
 	return identity, nil
