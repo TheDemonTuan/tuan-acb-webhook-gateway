@@ -160,10 +160,16 @@ func allows(actual Role, required []Role) bool {
 	return false
 }
 func CSRF(w http.ResponseWriter, r *http.Request) {
-	token := make([]byte, 32)
-	_, _ = rand.Read(token)
-	encoded := base64.RawURLEncoding.EncodeToString(token)
-	http.SetCookie(w, &http.Cookie{Name: "tbg_csrf", Value: encoded, Path: "/api/v1", Secure: publicOrigin(r).Scheme == "https", SameSite: http.SameSiteStrictMode, MaxAge: 3600})
+	encoded := ""
+	if existing, err := r.Cookie("tbg_csrf"); err == nil {
+		encoded = existing.Value
+	}
+	if encoded == "" {
+		token := make([]byte, 32)
+		_, _ = rand.Read(token)
+		encoded = base64.RawURLEncoding.EncodeToString(token)
+		http.SetCookie(w, &http.Cookie{Name: "tbg_csrf", Value: encoded, Path: "/api/v1", Secure: publicOrigin(r).Scheme == "https", SameSite: http.SameSiteStrictMode, MaxAge: 3600, HttpOnly: true})
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"token":"` + encoded + `"}`))

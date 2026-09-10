@@ -54,8 +54,6 @@ func New(cfg config.Config, store *storage.Store) *Server {
 		api.With(s.auth.Require(auth.Owner, auth.Operator)).Post("/connection/{action:pause|resume|sync}", s.connectionAction)
 		api.With(s.auth.Require(auth.Owner)).Post("/connection/auth/start", s.startAuth)
 		api.With(s.auth.Require(auth.Owner)).Post("/connection/auth/cancel", s.cancelAuth)
-		api.With(s.auth.Require(auth.Owner)).Post("/connection/auth/complete", s.completeAuth)
-		api.With(s.auth.Require(auth.Owner)).Post("/connection/auth/simulate", s.simulateAuth)
 
 		api.With(s.auth.Require(auth.Owner)).Post("/webhooks", s.createEndpoint)
 		api.With(s.auth.Require(auth.Owner)).Post("/webhooks/{id}/{action:enable|disable}", s.endpointAction)
@@ -165,41 +163,6 @@ func (s *Server) cancelAuth(w http.ResponseWriter, r *http.Request) {
 	}
 	audit(s.store, r, "auth.cancel", in.AttemptID)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "CANCELLED"})
-}
-func (s *Server) completeAuth(w http.ResponseWriter, r *http.Request) {
-	var in struct {
-		AttemptID string `json:"attemptId"`
-		Session   string `json:"session"`
-	}
-	if !decode(w, r, &in) {
-		return
-	}
-	if in.AttemptID == "" || in.Session == "" {
-		writeError(w, http.StatusBadRequest, "attemptId and session are required")
-		return
-	}
-	conn, err := s.store.CompleteAuthSession(r.Context(), in.AttemptID, []byte(in.Session))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	audit(s.store, r, "auth.complete", conn.ID)
-	writeJSON(w, http.StatusOK, conn)
-}
-func (s *Server) simulateAuth(w http.ResponseWriter, r *http.Request) {
-	identity, _ := auth.FromContext(r.Context())
-	attempt, err := s.store.StartAuthAttempt(r.Context(), identity.Subject, 15*time.Minute)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	conn, err := s.store.CompleteAuthSession(r.Context(), attempt.ID, []byte("simulated_auth_token"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	audit(s.store, r, "auth.simulate", conn.ID)
-	writeJSON(w, http.StatusOK, conn)
 }
 func (s *Server) transactions(w http.ResponseWriter, r *http.Request) {
 	items, err := s.store.ListTransactions(r.Context(), 50)

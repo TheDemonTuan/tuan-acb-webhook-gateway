@@ -134,7 +134,6 @@ export default function App() {
   const [endpointURL, setEndpointURL] = useState('');
   const [activeAttemptId, setActiveAttemptId] = useState<string | null>(null);
   const [newEndpointSecret, setNewEndpointSecret] = useState<string | null>(null);
-  const [manualSessionToken, setManualSessionToken] = useState('');
   const [notice, setNotice] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
 
   const connected = connection?.configured === true;
@@ -227,29 +226,6 @@ export default function App() {
       await mutate('/connection/auth/cancel', { attemptId: activeAttemptId });
       setActiveAttemptId(null);
       setNotice({ kind: 'ok', text: 'Đã hủy phiên đăng nhập ACB.' });
-    } catch (error) {
-      setNotice({ kind: 'error', text: String(error) });
-    }
-  };
-
-  const completeAuthManual = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!activeAttemptId || !manualSessionToken) return;
-    try {
-      await mutate('/connection/auth/complete', { attemptId: activeAttemptId, session: manualSessionToken });
-      setActiveAttemptId(null);
-      setManualSessionToken('');
-      setNotice({ kind: 'ok', text: 'Đã xác thực phiên ACB thành công. Hệ thống chuyển sang MONITORING.' });
-    } catch (error) {
-      setNotice({ kind: 'error', text: String(error) });
-    }
-  };
-
-  const simulateAuthImmediate = async () => {
-    try {
-      await mutate('/connection/auth/simulate');
-      setActiveAttemptId(null);
-      setNotice({ kind: 'ok', text: 'Đã kích hoạt phiên ACB thành công. Trạng thái chuyển sang MONITORING.' });
     } catch (error) {
       setNotice({ kind: 'error', text: String(error) });
     }
@@ -436,107 +412,38 @@ export default function App() {
                     </p>
 
                     {!activeAttemptId ? (
-                      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                        <button
-                          onClick={startAuth}
-                          style={{
-                            padding: '8px 16px',
-                            background: '#2b5c8f',
-                            color: '#fff',
-                            fontWeight: 600,
-                            borderRadius: 8,
-                            border: 0,
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 6,
-                          }}
-                        >
-                          <Play size={16} /> Bắt đầu đăng nhập ACB
-                        </button>
-                        <button
-                          onClick={simulateAuthImmediate}
-                          style={{
-                            padding: '8px 16px',
-                            background: '#1b4332',
-                            color: '#74c69d',
-                            fontWeight: 600,
-                            borderRadius: 8,
-                            border: '1px solid #2d6a4f',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 6,
-                          }}
-                        >
-                          <CheckCircle2 size={16} /> Kích hoạt nhanh (Simulate/Verify)
-                        </button>
-                      </div>
+                      <button
+                        onClick={startAuth}
+                        style={{
+                          padding: '8px 16px',
+                          background: '#2b5c8f',
+                          color: '#fff',
+                          fontWeight: 600,
+                          borderRadius: 8,
+                          border: 0,
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 6,
+                        }}
+                      >
+                        <Play size={16} /> Bắt đầu đăng nhập ACB
+                      </button>
                     ) : (
                       <div style={{ padding: 14, background: '#112233', borderRadius: 8, border: '1px solid #1e3a5f' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                           <span style={{ fontSize: '0.85rem', color: '#7ec4ff' }}>
-                            Đang mở phiên: <strong>{activeAttemptId}</strong>
+                            Đang khởi tạo trình duyệt ACB: <strong>{activeAttemptId}</strong>
                           </span>
                           <button
                             onClick={cancelAuth}
-                            style={{
-                              padding: '4px 10px',
-                              background: '#5c1d1d',
-                              color: '#ffaaaa',
-                              border: 0,
-                              borderRadius: 4,
-                              fontSize: '0.8rem',
-                            }}
+                            style={{ padding: '4px 10px', background: '#5c1d1d', color: '#ffaaaa', border: 0, borderRadius: 4, fontSize: '0.8rem' }}
                           >
                             Hủy phiên
                           </button>
                         </div>
-
-                        <form onSubmit={completeAuthManual} style={{ marginTop: 14, display: 'flex', gap: 8 }}>
-                          <input
-                            type="text"
-                            placeholder="Nhập session cookie hoặc token đã xác thực"
-                            value={manualSessionToken}
-                            onChange={(e) => setManualSessionToken(e.target.value)}
-                            style={{
-                              flex: 1,
-                              padding: '6px 10px',
-                              borderRadius: 6,
-                              background: '#09111f',
-                              border: '1px solid #263750',
-                              color: '#fff',
-                            }}
-                            required
-                          />
-                          <button
-                            type="submit"
-                            style={{
-                              padding: '6px 14px',
-                              background: '#2b5c8f',
-                              color: '#fff',
-                              borderRadius: 6,
-                              border: 0,
-                              fontWeight: 600,
-                            }}
-                          >
-                            Xác nhận phiên
-                          </button>
-                        </form>
-
-                        <div style={{ marginTop: 10 }}>
-                          <button
-                            onClick={simulateAuthImmediate}
-                            style={{
-                              padding: '5px 10px',
-                              background: 'transparent',
-                              border: '1px solid #2d6a4f',
-                              color: '#74c69d',
-                              borderRadius: 6,
-                              fontSize: '0.8rem',
-                            }}
-                          >
-                            Xác thực ngay không cần nhập thủ công
-                          </button>
-                        </div>
+                        <p style={{ margin: '12px 0 0', fontSize: '0.85rem', color: '#9dabbe' }}>
+                          Trình duyệt đăng nhập ACB an toàn chưa sẵn sàng trong bản này. Không nhập cookie, token, mật khẩu hoặc OTP vào dashboard.
+                        </p>
                       </div>
                     )}
                   </div>
@@ -887,7 +794,7 @@ export default function App() {
     }
 
     return null;
-  }, [active, connected, connection, acbState, endpoints, transactions, deliveries, pollRuns, auditLogs, newEndpointSecret, activeAttemptId, manualSessionToken, accountMasked, endpointName, endpointURL, status]);
+  }, [active, connected, connection, acbState, endpoints, transactions, deliveries, pollRuns, auditLogs, newEndpointSecret, activeAttemptId, accountMasked, endpointName, endpointURL, status]);
 
   return (
     <main className="shell">
