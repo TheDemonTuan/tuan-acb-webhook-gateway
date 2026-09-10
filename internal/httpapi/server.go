@@ -8,12 +8,15 @@ import (
 	"errors"
 	"io/fs"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"path"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/thedemontuan/tuan-bank-gateway/internal/auth"
+	"github.com/thedemontuan/tuan-bank-gateway/internal/authbrowser"
 	"github.com/thedemontuan/tuan-bank-gateway/internal/config"
 	"github.com/thedemontuan/tuan-bank-gateway/internal/httpui"
 	"github.com/thedemontuan/tuan-bank-gateway/internal/security"
@@ -21,11 +24,13 @@ import (
 )
 
 type Server struct {
-	cfg     config.Config
-	store   *storage.Store
-	auth    *auth.Middleware
-	started time.Time
-	handler http.Handler
+	cfg           config.Config
+	store         *storage.Store
+	auth          *auth.Middleware
+	browser       *authbrowser.Client
+	browserVNCURL string
+	started       time.Time
+	handler       http.Handler
 }
 
 func New(cfg config.Config, store *storage.Store) *Server {
@@ -33,7 +38,7 @@ func New(cfg config.Config, store *storage.Store) *Server {
 	if cfg.Production {
 		verifier = auth.NewCloudflareVerifier(cfg)
 	}
-	s := &Server{cfg: cfg, store: store, auth: auth.New(cfg, verifier), started: time.Now().UTC()}
+	s := &Server{cfg: cfg, store: store, auth: auth.New(cfg, verifier), browser: authbrowser.NewClient(cfg.AuthBrowserURL), browserVNCURL: cfg.AuthBrowserVNCURL, started: time.Now().UTC()}
 	r := chi.NewRouter()
 	r.Use(requestID, securityHeaders, recoverer)
 	r.Get("/healthz", s.health)
@@ -54,6 +59,7 @@ func New(cfg config.Config, store *storage.Store) *Server {
 		api.With(s.auth.Require(auth.Owner, auth.Operator)).Post("/connection/{action:pause|resume|sync}", s.connectionAction)
 		api.With(s.auth.Require(auth.Owner)).Post("/connection/auth/start", s.startAuth)
 		api.With(s.auth.Require(auth.Owner)).Post("/connection/auth/cancel", s.cancelAuth)
+		api.With(s.auth.Require(auth.Owner)).Handle("/connection/auth/{attemptID}/screen/*", http.HandlerFunc(s.browserScreen))
 
 		api.With(s.auth.Require(auth.Owner)).Post("/webhooks", s.createEndpoint)
 		api.With(s.auth.Require(auth.Owner)).Post("/webhooks/{id}/{action:enable|disable}", s.endpointAction)
@@ -137,13 +143,20 @@ func (s *Server) connectionAction(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) startAuth(w http.ResponseWriter, r *http.Request) {
 	identity, _ := auth.FromContext(r.Context())
-	attempt, err := s.store.StartAuthAttempt(r.Context(), identity.Subject, 15*time.Minute)
+	attempt, err := s.store.StartAuthAttempt(r.Context(), identity.Email, 15*time.Minute)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	session, err := s.browser.Start(r.Context(), attempt.ID)
+	if err != nil {
+		_ = s.store.FinishAuthAttempt(r.Context(), attempt.ID, "FAILED")
+		writeError(w, http.StatusServiceUnavailable, "ACB browser is not available")
+		return
+	}
+	session.ScreenURL = "/api/v1/connection/auth/" + attempt.ID + "/screen/vnc.html?autoconnect=true&resize=remote"
 	audit(s.store, r, "auth.start", attempt.ID)
-	writeJSON(w, http.StatusCreated, attempt)
+	writeJSON(w, http.StatusCreated, session)
 }
 func (s *Server) cancelAuth(w http.ResponseWriter, r *http.Request) {
 	var in struct {
@@ -156,6 +169,7 @@ func (s *Server) cancelAuth(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "attemptId is required")
 		return
 	}
+	_ = s.browser.Cancel(r.Context(), in.AttemptID)
 	err := s.store.FinishAuthAttempt(r.Context(), in.AttemptID, "CANCELLED")
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -164,6 +178,31 @@ func (s *Server) cancelAuth(w http.ResponseWriter, r *http.Request) {
 	audit(s.store, r, "auth.cancel", in.AttemptID)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "CANCELLED"})
 }
+func (s *Server) browserScreen(w http.ResponseWriter, r *http.Request) {
+	identity, _ := auth.FromContext(r.Context())
+	attemptID := chi.URLParam(r, "attemptID")
+	if _, err := s.store.AuthAttemptForOwner(r.Context(), attemptID, identity.Email); err != nil {
+		writeError(w, http.StatusNotFound, "ACB browser session not found")
+		return
+	}
+	browserURL, err := url.Parse(s.browserVNCURL)
+	if err != nil || browserURL.Scheme == "" || browserURL.Host == "" {
+		writeError(w, http.StatusServiceUnavailable, "ACB browser screen unavailable")
+		return
+	}
+	proxy := httputil.NewSingleHostReverseProxy(browserURL)
+	originalDirector := proxy.Director
+	proxy.Director = func(request *http.Request) {
+		originalDirector(request)
+		request.URL.Path = "/" + strings.TrimPrefix(chi.URLParam(r, "*"), "/")
+		request.Host = browserURL.Host
+	}
+	proxy.ErrorHandler = func(rw http.ResponseWriter, _ *http.Request, _ error) {
+		writeError(rw, http.StatusBadGateway, "ACB browser screen unavailable")
+	}
+	proxy.ServeHTTP(w, r)
+}
+
 func (s *Server) transactions(w http.ResponseWriter, r *http.Request) {
 	items, err := s.store.ListTransactions(r.Context(), 50)
 	if err != nil {
@@ -282,7 +321,7 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
 		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; object-src 'none'; connect-src 'self'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; frame-ancestors 'self'; form-action 'self'; object-src 'none'; connect-src 'self'")
 		if r.TLS != nil {
 			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		}

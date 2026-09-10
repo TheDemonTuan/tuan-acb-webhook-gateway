@@ -132,7 +132,7 @@ export default function App() {
   const [accountMasked, setAccountMasked] = useState('');
   const [endpointName, setEndpointName] = useState('');
   const [endpointURL, setEndpointURL] = useState('');
-  const [activeAttemptId, setActiveAttemptId] = useState<string | null>(null);
+  const [activeAttempt, setActiveAttempt] = useState<{ id: string; screenURL: string } | null>(null);
   const [newEndpointSecret, setNewEndpointSecret] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
 
@@ -212,19 +212,19 @@ export default function App() {
 
   const startAuth = async () => {
     try {
-      const res = (await mutate('/connection/auth/start')) as { id: string; expiresAt: string };
-      setActiveAttemptId(res.id);
-      setNotice({ kind: 'ok', text: `Đã khởi tạo phiên đăng nhập ACB (ID: ${res.id}). Hãy xác thực hoặc hoàn tất.` });
+      const res = (await mutate('/connection/auth/start')) as { attemptId: string; screenUrl: string };
+      setActiveAttempt({ id: res.attemptId, screenURL: res.screenUrl });
+      setNotice({ kind: 'ok', text: 'Đã mở trình duyệt ACB trên server. Nhập trực tiếp mật khẩu, OTP và CAPTCHA trong trang ACB bên dưới.' });
     } catch (error) {
       setNotice({ kind: 'error', text: String(error) });
     }
   };
 
   const cancelAuth = async () => {
-    if (!activeAttemptId) return;
+    if (!activeAttempt) return;
     try {
-      await mutate('/connection/auth/cancel', { attemptId: activeAttemptId });
-      setActiveAttemptId(null);
+      await mutate('/connection/auth/cancel', { attemptId: activeAttempt.id });
+      setActiveAttempt(null);
       setNotice({ kind: 'ok', text: 'Đã hủy phiên đăng nhập ACB.' });
     } catch (error) {
       setNotice({ kind: 'error', text: String(error) });
@@ -411,7 +411,7 @@ export default function App() {
                       Bắt đầu phiên đăng nhập trên server để xác thực ACB ONE Web và kích hoạt theo dõi lịch sử.
                     </p>
 
-                    {!activeAttemptId ? (
+                    {!activeAttempt ? (
                       <button
                         onClick={startAuth}
                         style={{
@@ -432,7 +432,7 @@ export default function App() {
                       <div style={{ padding: 14, background: '#112233', borderRadius: 8, border: '1px solid #1e3a5f' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                           <span style={{ fontSize: '0.85rem', color: '#7ec4ff' }}>
-                            Đang khởi tạo trình duyệt ACB: <strong>{activeAttemptId}</strong>
+                            Đang mở trình duyệt ACB: <strong>{activeAttempt.id}</strong>
                           </span>
                           <button
                             onClick={cancelAuth}
@@ -441,9 +441,10 @@ export default function App() {
                             Hủy phiên
                           </button>
                         </div>
-                        <p style={{ margin: '12px 0 0', fontSize: '0.85rem', color: '#9dabbe' }}>
-                          Trình duyệt đăng nhập ACB an toàn chưa sẵn sàng trong bản này. Không nhập cookie, token, mật khẩu hoặc OTP vào dashboard.
+                        <p style={{ margin: '12px 0', fontSize: '0.85rem', color: '#9dabbe' }}>
+                          Nhập mật khẩu, OTP và CAPTCHA trực tiếp trong trang ACB. Dashboard không nhận hoặc lưu các giá trị này.
                         </p>
+                        <iframe title="Đăng nhập ACB" src={activeAttempt.screenURL} style={{ width: '100%', height: 720, border: '1px solid #263750', borderRadius: 8, background: '#fff' }} />
                       </div>
                     )}
                   </div>
@@ -794,7 +795,7 @@ export default function App() {
     }
 
     return null;
-  }, [active, connected, connection, acbState, endpoints, transactions, deliveries, pollRuns, auditLogs, newEndpointSecret, activeAttemptId, accountMasked, endpointName, endpointURL, status]);
+  }, [active, connected, connection, acbState, endpoints, transactions, deliveries, pollRuns, auditLogs, newEndpointSecret, activeAttempt, accountMasked, endpointName, endpointURL, status]);
 
   return (
     <main className="shell">

@@ -59,6 +59,8 @@ jobs:
     outputs:
       image: ${{ steps.meta.outputs.image }}
       digest: ${{ steps.build.outputs.digest }}
+      browser_image: ${{ steps.meta.outputs.browser_image }}
+      browser_digest: ${{ steps.build_browser.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -75,6 +77,7 @@ jobs:
           set -euo pipefail
           repo_lc="$(printf '%s' "$REPO" | tr '[:upper:]' '[:lower:]')"
           echo "image=ghcr.io/${repo_lc}" >> "$GITHUB_OUTPUT"
+          echo "browser_image=ghcr.io/${repo_lc}-auth-browser" >> "$GITHUB_OUTPUT"
       - id: build
         uses: docker/build-push-action@v6
         with:
@@ -84,6 +87,19 @@ jobs:
           tags: |
             ${{ steps.meta.outputs.image }}:sha-${{ github.sha }}
             ${{ steps.meta.outputs.image }}:latest
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+      - id: build_browser
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.auth-browser
+          push: true
+          platforms: ${{ vars.DEPLOY_PLATFORM || 'linux/arm64' }}
+          tags: |
+            ${{ steps.meta.outputs.browser_image }}:sha-${{ github.sha }}
+            ${{ steps.meta.outputs.browser_image }}:latest
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
@@ -133,9 +149,10 @@ jobs:
           set -euo pipefail
           [[ -n "$DASHBOARD_OWNER_EMAIL" ]] || { printf 'DASHBOARD_OWNER_EMAIL is required.\n' >&2; exit 1; }
           image="${{ needs.image.outputs.image }}@${{ needs.image.outputs.digest }}"
+          browser_image="${{ needs.image.outputs.browser_image }}@${{ needs.image.outputs.browser_digest }}"
           owner="$(printf '%s' "$DASHBOARD_OWNER_EMAIL" | tr '[:upper:]' '[:lower:]')"
           ssh -i ~/.ssh/id_ed25519 -p "$VPS_PORT" -o BatchMode=yes \
-            "$VPS_USER@$VPS_HOST" "DEPLOY_PATH='$DEPLOY_PATH' OWNER='$owner' IMAGE='$image' bash -s" <<'REMOTE'
+            "$VPS_USER@$VPS_HOST" "DEPLOY_PATH='$DEPLOY_PATH' OWNER='$owner' IMAGE='$image' BROWSER_IMAGE='$browser_image' bash -s" <<'REMOTE'
           set -Eeuo pipefail
           env_file="$DEPLOY_PATH/.env.production"
           [[ -f "$env_file" ]] || { printf 'Missing production env file: %s\n' "$env_file" >&2; exit 1; }
@@ -146,5 +163,5 @@ jobs:
           chmod 600 "$tmp"
           mv "$tmp" "$env_file"
           cd "$DEPLOY_PATH"
-          ./deploy.sh "$IMAGE"
+          ./deploy.sh "$IMAGE" "$BROWSER_IMAGE"
           REMOTE

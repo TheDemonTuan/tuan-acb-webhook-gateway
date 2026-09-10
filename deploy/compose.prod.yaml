@@ -28,6 +28,8 @@ services:
       CF_ACCESS_AUDIENCE: ${CF_ACCESS_AUDIENCE:-${CLOUDFLARE_ACCESS_AUD:-}}
       CF_ACCESS_JWKS_URL: ${CF_ACCESS_JWKS_URL:-https://${CLOUDFLARE_ACCESS_TEAM_NAME:-thedemontuan}.cloudflareaccess.com/cdn-cgi/access/certs}
       OWNER_SUBJECTS: ${OWNER_SUBJECTS:-${CLOUDFLARE_ACCESS_OWNER_EMAIL:-nguyenviettuanbp@gmail.com}}
+      AUTH_BROWSER_URL: http://auth-browser:8181
+      AUTH_BROWSER_VNC_URL: http://auth-browser:6080
     ports:
       - "127.0.0.1:8090:8090"
     volumes:
@@ -47,6 +49,26 @@ services:
           cpus: "0.75"
           memory: 512M
           pids: 100
+
+  auth-browser:
+    image: ${AUTH_BROWSER_IMAGE_REF:-ghcr.io/thedemontuan/tuan-acb-webhook-gateway-auth-browser:latest}
+    container_name: bank-gateway-auth-browser
+    restart: unless-stopped
+    init: true
+    user: "1000:1000"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      HOME: /tmp
+    expose: ["8181", "6080"]
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=1g,mode=1777
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1536M
+          pids: 300
 
   cloudflared:
     image: cloudflare/cloudflared:2026.9.0

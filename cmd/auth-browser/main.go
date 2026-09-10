@@ -1,19 +1,154 @@
-// auth-browser is intentionally a minimal private controller scaffold.
-// Browser automation, mTLS RPC and noVNC are added only after PR 0 proves the
-// authorized ACB session handoff in the target VPS environment.
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"strings"
+	"sync"
 	"syscall"
+	"time"
 )
 
+const acbLoginURL = "https://online.acb.com.vn/acbib/Request"
+
+type browserSession struct {
+	AttemptID string    `json:"attemptId"`
+	Status    string    `json:"status"`
+	ScreenURL string    `json:"screenUrl"`
+	ExpiresAt time.Time `json:"expiresAt"`
+	cancel    context.CancelFunc
+}
+
+type server struct {
+	mu       sync.Mutex
+	session  *browserSession
+	profiles string
+}
+
 func main() {
-	slog.Info("auth browser controller idle", "mode", "not_configured")
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
-	<-signals
-	slog.Info("auth browser controller stopped")
+	ctx, cancel := signalContext()
+	defer cancel()
+	controller := &server{profiles: "/tmp/acb-browser"}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /sessions", controller.start)
+	mux.HandleFunc("DELETE /sessions/{attemptID}", controller.cancel)
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+
+	httpServer := &http.Server{Addr: ":8181", Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	go func() {
+		<-ctx.Done()
+		_ = httpServer.Shutdown(context.Background())
+		controller.stopCurrent()
+	}()
+	slog.Info("ACB browser controller listening", "address", ":8181")
+	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		slog.Error("ACB browser controller failed", "error", err)
+		os.Exit(1)
+	}
+}
+
+func (s *server) start(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		AttemptID string `json:"attemptId"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&input); err != nil || strings.TrimSpace(input.AttemptID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "attemptId is required"})
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.session != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "an ACB browser session is already active"})
+		return
+	}
+	if err := os.MkdirAll(s.profiles, 0o700); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cannot prepare browser profile"})
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	item := &browserSession{AttemptID: input.AttemptID, Status: "AWAITING_USER_LOGIN", ScreenURL: "/", ExpiresAt: time.Now().UTC().Add(15 * time.Minute), cancel: cancel}
+	s.session = item
+	go s.launch(ctx, item)
+	writeJSON(w, http.StatusCreated, item)
+}
+
+func (s *server) launch(ctx context.Context, item *browserSession) {
+	profile := filepath.Join(s.profiles, item.AttemptID)
+	if err := os.MkdirAll(profile, 0o700); err != nil {
+		slog.Warn("prepare ACB browser profile", "error", err)
+		s.clear(item.AttemptID)
+		return
+	}
+	// CDP has no listening address; Chromium is only controlled by the owner
+	// through noVNC on the private Docker network.
+	cmd := exec.CommandContext(ctx, "chromium", "--user-data-dir="+profile, "--no-first-run", "--disable-default-apps", "--disable-sync", "--disable-extensions", "--disable-background-networking", acbLoginURL)
+	cmd.Env = append(os.Environ(), "DISPLAY=:99", "HOME=/tmp")
+	if err := cmd.Start(); err != nil {
+		slog.Warn("launch ACB Chromium", "error", err)
+		s.clear(item.AttemptID)
+		return
+	}
+	_ = cmd.Wait()
+	_ = os.RemoveAll(profile)
+	s.clear(item.AttemptID)
+}
+
+func (s *server) cancel(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("attemptID")
+	s.mu.Lock()
+	if s.session == nil || s.session.AttemptID != id {
+		s.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	s.session.cancel()
+	s.session = nil
+	s.mu.Unlock()
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *server) stopCurrent() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.session != nil {
+		s.session.cancel()
+		s.session = nil
+	}
+}
+
+func (s *server) clear(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.session != nil && s.session.AttemptID == id {
+		s.session = nil
+	}
+}
+
+func signalContext() (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := make(chan os.Signal, 1)
+	signalNotify(ch)
+	go func() { <-ch; cancel() }()
+	return ctx, cancel
+}
+
+func signalNotify(ch chan<- os.Signal) { signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM) }
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		fmt.Fprint(w, "")
+	}
 }

@@ -28,6 +28,8 @@ type Config struct {
 	Roles              RoleSubjects
 	DevelopmentSubject string
 	Production         bool
+	AuthBrowserURL     string
+	AuthBrowserVNCURL  string
 }
 
 func Load() (Config, error) {
@@ -92,6 +94,8 @@ func Load() (Config, error) {
 		},
 		DevelopmentSubject: value("DEVELOPMENT_SUBJECT", "local-owner"),
 		Production:         production,
+		AuthBrowserURL:     value("AUTH_BROWSER_URL", "http://auth-browser:8181"),
+		AuthBrowserVNCURL:  value("AUTH_BROWSER_VNC_URL", "http://auth-browser:6080"),
 	}
 	if production {
 		if cfg.MasterKeyFile == "" {
