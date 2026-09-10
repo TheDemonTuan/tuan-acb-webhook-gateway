@@ -14,10 +14,12 @@ RUN go mod download
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 COPY --from=web-builder /src/internal/httpui/dist ./internal/httpui/dist
+RUN mkdir -p -m 0777 /data
 RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/gateway ./cmd/gateway && \
     CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/auth-browser ./cmd/auth-browser
 
 FROM gcr.io/distroless/static-debian12:nonroot AS gateway
+COPY --from=go-builder --chown=1000:1000 /data /data
 COPY --from=go-builder /out/gateway /gateway
-USER nonroot:nonroot
+USER 1000:1000
 ENTRYPOINT ["/gateway"]

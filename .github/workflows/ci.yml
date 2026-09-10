@@ -50,9 +50,13 @@ jobs:
           push: false
           tags: tuan-bank-gateway:smoke-test
           load: true
-      - name: Run gateway image healthcheck
+      - name: Run gateway image smoke test
         run: |
-          docker run --rm \
+          docker run -d --name smoke-test \
             -e APP_ENV=development \
+            -e LISTEN_ADDR=0.0.0.0:8080 \
             -e DATA_DIR=/tmp/data \
-            tuan-bank-gateway:smoke-test --healthcheck
+            tuan-bank-gateway:smoke-test
+          sleep 2
+          docker exec smoke-test /gateway --healthcheck
+          docker stop smoke-test

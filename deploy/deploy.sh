@@ -13,8 +13,9 @@ lock="$script_dir/.deploy.lock"
 exec 9>"$lock"
 flock -n 9 || { printf 'Another deployment is active.\n' >&2; exit 1; }
 
-# Ensure data and secrets directories exist
+# Ensure data and secrets directories exist with proper permissions for container user (UID 1000)
 mkdir -p "$script_dir/data" "$script_dir/secrets"
+chmod 775 "$script_dir/data" || true
 
 # Ensure secrets/app_master_key file exists before Docker mounts it
 if [[ ! -f "$script_dir/secrets/app_master_key" ]]; then
@@ -30,13 +31,20 @@ if [[ ! -f "$script_dir/secrets/app_master_key" ]]; then
   else
     openssl rand -hex 32 > "$script_dir/secrets/app_master_key"
   fi
-  chmod 600 "$script_dir/secrets/app_master_key"
 fi
+chmod 644 "$script_dir/secrets/app_master_key"
 
 IMAGE_REF="$image_ref" docker compose --env-file "$env_file" -f "$compose_file" config --quiet
 current_file="$script_dir/.deployed-image"
 current="$(cat "$current_file" 2>/dev/null || true)"
-IMAGE_REF="$image_ref" docker compose --env-file "$env_file" -f "$compose_file" up -d --remove-orphans
+
+if ! IMAGE_REF="$image_ref" docker compose --env-file "$env_file" -f "$compose_file" up -d --remove-orphans; then
+  echo "Docker compose up failed. Dumping container status and logs:" >&2
+  IMAGE_REF="$image_ref" docker compose --env-file "$env_file" -f "$compose_file" ps -a || true
+  IMAGE_REF="$image_ref" docker compose --env-file "$env_file" -f "$compose_file" logs --tail 50 || true
+  exit 1
+fi
+
 PORT="${PORT:-8080}" "$script_dir/verify-deployment.sh"
 if [[ -n "$current" && "$current" != "$image_ref" ]]; then
   printf '%s\n' "$current" > "$script_dir/.previous-image"

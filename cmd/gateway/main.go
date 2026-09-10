@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -19,27 +21,28 @@ import (
 )
 
 func main() {
-	healthcheck := flag.Bool("healthcheck", false, "verify configuration and SQLite readiness")
+	healthcheck := flag.Bool("healthcheck", false, "verify server health via HTTP")
 	flag.Parse()
+	if *healthcheck {
+		port := "8080"
+		if addr := os.Getenv("LISTEN_ADDR"); addr != "" {
+			if _, p, err := net.SplitHostPort(addr); err == nil {
+				port = p
+			}
+		}
+		client := &http.Client{Timeout: 3 * time.Second}
+		resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%s/healthz", port))
+		if err != nil || resp.StatusCode != http.StatusOK {
+			os.Exit(1)
+		}
+		return
+	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 	cfg, err := config.Load()
 	if err != nil {
 		logger.Error("invalid configuration", "error", err)
 		os.Exit(1)
-	}
-	if *healthcheck {
-		store, err := storage.Open(context.Background(), cfg.DatabasePath)
-		if err != nil {
-			logger.Error("healthcheck storage unavailable", "error", err)
-			os.Exit(1)
-		}
-		defer store.Close()
-		if err := store.Health(context.Background()); err != nil {
-			logger.Error("healthcheck failed", "error", err)
-			os.Exit(1)
-		}
-		return
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
