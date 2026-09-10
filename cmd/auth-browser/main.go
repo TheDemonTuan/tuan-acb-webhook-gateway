@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -44,12 +45,39 @@ type browserSession struct {
 	debugURL  string
 	handoff   string
 	verified  bool
+
+	cmd      *exec.Cmd
+	done     chan struct{}
+	exitErr  error
+	exitOnce sync.Once
+}
+
+type browserSessionResponse struct {
+	AttemptID string    `json:"attemptId"`
+	Status    string    `json:"status"`
+	ScreenURL string    `json:"screenUrl"`
+	ExpiresAt time.Time `json:"expiresAt"`
+	Error     string    `json:"error,omitempty"`
+}
+
+func sessionResponse(item *browserSession) browserSessionResponse {
+	return browserSessionResponse{
+		AttemptID: item.AttemptID,
+		Status:    item.Status,
+		ScreenURL: item.ScreenURL,
+		ExpiresAt: item.ExpiresAt,
+		Error:     item.Error,
+	}
 }
 
 type server struct {
-	mu       sync.Mutex
-	session  *browserSession
-	profiles string
+	mu           sync.Mutex
+	session      *browserSession
+	profiles     string
+	browserExec  string
+	extraFlags   []string
+	allocatePort func() (int, error)
+	cmdFunc      func(ctx context.Context, name string, args ...string) *exec.Cmd
 }
 
 func main() {
@@ -90,6 +118,95 @@ func main() {
 	}
 }
 
+func allocateFreePort() (int, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, fmt.Errorf("allocate debugging port: %w", err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := listener.Close(); err != nil {
+		return 0, fmt.Errorf("close allocated port listener: %w", err)
+	}
+	return port, nil
+}
+
+func findDefaultBrowser() string {
+	if bin := os.Getenv("BROWSER_BIN"); bin != "" {
+		return bin
+	}
+	candidates := []string{
+		"chromium",
+		"google-chrome",
+		"chrome",
+		`C:\Program Files\Google\Chrome\Application\chrome.exe`,
+		`C:\Program Files (x86)\Google\Chrome\Application\chrome.exe`,
+		`C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`,
+		`C:\Program Files\Microsoft\Edge\Application\msedge.exe`,
+	}
+	for _, c := range candidates {
+		if path, err := exec.LookPath(c); err == nil {
+			return path
+		}
+		if _, err := os.Stat(c); err == nil {
+			return c
+		}
+	}
+	return "chromium"
+}
+
+func removeProfileDir(dir string) {
+	for range 10 {
+		if err := os.RemoveAll(dir); err == nil || os.IsNotExist(err) {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	_ = os.RemoveAll(dir)
+}
+
+func killProcessTree(proc *os.Process) {
+	if proc == nil {
+		return
+	}
+	_ = proc.Kill()
+	if runtime.GOOS == "windows" {
+		_ = exec.Command("taskkill", "/T", "/F", "/PID", fmt.Sprintf("%d", proc.Pid)).Run()
+	}
+}
+
+func (s *server) reapSession(item *browserSession, timeout time.Duration) {
+	if item == nil {
+		return
+	}
+	item.cancel()
+	if item.cmd != nil && item.cmd.Process != nil {
+		killProcessTree(item.cmd.Process)
+	}
+	if item.done != nil {
+		select {
+		case <-item.done:
+		case <-time.After(timeout):
+			slog.Warn("timed out waiting for ACB browser process to exit", "attempt_id", item.AttemptID)
+		}
+	}
+}
+
+func (s *server) setStatus(id, newStatus, errMsg string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.session == nil || s.session.AttemptID != id {
+		return false
+	}
+	if terminalStatus(s.session.Status) {
+		return false
+	}
+	s.session.Status = newStatus
+	if errMsg != "" {
+		s.session.Error = errMsg
+	}
+	return true
+}
+
 func (s *server) start(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		AttemptID string `json:"attemptId"`
@@ -100,14 +217,18 @@ func (s *server) start(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.mu.Lock()
-	if s.session != nil && terminalStatus(s.session.Status) {
-		s.session.cancel()
-		s.session = nil
-	}
 	if s.session != nil {
-		s.mu.Unlock()
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "an ACB browser session is already active"})
-		return
+		if terminalStatus(s.session.Status) {
+			oldSession := s.session
+			s.session = nil
+			s.mu.Unlock()
+			s.reapSession(oldSession, 5*time.Second)
+			s.mu.Lock()
+		} else {
+			s.mu.Unlock()
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "an ACB browser session is already active"})
+			return
+		}
 	}
 	if err := os.MkdirAll(s.profiles, 0o700); err != nil {
 		s.mu.Unlock()
@@ -115,43 +236,71 @@ func (s *server) start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	portAlloc := s.allocatePort
+	if portAlloc == nil {
+		portAlloc = allocateFreePort
+	}
+	port, err := portAlloc()
+	if err != nil {
+		s.mu.Unlock()
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cannot allocate debugging port"})
+		return
+	}
+
 	expiresAt := time.Now().UTC().Add(sessionTTL)
 	ctx, cancel := context.WithDeadline(context.Background(), expiresAt)
-	item := &browserSession{AttemptID: input.AttemptID, Status: "STARTING", ScreenURL: "/", ExpiresAt: expiresAt, cancel: cancel, debugURL: "http://127.0.0.1:9222"}
+	item := &browserSession{
+		AttemptID: input.AttemptID,
+		Status:    "STARTING",
+		ScreenURL: "/",
+		ExpiresAt: expiresAt,
+		cancel:    cancel,
+		debugURL:  fmt.Sprintf("http://127.0.0.1:%d", port),
+		done:      make(chan struct{}),
+	}
 	s.session = item
 	s.mu.Unlock()
 
 	ready := make(chan error, 1)
-	go s.launch(ctx, item, ready)
+	go s.launch(ctx, item, port, ready)
 	select {
 	case err := <-ready:
 		if err != nil {
+			s.reapSession(item, 3*time.Second)
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "ACB browser could not start"})
 			return
 		}
 		s.mu.Lock()
-		response := *item
+		response := sessionResponse(item)
 		s.mu.Unlock()
 		writeJSON(w, http.StatusCreated, response)
 	case <-r.Context().Done():
-		cancel()
+		s.setStatus(item.AttemptID, "CANCELLED", "startup aborted by client")
+		item.cancel()
+		s.reapSession(item, 3*time.Second)
 	case <-time.After(startupLimit + time.Second):
-		s.setTerminal(item.AttemptID, "FAILED", "browser startup timed out")
-		cancel()
+		s.setStatus(item.AttemptID, "FAILED", "browser startup timed out")
+		item.cancel()
+		s.reapSession(item, 3*time.Second)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "ACB browser startup timed out"})
 	}
 }
 
-func (s *server) launch(ctx context.Context, item *browserSession, ready chan<- error) {
+func (s *server) launch(ctx context.Context, item *browserSession, port int, ready chan<- error) {
 	profile := filepath.Join(s.profiles, item.AttemptID)
 	if err := os.MkdirAll(profile, 0o700); err != nil {
 		s.failStartup(item, ready, "cannot prepare Chromium profile", err)
+		item.exitOnce.Do(func() { close(item.done) })
 		return
 	}
-	defer os.RemoveAll(profile)
 
-	cmd := exec.CommandContext(ctx, "chromium",
-		"--user-data-dir="+profile,
+	browserBin := s.browserExec
+	if browserBin == "" {
+		browserBin = findDefaultBrowser()
+	}
+
+	args := []string{
+		"--user-data-dir=" + profile,
 		"--no-first-run",
 		"--disable-default-apps",
 		"--disable-sync",
@@ -161,21 +310,43 @@ func (s *server) launch(ctx context.Context, item *browserSession, ready chan<- 
 		"--disable-setuid-sandbox",
 		"--window-size=1280,900",
 		"--remote-debugging-address=127.0.0.1",
-		"--remote-debugging-port=9222",
-		acbLoginURL,
-	)
-	cmd.Env = append(os.Environ(), "DISPLAY=:99", "HOME=/tmp")
+		fmt.Sprintf("--remote-debugging-port=%d", port),
+	}
+	if len(s.extraFlags) > 0 {
+		args = append(args, s.extraFlags...)
+	}
+	args = append(args, acbLoginURL)
+
+	cmdBuilder := s.cmdFunc
+	if cmdBuilder == nil {
+		cmdBuilder = exec.CommandContext
+	}
+	cmd := cmdBuilder(ctx, browserBin, args...)
+	if len(cmd.Env) == 0 {
+		cmd.Env = os.Environ()
+	}
+	cmd.Env = append(cmd.Env, "DISPLAY=:99", "HOME=/tmp")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	cmd.WaitDelay = 3 * time.Second
+	item.cmd = cmd
+
 	if err := cmd.Start(); err != nil {
 		s.failStartup(item, ready, "Chromium failed to launch", err)
+		removeProfileDir(profile)
+		item.exitOnce.Do(func() { close(item.done) })
 		return
 	}
 
-	exited := make(chan error, 1)
-	go func() { exited <- cmd.Wait() }()
+	go func() {
+		err := cmd.Wait()
+		item.exitErr = err
+		removeProfileDir(profile)
+		item.exitOnce.Do(func() { close(item.done) })
+	}()
+
 	startupCtx, startupCancel := context.WithTimeout(ctx, startupLimit)
-	err := waitBrowserReady(startupCtx, item.debugURL, exited)
+	err := waitBrowserReady(startupCtx, item.debugURL, item.done, item)
 	startupCancel()
 	if err != nil {
 		item.cancel()
@@ -184,15 +355,15 @@ func (s *server) launch(ctx context.Context, item *browserSession, ready chan<- 
 	}
 
 	s.mu.Lock()
-	if s.session == item {
+	if s.session == item && !terminalStatus(item.Status) {
 		item.Status = "AWAITING_USER_LOGIN"
 		item.Error = ""
 	}
 	s.mu.Unlock()
 	ready <- nil
-	go s.observeLogin(ctx, item.AttemptID, item.debugURL)
+	go s.observeLogin(ctx, item.AttemptID, item.debugURL, item.done)
 
-	err = <-exited
+	<-item.done
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.session != item || terminalStatus(item.Status) || item.Status == "VERIFIED" {
@@ -206,22 +377,13 @@ func (s *server) launch(ctx context.Context, item *browserSession, ready chan<- 
 	}
 	item.Status = "FAILED"
 	item.Error = "Chromium exited before login completed"
-	slog.Warn("ACB Chromium exited", "attempt_id", item.AttemptID, "error", err)
+	slog.Warn("ACB Chromium exited", "attempt_id", item.AttemptID, "error", item.exitErr)
 }
 
 func (s *server) failStartup(item *browserSession, ready chan<- error, message string, err error) {
-	s.setTerminal(item.AttemptID, "FAILED", message)
+	s.setStatus(item.AttemptID, "FAILED", message)
 	slog.Warn(message, "attempt_id", item.AttemptID, "error", err)
 	ready <- err
-}
-
-func (s *server) setTerminal(id, status, message string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.session != nil && s.session.AttemptID == id {
-		s.session.Status = status
-		s.session.Error = message
-	}
 }
 
 func (s *server) cancel(w http.ResponseWriter, r *http.Request) {
@@ -232,10 +394,13 @@ func (s *server) cancel(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	s.session.Status = "CANCELLED"
-	s.session.cancel()
-	s.session = nil
+	item := s.session
+	if !terminalStatus(item.Status) {
+		item.Status = "CANCELLED"
+	}
 	s.mu.Unlock()
+
+	s.reapSession(item, 5*time.Second)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -252,7 +417,7 @@ func (s *server) status(w http.ResponseWriter, r *http.Request) {
 		s.session.Error = "ACB login session expired"
 		s.session.cancel()
 	}
-	writeJSON(w, http.StatusOK, s.session)
+	writeJSON(w, http.StatusOK, sessionResponse(s.session))
 }
 
 func (s *server) handoff(w http.ResponseWriter, r *http.Request) {
@@ -270,10 +435,54 @@ func (s *server) handoff(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	writeJSON(w, http.StatusOK, map[string]string{"session": handoff})
-	item.cancel()
+	s.reapSession(item, 5*time.Second)
 }
 
-func (s *server) observeLogin(ctx context.Context, id, debugURL string) {
+func (s *server) observeLogin(ctx context.Context, id, debugURL string, done <-chan struct{}) {
+	ticker := time.NewTicker(1500 * time.Millisecond)
+	defer ticker.Stop()
+
+	backoff := 250 * time.Millisecond
+	const maxBackoff = 2 * time.Second
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-done:
+			return
+		default:
+		}
+
+		s.mu.Lock()
+		if s.session == nil || s.session.AttemptID != id || s.session.Status != "AWAITING_USER_LOGIN" {
+			s.mu.Unlock()
+			return
+		}
+		s.mu.Unlock()
+
+		connected, verified := s.runObserverCycle(ctx, id, debugURL, done, ticker)
+		if verified {
+			return
+		}
+		if !connected {
+			select {
+			case <-ctx.Done():
+				return
+			case <-done:
+				return
+			case <-time.After(backoff):
+				if backoff < maxBackoff {
+					backoff *= 2
+				}
+			}
+		} else {
+			backoff = 250 * time.Millisecond
+		}
+	}
+}
+
+func (s *server) runObserverCycle(ctx context.Context, id, debugURL string, done <-chan struct{}, ticker *time.Ticker) (connected bool, verified bool) {
 	allocatorCtx, allocatorCancel := chromedp.NewRemoteAllocator(ctx, debugURL)
 	defer allocatorCancel()
 	browserCtx, browserCancel := chromedp.NewContext(allocatorCtx)
@@ -281,22 +490,37 @@ func (s *server) observeLogin(ctx context.Context, id, debugURL string) {
 
 	browser, err := chromedp.FromContext(browserCtx).Allocator.Allocate(browserCtx)
 	if err != nil {
-		slog.Warn("attach ACB Chromium observer", "attempt_id", id, "error", err)
-		return
+		slog.Warn("attach ACB Chromium observer retry", "attempt_id", id, "error", err)
+		return false, false
 	}
 	executor := cdp.WithExecutor(browserCtx, browser)
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return true, false
+		case <-done:
+			return true, false
+		case <-browser.LostConnection:
+			slog.Warn("ACB Chromium observer lost connection, reconnecting", "attempt_id", id)
+			return false, false
 		case <-ticker.C:
 		}
+
+		s.mu.Lock()
+		if s.session == nil || s.session.AttemptID != id || s.session.Status != "AWAITING_USER_LOGIN" {
+			s.mu.Unlock()
+			return true, false
+		}
+		s.mu.Unlock()
+
 		checkCtx, cancel := context.WithTimeout(executor, 5*time.Second)
 		currentURL, cookies, err := browserLoginState(checkCtx)
 		cancel()
-		if err != nil || !authenticatedACB(currentURL, cookies) {
+		if err != nil {
+			continue
+		}
+		if !authenticatedACB(currentURL, cookies) {
 			continue
 		}
 		handoff, err := encodeHandoff(cookies)
@@ -311,7 +535,7 @@ func (s *server) observeLogin(ctx context.Context, id, debugURL string) {
 			s.session.Status = "VERIFIED"
 		}
 		s.mu.Unlock()
-		return
+		return true, true
 	}
 }
 
@@ -350,17 +574,21 @@ func encodeHandoff(cookies []*network.Cookie) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(payload) + "." + base64.RawURLEncoding.EncodeToString(nonce), nil
 }
 
-func waitBrowserReady(ctx context.Context, debugURL string, exited <-chan error) error {
+func waitBrowserReady(ctx context.Context, debugURL string, done <-chan struct{}, item *browserSession) error {
 	client := &http.Client{Timeout: time.Second}
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		select {
-		case err := <-exited:
-			if err == nil {
+		case <-done:
+			var exitErr error
+			if item != nil {
+				exitErr = item.exitErr
+			}
+			if exitErr == nil {
 				return errors.New("Chromium exited during startup")
 			}
-			return fmt.Errorf("Chromium exited during startup: %w", err)
+			return fmt.Errorf("Chromium exited during startup: %w", exitErr)
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
@@ -422,7 +650,11 @@ func terminalStatus(status string) bool {
 
 func authenticatedACB(location string, cookies []*network.Cookie) bool {
 	lowerLocation := strings.ToLower(location)
-	if !strings.Contains(lowerLocation, "online.acb.com.vn") || strings.Contains(lowerLocation, "obkloginop") || strings.Contains(lowerLocation, "login") {
+	if !strings.Contains(lowerLocation, "online.acb.com.vn") ||
+		strings.Contains(lowerLocation, "obkloginop") ||
+		strings.Contains(lowerLocation, "login") ||
+		strings.EqualFold(strings.TrimRight(lowerLocation, "/"), "https://online.acb.com.vn/acbib/request") ||
+		strings.EqualFold(strings.TrimRight(lowerLocation, "/"), "https://online.acb.com.vn") {
 		return false
 	}
 	for _, cookie := range cookies {
@@ -435,10 +667,11 @@ func authenticatedACB(location string, cookies []*network.Cookie) bool {
 
 func (s *server) stopCurrent() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.session != nil {
-		s.session.cancel()
-		s.session = nil
+	item := s.session
+	s.session = nil
+	s.mu.Unlock()
+	if item != nil {
+		s.reapSession(item, 5*time.Second)
 	}
 }
 

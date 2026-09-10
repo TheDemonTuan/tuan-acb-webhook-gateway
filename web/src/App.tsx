@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -140,6 +140,8 @@ export default function App() {
   const [endpointURL, setEndpointURL] = useState('');
   const [activeAttempt, setActiveAttempt] = useState<{ id: string; screenURL: string } | null>(null);
   const [authState, setAuthState] = useState<string>('');
+  const [authRequestPending, setAuthRequestPending] = useState(false);
+  const authOperation = useRef(0);
   const [newEndpointSecret, setNewEndpointSecret] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
 
@@ -210,14 +212,20 @@ export default function App() {
         if (cancelled) return;
         setAuthState(result.status);
         if (result.status === 'MONITORING') {
+          cancelled = true;
           setActiveAttempt(null);
           setNotice({ kind: 'ok', text: 'ACB đã xác thực. Hệ thống đang bắt đầu theo dõi giao dịch.' });
           await load();
           return;
         }
-        if (result.status === 'FAILED' || result.status === 'EXPIRED') {
+        if (result.status === 'FAILED' || result.status === 'EXPIRED' || result.status === 'CANCELLED') {
+          cancelled = true;
           setActiveAttempt(null);
-          setNotice({ kind: 'error', text: result.error ?? 'Phiên đăng nhập ACB đã kết thúc. Vui lòng mở phiên mới.' });
+          if (result.status === 'CANCELLED') {
+            setNotice({ kind: 'ok', text: 'Phiên đăng nhập ACB đã được hủy.' });
+          } else {
+            setNotice({ kind: 'error', text: result.error ?? 'Phiên đăng nhập ACB đã kết thúc. Vui lòng mở phiên mới.' });
+          }
           await load();
           return;
         }
@@ -256,28 +264,41 @@ export default function App() {
   };
 
   const startAuth = async () => {
+    if (authRequestPending || activeAttempt) return;
+    const operation = ++authOperation.current;
+    setAuthRequestPending(true);
     try {
       setAuthState('STARTING');
       setNotice({ kind: 'ok', text: 'Đang khởi động trình duyệt ACB…' });
       const res = (await mutate('/connection/auth/start')) as { attemptId: string; screenUrl: string; status: string };
+      if (authOperation.current !== operation) return;
       setActiveAttempt({ id: res.attemptId, screenURL: res.screenUrl });
       setAuthState(res.status);
       setNotice({ kind: 'ok', text: 'Trình duyệt ACB đã sẵn sàng. Nhập trực tiếp mật khẩu, OTP và CAPTCHA trong trang bên dưới.' });
     } catch (error) {
+      if (authOperation.current !== operation) return;
       setAuthState('FAILED');
       setNotice({ kind: 'error', text: errorMessage(error, 'Không thể khởi động trình duyệt ACB.') });
+    } finally {
+      if (authOperation.current === operation) setAuthRequestPending(false);
     }
   };
 
   const cancelAuth = async () => {
-    if (!activeAttempt) return;
+    if (!activeAttempt || authRequestPending) return;
+    const operation = ++authOperation.current;
+    const attemptID = activeAttempt.id;
+    setAuthRequestPending(true);
     try {
-      await mutate('/connection/auth/cancel', { attemptId: activeAttempt.id });
+      await mutate('/connection/auth/cancel', { attemptId: attemptID });
+      if (authOperation.current !== operation) return;
       setActiveAttempt(null);
       setAuthState('CANCELLED');
       setNotice({ kind: 'ok', text: 'Đã hủy phiên đăng nhập ACB.' });
     } catch (error) {
-      setNotice({ kind: 'error', text: errorMessage(error) });
+      if (authOperation.current === operation) setNotice({ kind: 'error', text: errorMessage(error) });
+    } finally {
+      if (authOperation.current === operation) setAuthRequestPending(false);
     }
   };
 
@@ -445,12 +466,12 @@ export default function App() {
                   <Lock size={18} color="#7ec4ff" /> Đăng nhập & Xác thực ACB
                 </h3>
 
-                {acbState === 'MONITORING' ? (
+                {acbState === 'MONITORING' && !activeAttempt ? (
                   <div style={{ color: '#52b788', fontSize: '0.9rem' }}>
                     <CheckCircle2 size={16} style={{ display: 'inline', marginRight: 6 }} />
                     Phiên ACB đang hoạt động bình thường. Bạn có thể xác thực lại bất cứ lúc nào nếu cần gia hạn phiên.
                     <div style={{ marginTop: 12 }}>
-                      <button onClick={startAuth} disabled={authState === 'STARTING'} style={{ padding: '6px 12px', borderRadius: 6 }}>
+                      <button onClick={startAuth} disabled={authRequestPending || activeAttempt !== null} style={{ padding: '6px 12px', borderRadius: 6 }}>
                         Gia hạn / Đăng nhập lại phiên ACB
                       </button>
                     </div>
@@ -464,7 +485,7 @@ export default function App() {
                     {!activeAttempt ? (
                       <button
                         onClick={startAuth}
-                        disabled={authState === 'STARTING'}
+                        disabled={authRequestPending}
                         style={{
                           padding: '8px 16px',
                           background: '#2b5c8f',
@@ -487,6 +508,7 @@ export default function App() {
                           </span>
                           <button
                             onClick={cancelAuth}
+                            disabled={authRequestPending}
                             style={{ padding: '4px 10px', background: '#5c1d1d', color: '#ffaaaa', border: 0, borderRadius: 4, fontSize: '0.8rem' }}
                           >
                             Hủy phiên

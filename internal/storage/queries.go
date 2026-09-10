@@ -186,8 +186,8 @@ func (s *Store) CompleteAuthSession(ctx context.Context, attemptID string, sessi
 			return err
 		}
 
-		// Transition connection to MONITORING
-		res, err := tx.ExecContext(ctx, `UPDATE connections SET state='MONITORING', generation=?, updated_at=? WHERE id=?`, gen, nowStr, connID)
+		// Transition connection to MONITORING only if this is still its active generation.
+		res, err := tx.ExecContext(ctx, `UPDATE connections SET state='MONITORING', updated_at=? WHERE id=? AND generation=? AND state='AUTH_STARTING'`, nowStr, connID, gen)
 		if err != nil {
 			return err
 		}

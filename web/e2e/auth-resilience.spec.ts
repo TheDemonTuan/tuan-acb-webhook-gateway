@@ -85,7 +85,7 @@ test.describe('ACB Auth & Error Resilience', () => {
     expect(bodyText).not.toContain('Cloudflare Ray ID');
   });
 
-  test('cancels active session and resets frame cleanly', async ({ page }) => {
+  test('keeps the active frame through a temporary status failure and stops after cancellation', async ({ page }) => {
     let cancelled = false;
     await page.route('**/api/v1/status', async (route) => {
       await route.fulfill({
@@ -129,7 +129,13 @@ test.describe('ACB Auth & Error Resilience', () => {
         }),
       });
     });
+    let statusChecks = 0;
     await page.route('**/api/v1/connection/auth/auth_test_2/status', async (route) => {
+      statusChecks++;
+      if (statusChecks === 1) {
+        await route.fulfill({ status: 502, contentType: 'text/html', body: '<!DOCTYPE html><body>temporary upstream failure</body>' });
+        return;
+      }
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -144,7 +150,10 @@ test.describe('ACB Auth & Error Resilience', () => {
     await page.goto('/');
     await page.getByRole('button', { name: 'Kết nối ACB' }).click();
     await page.getByRole('button', { name: 'Bắt đầu đăng nhập ACB' }).click();
-    await expect(page.locator('iframe[title="Đăng nhập ACB"]')).toBeVisible();
+    const authFrame = page.locator('iframe[title="Đăng nhập ACB"]');
+    await expect(authFrame).toBeVisible();
+    await expect(page.getByText('Máy chủ trả về lỗi HTTP 502. Vui lòng thử lại.')).toBeVisible();
+    await expect(authFrame).toBeVisible();
 
     await page.getByRole('button', { name: 'Hủy phiên' }).click();
     await expect(page.getByText('Đã hủy phiên đăng nhập ACB.')).toBeVisible();

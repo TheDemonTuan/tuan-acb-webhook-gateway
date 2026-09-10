@@ -60,3 +60,15 @@ jobs:
           sleep 2
           docker exec smoke-test /gateway --healthcheck
           docker stop smoke-test
+          docker rm -f smoke-test
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.auth-browser
+          push: false
+          tags: tuan-bank-gateway-auth-browser:smoke-test
+          load: true
+      - name: Run auth-browser image smoke test
+        run: |
+          chmod +x deploy/smoke-test-auth-browser.sh
+          ./deploy/smoke-test-auth-browser.sh tuan-bank-gateway-auth-browser:smoke-test

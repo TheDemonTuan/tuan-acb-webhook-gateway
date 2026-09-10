@@ -7,6 +7,29 @@ import (
 	"time"
 )
 
+func TestCompleteAuthSessionRejectsStaleGeneration(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "gateway.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	if _, err = store.ConfigureConnection(ctx, "***1234"); err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := store.StartAuthAttempt(ctx, "owner", 5*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.DB().ExecContext(ctx, `UPDATE connections SET generation=generation+1 WHERE id=?`, attempt.ConnectionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.CompleteAuthSession(ctx, attempt.ID, []byte("stale_session")); err == nil {
+		t.Fatal("expected stale generation to be rejected")
+	}
+}
+
 func TestCompleteAuthSessionAndListingQueries(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, filepath.Join(t.TempDir(), "gateway.db"))

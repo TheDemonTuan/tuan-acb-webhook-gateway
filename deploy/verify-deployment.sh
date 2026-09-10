@@ -5,25 +5,81 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 host="${HOST:-127.0.0.1}"
 port="${PORT:-8090}"
 timeout="${READY_TIMEOUT:-120}"
+compose_file="${COMPOSE_FILE:-$script_dir/compose.prod.yaml}"
 start="$(date +%s)"
 
+# Step 1: Verify gateway readiness
+printf 'Waiting for Gateway readiness at http://%s:%s (timeout: %ss)...\n' "$host" "$port" "$timeout"
 while true; do
   if curl --fail --silent --show-error "http://${host}:${port}/readyz" >/dev/null 2>&1 || \
      curl --fail --silent --show-error "http://${host}:${port}/ready" >/dev/null 2>&1 || \
      curl --fail --silent --show-error "http://${host}:8080/readyz" >/dev/null 2>&1 || \
      curl --fail --silent --show-error "http://${host}:8090/readyz" >/dev/null 2>&1; then
     printf 'Gateway is ready at http://%s:%s\n' "$host" "$port"
-    exit 0
+    break
   fi
   if (( $(date +%s) - start >= timeout )); then
     printf 'Gateway did not become ready within %ss\n' "$timeout" >&2
-    if command -v docker >/dev/null 2>&1 && [[ -f "$script_dir/compose.prod.yaml" ]]; then
+    if command -v docker >/dev/null 2>&1 && [[ -f "$compose_file" ]]; then
       echo "=== Docker Compose Container Status ===" >&2
-      docker compose -f "$script_dir/compose.prod.yaml" ps -a >&2 || true
+      docker compose -f "$compose_file" ps -a >&2 || true
       echo "=== Gateway Logs ===" >&2
-      docker compose -f "$script_dir/compose.prod.yaml" logs --tail 50 gateway >&2 || true
+      docker compose -f "$compose_file" logs --tail 50 gateway >&2 || true
+      echo "=== Auth-browser Logs ===" >&2
+      docker compose -f "$compose_file" logs --tail 50 auth-browser >&2 || true
     fi
     exit 1
   fi
   sleep 2
 done
+
+# Step 2: Verify auth-browser health and report restart diagnostics
+# Explicit constraint: NEVER create or cancel production login sessions.
+if command -v docker >/dev/null 2>&1 && [[ -f "$compose_file" ]]; then
+  if docker compose -f "$compose_file" config --services 2>/dev/null | grep -q "^auth-browser$"; then
+    echo "Verifying auth-browser container health..."
+    container_name="${AUTH_BROWSER_CONTAINER:-bank-gateway-auth-browser}"
+    ab_timeout="${AUTH_BROWSER_READY_TIMEOUT:-30}"
+    ab_start="$(date +%s)"
+    ab_healthy=0
+
+    while true; do
+      running=$(docker inspect --format='{{.State.Running}}' "$container_name" 2>/dev/null || echo "false")
+      restarts=$(docker inspect --format='{{.RestartCount}}' "$container_name" 2>/dev/null || echo "0")
+
+      if [[ "$running" == "true" ]]; then
+        # Run in-container healthcheck directly without touching /sessions
+        if docker compose -f "$compose_file" exec -T auth-browser /auth-browser --healthcheck >/dev/null 2>&1; then
+          ab_healthy=1
+          if [[ "$restarts" -gt 0 ]]; then
+            echo "[DIAGNOSTIC] auth-browser container has restarted ${restarts} time(s) since container creation" >&2
+            echo "=== Recent auth-browser logs (restart diagnostic) ===" >&2
+            docker compose -f "$compose_file" logs --tail 30 auth-browser >&2 || true
+          fi
+          printf 'Auth-browser is healthy (container: %s, restarts: %s)\n' "$container_name" "$restarts"
+          break
+        fi
+      fi
+
+      if (( $(date +%s) - ab_start >= ab_timeout )); then
+        echo "Error: auth-browser did not become healthy within ${ab_timeout}s" >&2
+        echo "=== Docker Compose Container Status ===" >&2
+        docker compose -f "$compose_file" ps -a >&2 || true
+        echo "=== Auth-browser Logs ===" >&2
+        docker compose -f "$compose_file" logs --tail 50 auth-browser >&2 || true
+        exit 1
+      fi
+      sleep 2
+    done
+  fi
+elif [[ -n "${AUTH_BROWSER_URL:-}" ]]; then
+  # Non-Docker fallback: verify healthz endpoint only (never /sessions)
+  if ! curl --fail --silent --show-error "${AUTH_BROWSER_URL}/healthz" >/dev/null 2>&1; then
+    echo "Error: auth-browser health check failed at ${AUTH_BROWSER_URL}/healthz" >&2
+    exit 1
+  fi
+  printf 'Auth-browser is healthy at %s/healthz\n' "$AUTH_BROWSER_URL"
+fi
+
+printf 'Deployment verification completed successfully.\n'
+exit 0

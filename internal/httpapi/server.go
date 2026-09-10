@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -156,6 +157,7 @@ func (s *Server) startAuth(w http.ResponseWriter, r *http.Request) {
 	}
 	session, err := s.browser.Start(r.Context(), attempt.ID)
 	if err != nil {
+		slog.Warn("failed to start ACB browser session", "attempt_id", attempt.ID, "error", err)
 		_ = s.store.FinishAuthAttempt(r.Context(), attempt.ID, "FAILED")
 		writeError(w, http.StatusServiceUnavailable, "Không thể khởi động trình duyệt ACB. Vui lòng thử lại.")
 		return
@@ -175,8 +177,26 @@ func (s *Server) cancelAuth(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "attemptId is required")
 		return
 	}
-	_ = s.browser.Cancel(r.Context(), in.AttemptID)
-	err := s.store.FinishAuthAttempt(r.Context(), in.AttemptID, "CANCELLED")
+	identity, _ := auth.FromContext(r.Context())
+	attempt, err := s.store.AuthAttemptStatusForOwner(r.Context(), in.AttemptID, identity.Email)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "ACB browser session not found")
+		return
+	}
+	if attempt.Status == "CANCELLED" {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "CANCELLED"})
+		return
+	}
+	if attempt.Status != "STARTING" && attempt.Status != "IN_PROGRESS" {
+		writeError(w, http.StatusBadRequest, "auth attempt cannot be cancelled")
+		return
+	}
+	if err := s.browser.Cancel(r.Context(), in.AttemptID); err != nil && !authbrowser.IsHTTPStatus(err, http.StatusNotFound) {
+		slog.Warn("failed to cancel ACB browser session upstream", "attempt_id", in.AttemptID, "error", err)
+		writeError(w, http.StatusBadGateway, "Không thể kết nối dịch vụ trình duyệt ACB. Vui lòng thử lại.")
+		return
+	}
+	err = s.store.FinishAuthAttempt(r.Context(), in.AttemptID, "CANCELLED")
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -187,21 +207,82 @@ func (s *Server) cancelAuth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) {
 	identity, _ := auth.FromContext(r.Context())
 	attemptID := chi.URLParam(r, "attemptID")
-	attempt, err := s.store.AuthAttemptForOwner(r.Context(), attemptID, identity.Email)
+	attempt, err := s.store.AuthAttemptStatusForOwner(r.Context(), attemptID, identity.Email)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "ACB browser session not found")
 		return
 	}
+
+	switch attempt.Status {
+	case "VERIFIED":
+		writeJSON(w, http.StatusOK, map[string]string{"status": "MONITORING"})
+		return
+	case "CANCELLED":
+		writeJSON(w, http.StatusOK, map[string]string{"status": "CANCELLED"})
+		return
+	case "EXPIRED":
+		writeJSON(w, http.StatusOK, map[string]string{
+			"status": "EXPIRED",
+			"error":  "Phiên đăng nhập ACB đã hết hạn. Vui lòng mở phiên mới.",
+		})
+		return
+	case "FAILED":
+		writeJSON(w, http.StatusOK, map[string]string{
+			"status": "FAILED",
+			"error":  "Phiên trình duyệt ACB đã kết thúc. Vui lòng mở phiên mới.",
+		})
+		return
+	}
+
+	expiresAt, parseErr := time.Parse(time.RFC3339Nano, attempt.ExpiresAt)
+	if parseErr != nil {
+		expiresAt, parseErr = time.Parse(time.RFC3339, attempt.ExpiresAt)
+	}
+	if parseErr == nil && !expiresAt.IsZero() && !time.Now().UTC().Before(expiresAt) {
+		_ = s.browser.Cancel(r.Context(), attemptID)
+		_ = s.store.FinishAuthAttempt(r.Context(), attemptID, "EXPIRED")
+		writeJSON(w, http.StatusOK, map[string]string{
+			"status": "EXPIRED",
+			"error":  "Phiên đăng nhập ACB đã hết hạn. Vui lòng mở phiên mới.",
+		})
+		return
+	}
+
+	conn, err := s.store.Connection(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if conn.Generation != attempt.Generation {
+		writeError(w, http.StatusConflict, "ACB browser session was superseded")
+		return
+	}
+
 	session, err := s.browser.Status(r.Context(), attemptID)
 	if err != nil {
 		if authbrowser.IsHTTPStatus(err, http.StatusNotFound) {
+			slog.Warn("ACB browser session missing or ended upstream", "attempt_id", attemptID, "error", err)
 			_ = s.store.FinishAuthAttempt(r.Context(), attemptID, "FAILED")
-			writeJSON(w, http.StatusOK, map[string]string{"status": "FAILED", "error": "Phiên trình duyệt ACB đã kết thúc. Vui lòng mở phiên mới."})
+			writeJSON(w, http.StatusOK, map[string]string{
+				"status": "FAILED",
+				"error":  "Phiên trình duyệt ACB đã kết thúc. Vui lòng mở phiên mới.",
+			})
 			return
 		}
 		writeError(w, http.StatusBadGateway, "Không thể kết nối dịch vụ trình duyệt ACB. Vui lòng thử lại.")
 		return
 	}
+
+	latestConn, err := s.store.Connection(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if latestConn.Generation != attempt.Generation {
+		writeError(w, http.StatusConflict, "ACB browser session was superseded")
+		return
+	}
+
 	if session.Status == "FAILED" || session.Status == "EXPIRED" {
 		_ = s.store.FinishAuthAttempt(r.Context(), attemptID, session.Status)
 		message := "Không thể khởi động trình duyệt ACB. Vui lòng mở phiên mới."
@@ -211,6 +292,13 @@ func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": session.Status, "error": message})
 		return
 	}
+
+	if session.Status == "CANCELLED" {
+		_ = s.store.FinishAuthAttempt(r.Context(), attemptID, "CANCELLED")
+		writeJSON(w, http.StatusOK, map[string]string{"status": "CANCELLED"})
+		return
+	}
+
 	if session.Status == "VERIFIED" {
 		if s.keyring == nil {
 			writeError(w, http.StatusServiceUnavailable, "session encryption is unavailable")
@@ -231,15 +319,16 @@ func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "session encoding failed")
 			return
 		}
-		conn, err := s.store.CompleteAuthSession(r.Context(), attemptID, encrypted)
+		completedConn, err := s.store.CompleteAuthSession(r.Context(), attemptID, encrypted)
 		if err != nil {
 			writeError(w, http.StatusConflict, "ACB browser session was superseded")
 			return
 		}
-		audit(s.store, r, "auth.verified", conn.ID)
+		audit(s.store, r, "auth.verified", completedConn.ID)
 		writeJSON(w, http.StatusOK, map[string]string{"status": "MONITORING"})
 		return
 	}
+
 	writeJSON(w, http.StatusOK, map[string]string{"status": session.Status})
 }
 

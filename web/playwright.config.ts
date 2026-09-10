@@ -13,10 +13,12 @@ export default defineConfig({
     { name: 'desktop', use: { ...devices['Desktop Chrome'] } },
     { name: 'mobile', use: { ...devices['iPhone 13'], browserName: 'chromium' } },
   ],
-  webServer: {
-    command: 'cd .. && rm -rf /tmp/tbg-playwright && DATA_DIR=/tmp/tbg-playwright LISTEN_ADDR=127.0.0.1:18081 go run ./cmd/gateway',
-    url: 'http://127.0.0.1:18081/healthz',
-    reuseExistingServer: false,
-    timeout: 60_000,
-  },
+  webServer: process.env.E2E_SKIP_WEBSERVER
+    ? undefined
+    : {
+        command: 'cd .. && rm -rf /tmp/tbg-playwright && DATA_DIR=/tmp/tbg-playwright LISTEN_ADDR=127.0.0.1:18081 go run ./cmd/gateway',
+        url: 'http://127.0.0.1:18081/healthz',
+        reuseExistingServer: false,
+        timeout: 60_000,
+      },
 });
