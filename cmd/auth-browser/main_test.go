@@ -471,6 +471,9 @@ func TestHandoffReapsProcessAndSetsCompleted(t *testing.T) {
 }
 
 func TestRealChromiumIntegration(t *testing.T) {
+	if os.Getenv("ACB_BROWSER_INTEGRATION") != "1" {
+		t.Skip("set ACB_BROWSER_INTEGRATION=1 to run the real browser integration test")
+	}
 	browserBin := findDefaultBrowser()
 	if browserBin == "" || browserBin == "chromium" {
 		if _, err := exec.LookPath("chromium"); err != nil {
