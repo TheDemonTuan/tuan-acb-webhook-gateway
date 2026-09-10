@@ -36,12 +36,7 @@ const (
 	startupLimit       = 10 * time.Second
 )
 
-func acbLoginURL() string {
-	if value := strings.TrimSpace(os.Getenv("ACB_LOGIN_URL")); value != "" {
-		return value
-	}
-	return defaultACBLoginURL
-}
+func acbLoginURL() string { return defaultACBLoginURL }
 
 type browserSession struct {
 	AttemptID string    `json:"attemptId"`
@@ -105,14 +100,6 @@ func main() {
 	mux.HandleFunc("DELETE /sessions/{attemptID}", controller.cancel)
 	mux.HandleFunc("GET /sessions/{attemptID}/status", controller.status)
 	mux.HandleFunc("POST /sessions/{attemptID}/handoff", controller.handoff)
-	mux.HandleFunc("GET /test-login-page", func(w http.ResponseWriter, r *http.Request) {
-		if os.Getenv("ACB_LOGIN_URL") == "" {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = io.WriteString(w, "<!doctype html><title>ACB browser smoke test</title><p>Browser ready</p>")
-	})
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		if err := desktopHealth(); err != nil {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
