@@ -76,6 +76,17 @@ func TestProductionAllowsVerifiedCloudflareEmail(t *testing.T) {
 	}
 }
 
+func TestProductionDoesNotGrantRoleFromJWTSubject(t *testing.T) {
+	m := New(config.Config{Production: true, Roles: config.RoleSubjects{Owners: map[string]struct{}{"cloudflare-uuid": {}}}}, identityVerifier{identity: Identity{Subject: "cloudflare-uuid", Email: "other@example.com"}})
+	h := m.Require(Owner)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	r := httptest.NewRequest(http.MethodGet, "https://example.test/api/v1/x", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("got %d", rec.Code)
+	}
+}
+
 func TestDevelopmentRejectsBadCSRF(t *testing.T) {
 	m := New(config.Config{DevelopmentSubject: "alice"}, nil)
 	h := m.Require(Owner)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))

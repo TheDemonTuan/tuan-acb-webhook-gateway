@@ -128,8 +128,23 @@ jobs:
           VPS_USER: ${{ secrets.VPS_USER }}
           VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || vars.DEPLOY_PATH || '/opt/tuan-bank-gateway' }}
+          DASHBOARD_OWNER_EMAIL: ${{ vars.DASHBOARD_OWNER_EMAIL }}
         run: |
           set -euo pipefail
+          [[ -n "$DASHBOARD_OWNER_EMAIL" ]] || { printf 'DASHBOARD_OWNER_EMAIL is required.\n' >&2; exit 1; }
           image="${{ needs.image.outputs.image }}@${{ needs.image.outputs.digest }}"
+          owner="$(printf '%s' "$DASHBOARD_OWNER_EMAIL" | tr '[:upper:]' '[:lower:]')"
           ssh -i ~/.ssh/id_ed25519 -p "$VPS_PORT" -o BatchMode=yes \
-            "$VPS_USER@$VPS_HOST" "cd '$DEPLOY_PATH' && ./deploy.sh '$image'"
+            "$VPS_USER@$VPS_HOST" "DEPLOY_PATH='$DEPLOY_PATH' OWNER='$owner' bash -s" <<'REMOTE'
+          set -Eeuo pipefail
+          env_file="$DEPLOY_PATH/.env.production"
+          [[ -f "$env_file" ]] || { printf 'Missing production env file: %s\n' "$env_file" >&2; exit 1; }
+          tmp="$(mktemp "${env_file}.XXXXXX")"
+          trap 'rm -f "$tmp"' EXIT
+          grep -v -E '^(OWNER_SUBJECTS|CLOUDFLARE_ACCESS_OWNER_EMAIL)=' "$env_file" > "$tmp" || true
+          printf 'OWNER_SUBJECTS=%s\n' "$OWNER" >> "$tmp"
+          chmod 600 "$tmp"
+          mv "$tmp" "$env_file"
+          cd "$DEPLOY_PATH"
+          ./deploy.sh "$image"
+          REMOTE

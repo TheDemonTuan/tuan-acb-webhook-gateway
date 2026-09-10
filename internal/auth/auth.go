@@ -109,17 +109,20 @@ func (m *Middleware) identity(r *http.Request) (Identity, error) {
 	if err != nil {
 		return Identity{}, err
 	}
-	if identity.Email == "" {
-		if headerEmail := strings.TrimSpace(r.Header.Get("Cf-Access-Authenticated-User-Email")); headerEmail != "" {
-			identity.Email = headerEmail
+	if m.cfg.Production {
+		if identity.Email == "" {
+			return Identity{}, errors.New("verified Cloudflare Access JWT is missing email")
 		}
+		role, ok := m.role(identity.Email)
+		if !ok {
+			return Identity{}, errors.New("email is not authorized")
+		}
+		identity.Role = role
+		return identity, nil
 	}
 	role, ok := m.role(identity.Subject)
-	if !ok && identity.Email != "" {
-		role, ok = m.role(identity.Email)
-	}
 	if !ok {
-		return Identity{}, fmt.Errorf("user %q (email: %q) is not authorized in OWNER_SUBJECTS", identity.Subject, identity.Email)
+		return Identity{}, errors.New("subject is not allowed")
 	}
 	identity.Role = role
 	return identity, nil

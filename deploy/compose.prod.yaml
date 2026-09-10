@@ -26,7 +26,7 @@ services:
       CF_ACCESS_ISSUER: ${CF_ACCESS_ISSUER:-https://${CLOUDFLARE_ACCESS_TEAM_NAME:-thedemontuan}.cloudflareaccess.com}
       CF_ACCESS_AUDIENCE: ${CF_ACCESS_AUDIENCE:-${CLOUDFLARE_ACCESS_AUD:-}}
       CF_ACCESS_JWKS_URL: ${CF_ACCESS_JWKS_URL:-https://${CLOUDFLARE_ACCESS_TEAM_NAME:-thedemontuan}.cloudflareaccess.com/cdn-cgi/access/certs}
-      OWNER_SUBJECTS: ${OWNER_SUBJECTS:-${CLOUDFLARE_ACCESS_OWNER_EMAIL:-thedemontuan@gmail.com}}
+      OWNER_SUBJECTS: ${OWNER_SUBJECTS:-${CLOUDFLARE_ACCESS_OWNER_EMAIL:-nguyenviettuanbp@gmail.com}}
     ports:
       - "127.0.0.1:8090:8090"
     volumes:
