@@ -50,6 +50,7 @@ docker run -d \
   --cap-drop ALL \
   --security-opt "no-new-privileges:true" \
   -e HOME=/tmp \
+  -e ACB_LOGIN_URL=http://127.0.0.1:8181/test-login-page \
   --tmpfs /tmp:rw,nosuid,nodev,size=1g,mode=1777 \
   --cpus "1.5" \
   --memory "1536m" \

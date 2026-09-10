@@ -58,7 +58,7 @@ func TestHelperProcess(t *testing.T) {
 					})
 				})
 				mux.HandleFunc("/json/list", func(w http.ResponseWriter, r *http.Request) {
-					_ = json.NewEncoder(w).Encode([]map[string]string{{"type": "page", "url": acbLoginURL}})
+					_ = json.NewEncoder(w).Encode([]map[string]string{{"type": "page", "url": defaultACBLoginURL}})
 				})
 				server := &http.Server{Handler: mux}
 				go server.Serve(listener)
@@ -85,7 +85,7 @@ func TestWaitBrowserReady(t *testing.T) {
 		case "/json/version":
 			_ = json.NewEncoder(w).Encode(map[string]string{"webSocketDebuggerUrl": "ws://127.0.0.1/devtools/browser/1"})
 		case "/json/list":
-			_ = json.NewEncoder(w).Encode([]map[string]string{{"type": "page", "url": acbLoginURL}})
+			_ = json.NewEncoder(w).Encode([]map[string]string{{"type": "page", "url": defaultACBLoginURL}})
 		default:
 			http.NotFound(w, r)
 		}

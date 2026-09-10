@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -30,10 +31,17 @@ import (
 )
 
 const (
-	acbLoginURL  = "https://online.acb.com.vn/acbib/Request"
-	sessionTTL   = 15 * time.Minute
-	startupLimit = 10 * time.Second
+	defaultACBLoginURL = "https://online.acb.com.vn/acbib/Request"
+	sessionTTL         = 15 * time.Minute
+	startupLimit       = 10 * time.Second
 )
+
+func acbLoginURL() string {
+	if value := strings.TrimSpace(os.Getenv("ACB_LOGIN_URL")); value != "" {
+		return value
+	}
+	return defaultACBLoginURL
+}
 
 type browserSession struct {
 	AttemptID string    `json:"attemptId"`
@@ -97,6 +105,14 @@ func main() {
 	mux.HandleFunc("DELETE /sessions/{attemptID}", controller.cancel)
 	mux.HandleFunc("GET /sessions/{attemptID}/status", controller.status)
 	mux.HandleFunc("POST /sessions/{attemptID}/handoff", controller.handoff)
+	mux.HandleFunc("GET /test-login-page", func(w http.ResponseWriter, r *http.Request) {
+		if os.Getenv("ACB_LOGIN_URL") == "" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, "<!doctype html><title>ACB browser smoke test</title><p>Browser ready</p>")
+	})
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		if err := desktopHealth(); err != nil {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
@@ -315,7 +331,7 @@ func (s *server) launch(ctx context.Context, item *browserSession, port int, rea
 	if len(s.extraFlags) > 0 {
 		args = append(args, s.extraFlags...)
 	}
-	args = append(args, acbLoginURL)
+	args = append(args, acbLoginURL())
 
 	cmdBuilder := s.cmdFunc
 	if cmdBuilder == nil {
@@ -647,8 +663,11 @@ func waitACBTargetStable(ctx context.Context, client *http.Client, debugURL stri
 		response.Body.Close()
 		found := false
 		if response.StatusCode == http.StatusOK && decodeErr == nil {
+			loginLocation, _ := url.Parse(acbLoginURL())
 			for _, targetInfo := range targets {
-				if targetInfo.Type == "page" && strings.Contains(strings.ToLower(targetInfo.URL), "online.acb.com.vn") {
+				targetLocation, parseErr := url.Parse(targetInfo.URL)
+				if targetInfo.Type == "page" && parseErr == nil && loginLocation != nil &&
+					strings.EqualFold(targetLocation.Hostname(), loginLocation.Hostname()) {
 					found = true
 					break
 				}
