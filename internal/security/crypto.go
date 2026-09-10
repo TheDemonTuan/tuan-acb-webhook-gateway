@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -29,12 +30,24 @@ func LoadKeyring(path string) (*Keyring, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read master key: %w", err)
 	}
-	key, err := base64.RawStdEncoding.DecodeString(strings.TrimSpace(string(b)))
-	if err != nil {
-		return nil, errors.New("master key must be raw base64")
+	str := strings.TrimSpace(string(b))
+	var key []byte
+	if len(str) == 64 {
+		if k, err := hex.DecodeString(str); err == nil && len(k) == 32 {
+			key = k
+		}
+	}
+	if len(key) == 0 {
+		if k, err := base64.RawStdEncoding.DecodeString(str); err == nil && len(k) == 32 {
+			key = k
+		} else if k, err := base64.StdEncoding.DecodeString(str); err == nil && len(k) == 32 {
+			key = k
+		} else if len(b) == 32 {
+			key = b
+		}
 	}
 	if len(key) != 32 {
-		return nil, errors.New("master key must be 32 bytes")
+		return nil, errors.New("master key must be 32 bytes (raw, 64-char hex, or base64)")
 	}
 	return &Keyring{currentID: "k1", keys: map[string][]byte{"k1": key}}, nil
 }

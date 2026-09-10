@@ -45,10 +45,55 @@ func Load() (Config, error) {
 	}
 	dataDir := value("DATA_DIR", "data")
 	production := value("APP_ENV", "development") == "production"
+
+	cfTeam := os.Getenv("CLOUDFLARE_ACCESS_TEAM_NAME")
+	cfIssuer := strings.TrimSuffix(os.Getenv("CF_ACCESS_ISSUER"), "/")
+	if cfIssuer == "" && cfTeam != "" {
+		cfIssuer = fmt.Sprintf("https://%s.cloudflareaccess.com", cfTeam)
+	}
+	cfAud := os.Getenv("CF_ACCESS_AUDIENCE")
+	if cfAud == "" {
+		cfAud = os.Getenv("CLOUDFLARE_ACCESS_AUD")
+	}
+	cfJWKS := os.Getenv("CF_ACCESS_JWKS_URL")
+	if cfJWKS == "" && cfTeam != "" {
+		cfJWKS = fmt.Sprintf("https://%s.cloudflareaccess.com/cdn-cgi/access/certs", cfTeam)
+	}
+
+	masterKeyFile := os.Getenv("APP_MASTER_KEY_FILE")
+	if masterKeyFile == "" && os.Getenv("APP_MASTER_KEY") != "" {
+		autoKey := filepath.Join(dataDir, "app_master_key")
+		_ = os.MkdirAll(dataDir, 0o700)
+		_ = os.WriteFile(autoKey, []byte(os.Getenv("APP_MASTER_KEY")), 0o600)
+		masterKeyFile = autoKey
+	}
+
+	owners := set("OWNER_SUBJECTS")
+	if len(owners) == 0 {
+		if ownerDefault := os.Getenv("CLOUDFLARE_ACCESS_OWNER_EMAIL"); ownerDefault != "" {
+			owners[ownerDefault] = struct{}{}
+		} else if production {
+			owners["thedemontuan@gmail.com"] = struct{}{}
+		}
+	}
+
 	cfg := Config{
-		Address: value("LISTEN_ADDR", "127.0.0.1:8080"), DatabasePath: value("DATABASE_PATH", filepath.Join(dataDir, "gateway.db")), MasterKeyFile: os.Getenv("APP_MASTER_KEY_FILE"), Timezone: loc, PollInterval: poll, FastPollInterval: fast,
-		CloudflareIssuer: strings.TrimSuffix(os.Getenv("CF_ACCESS_ISSUER"), "/"), CloudflareAudience: os.Getenv("CF_ACCESS_AUDIENCE"), CloudflareJWKSURL: os.Getenv("CF_ACCESS_JWKS_URL"),
-		Roles: RoleSubjects{Owners: set("OWNER_SUBJECTS"), Operators: set("OPERATOR_SUBJECTS"), Viewers: set("VIEWER_SUBJECTS")}, DevelopmentSubject: value("DEVELOPMENT_SUBJECT", "local-owner"), Production: production,
+		Address:            value("LISTEN_ADDR", "127.0.0.1:8080"),
+		DatabasePath:       value("DATABASE_PATH", filepath.Join(dataDir, "gateway.db")),
+		MasterKeyFile:      masterKeyFile,
+		Timezone:           loc,
+		PollInterval:       poll,
+		FastPollInterval:   fast,
+		CloudflareIssuer:   cfIssuer,
+		CloudflareAudience: cfAud,
+		CloudflareJWKSURL:  cfJWKS,
+		Roles: RoleSubjects{
+			Owners:    owners,
+			Operators: set("OPERATOR_SUBJECTS"),
+			Viewers:   set("VIEWER_SUBJECTS"),
+		},
+		DevelopmentSubject: value("DEVELOPMENT_SUBJECT", "local-owner"),
+		Production:         production,
 	}
 	if production {
 		if cfg.MasterKeyFile == "" {

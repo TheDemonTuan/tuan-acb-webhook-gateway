@@ -59,7 +59,10 @@ func (v *CloudflareVerifier) Verify(ctx context.Context, raw string) (string, er
 				subject = strings.TrimSpace(claims.Subject)
 			}
 			if subject == "" {
-				return "", errors.New("JWT missing subject")
+				subject = strings.TrimSpace(private.Email)
+			}
+			if subject == "" {
+				return "", errors.New("JWT missing subject and email")
 			}
 			return subject, nil
 		}

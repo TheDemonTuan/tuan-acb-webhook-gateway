@@ -91,14 +91,21 @@ func (m *Middleware) role(subject string) (Role, bool) {
 	if !m.cfg.Production && subject == m.cfg.DevelopmentSubject {
 		return Owner, true
 	}
-	if _, ok := m.cfg.Roles.Owners[subject]; ok {
-		return Owner, true
+	subLower := strings.ToLower(subject)
+	for s := range m.cfg.Roles.Owners {
+		if s == subject || strings.ToLower(s) == subLower {
+			return Owner, true
+		}
 	}
-	if _, ok := m.cfg.Roles.Operators[subject]; ok {
-		return Operator, true
+	for s := range m.cfg.Roles.Operators {
+		if s == subject || strings.ToLower(s) == subLower {
+			return Operator, true
+		}
 	}
-	if _, ok := m.cfg.Roles.Viewers[subject]; ok {
-		return Viewer, true
+	for s := range m.cfg.Roles.Viewers {
+		if s == subject || strings.ToLower(s) == subLower {
+			return Viewer, true
+		}
 	}
 	return "", false
 }

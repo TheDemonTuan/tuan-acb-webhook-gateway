@@ -19,13 +19,45 @@ concurrency:
   group: tuan-bank-gateway-production
   cancel-in-progress: false
 
-env:
-  IMAGE_NAME: ghcr.io/${{ github.repository }}
-
 jobs:
-  image:
+  verify:
+    name: Verify test and build
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-go@v6
+        with:
+          go-version: 1.27.1
+      - name: Install frontend dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+      - name: Build and test frontend with Bun
+        working-directory: web
+        run: |
+          bunx --bun tsc --noEmit
+          bunx --bun vite build
+          bunx --bun vitest run
+      - name: Test Go gateway
+        run: |
+          go test -race ./...
+          go vet ./...
+      - name: Verify deployment scripts
+        run: bash -n deploy/*.sh
+      - name: Check generated source and whitespace
+        run: git diff --check
+
+  image:
+    name: Build GHCR image
+    needs: verify
+    runs-on: ${{ vars.BUILD_RUNNER || 'ubuntu-24.04-arm' }}
+    permissions:
+      contents: read
+      packages: write
     outputs:
+      image: ${{ steps.meta.outputs.image }}
       digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
@@ -35,18 +67,30 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Resolve image name
+        id: meta
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          repo_lc="$(printf '%s' "$REPO" | tr '[:upper:]' '[:lower:]')"
+          echo "image=ghcr.io/${repo_lc}" >> "$GITHUB_OUTPUT"
       - id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          tags: ${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
+          platforms: ${{ vars.DEPLOY_PLATFORM || 'linux/arm64' }}
+          tags: |
+            ${{ steps.meta.outputs.image }}:sha-${{ github.sha }}
+            ${{ steps.meta.outputs.image }}:latest
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
 
   deploy:
-    needs: image
+    name: Deploy to VPS
+    needs: [verify, image]
     if: github.event_name == 'push' || inputs.deploy
     runs-on: ubuntu-latest
     environment: production
@@ -58,30 +102,34 @@ jobs:
           VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
-          install -d -m 700 ~/.ssh
+          mkdir -p ~/.ssh
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
           printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
-      - name: Upload deployment manifests only
+          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+      - name: Sync deployment files
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
           VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
-          DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/tuan-bank-gateway' }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || vars.DEPLOY_PATH || '/opt/tuan-bank-gateway' }}
         run: |
           set -euo pipefail
-          tar -C deploy -czf /tmp/deploy.tgz compose.prod.yaml deploy.sh rollback.sh verify-deployment.sh backup.sh README.md
-          ssh -i ~/.ssh/id_ed25519 -p "$VPS_PORT" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "mkdir -p '$DEPLOY_PATH/deploy'"
-          scp -i ~/.ssh/id_ed25519 -P "$VPS_PORT" -o BatchMode=yes /tmp/deploy.tgz "$VPS_USER@$VPS_HOST:/tmp/tuan-bank-gateway-deploy.tgz"
-          ssh -i ~/.ssh/id_ed25519 -p "$VPS_PORT" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "tar -xzf /tmp/tuan-bank-gateway-deploy.tgz -C '$DEPLOY_PATH/deploy' && rm /tmp/tuan-bank-gateway-deploy.tgz && chmod 700 '$DEPLOY_PATH/deploy/'*.sh"
-      - name: Deploy immutable digest
+          ssh -i ~/.ssh/id_ed25519 -p "$VPS_PORT" -o BatchMode=yes \
+            "$VPS_USER@$VPS_HOST" "mkdir -p '$DEPLOY_PATH/data' '$DEPLOY_PATH/secrets'"
+          scp -i ~/.ssh/id_ed25519 -P "$VPS_PORT" -o BatchMode=yes \
+            deploy/compose.prod.yaml deploy/deploy.sh deploy/rollback.sh \
+            deploy/verify-deployment.sh deploy/backup.sh deploy/README.md \
+            "$VPS_USER@$VPS_HOST:$DEPLOY_PATH/"
+          ssh -i ~/.ssh/id_ed25519 -p "$VPS_PORT" -o BatchMode=yes \
+            "$VPS_USER@$VPS_HOST" "chmod 750 '$DEPLOY_PATH/'*.sh"
+      - name: Deploy immutable image
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
           VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
-          DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/tuan-bank-gateway' }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || vars.DEPLOY_PATH || '/opt/tuan-bank-gateway' }}
         run: |
           set -euo pipefail
-          image="${IMAGE_NAME}@${{ needs.image.outputs.digest }}"
-          ssh -i ~/.ssh/id_ed25519 -p "$VPS_PORT" -o BatchMode=yes "$VPS_USER@$VPS_HOST" "cd '$DEPLOY_PATH/deploy' && ./deploy.sh '$image'"
+          image="${{ needs.image.outputs.image }}@${{ needs.image.outputs.digest }}"
+          ssh -i ~/.ssh/id_ed25519 -p "$VPS_PORT" -o BatchMode=yes \
+            "$VPS_USER@$VPS_HOST" "cd '$DEPLOY_PATH' && ./deploy.sh '$image'"
