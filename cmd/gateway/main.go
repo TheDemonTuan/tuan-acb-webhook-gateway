@@ -20,6 +20,7 @@ import (
 	"github.com/thedemontuan/tuan-bank-gateway/internal/httpapi"
 	"github.com/thedemontuan/tuan-bank-gateway/internal/lock"
 	"github.com/thedemontuan/tuan-bank-gateway/internal/monitor"
+	"github.com/thedemontuan/tuan-bank-gateway/internal/security"
 	"github.com/thedemontuan/tuan-bank-gateway/internal/storage"
 	"github.com/thedemontuan/tuan-bank-gateway/internal/webhook"
 )
@@ -72,8 +73,23 @@ func main() {
 	dispatcher := webhook.NewDispatcher(store, nil)
 	go dispatcher.Run(ctx)
 
-	acbClient, _ := acb.NewClient("https://online.acb.com.vn", nil)
+	var keyring *security.Keyring
+	if cfg.MasterKeyFile != "" {
+		keyring, err = security.LoadKeyring(cfg.MasterKeyFile)
+		if err != nil {
+			logger.Error("load session encryption key", "error", err)
+			os.Exit(1)
+		}
+	}
+	acbClient, err := acb.NewClient("https://online.acb.com.vn", nil)
+	if err != nil {
+		logger.Error("create ACB client", "error", err)
+		os.Exit(1)
+	}
 	bankMonitor := monitor.New(store, acbClient, cfg.PollInterval)
+	if keyring != nil {
+		bankMonitor.WithSessionLoader(monitor.NewSessionLoader(store, keyring, acbClient))
+	}
 	go bankMonitor.Run(ctx)
 
 	primaryAddr := cfg.Address

@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/thedemontuan/tuan-bank-gateway/internal/authbrowser"
 )
 
 const OfficialHost = "online.acb.com.vn"
@@ -43,6 +45,26 @@ func NewClient(base string, transport http.RoundTripper) (*Client, error) {
 		}
 		return nil
 	}}}, nil
+}
+
+// RestoreCookies accepts only cookies bound to the official ACB host. The
+// caller supplies encrypted storage; no cookie ever crosses the dashboard API.
+func (c *Client) RestoreCookies(cookies []authbrowser.Cookie) error {
+	for _, cookie := range cookies {
+		if cookie.Name == "" || cookie.Value == "" || !strings.HasSuffix(strings.ToLower(strings.TrimPrefix(cookie.Domain, ".")), OfficialHost) {
+			return errors.New("invalid ACB session cookie")
+		}
+	}
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return err
+	}
+	base := *c.baseURL
+	for _, cookie := range cookies {
+		jar.SetCookies(&base, []*http.Cookie{{Name: cookie.Name, Value: cookie.Value, Domain: cookie.Domain, Path: cookie.Path, Expires: cookie.Expires, Secure: cookie.Secure, HttpOnly: cookie.HTTPOnly}})
+	}
+	c.http.Jar = jar
+	return nil
 }
 
 func (c *Client) History(ctx context.Context, endpoint string, fields map[string]string) (Response, error) {

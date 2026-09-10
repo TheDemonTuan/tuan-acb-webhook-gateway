@@ -4,6 +4,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd/auth-browser ./cmd/auth-browser
+COPY internal/authbrowser ./internal/authbrowser
 RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /auth-browser ./cmd/auth-browser
 
 FROM debian:bookworm-slim

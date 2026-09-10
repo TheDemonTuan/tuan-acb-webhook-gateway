@@ -29,16 +29,21 @@ type Server struct {
 	auth          *auth.Middleware
 	browser       *authbrowser.Client
 	browserVNCURL string
+	keyring       *security.Keyring
 	started       time.Time
 	handler       http.Handler
 }
 
 func New(cfg config.Config, store *storage.Store) *Server {
+	var keyring *security.Keyring
+	if cfg.MasterKeyFile != "" {
+		keyring, _ = security.LoadKeyring(cfg.MasterKeyFile)
+	}
 	var verifier auth.Verifier
 	if cfg.Production {
 		verifier = auth.NewCloudflareVerifier(cfg)
 	}
-	s := &Server{cfg: cfg, store: store, auth: auth.New(cfg, verifier), browser: authbrowser.NewClient(cfg.AuthBrowserURL), browserVNCURL: cfg.AuthBrowserVNCURL, started: time.Now().UTC()}
+	s := &Server{cfg: cfg, store: store, auth: auth.New(cfg, verifier), browser: authbrowser.NewClient(cfg.AuthBrowserURL), browserVNCURL: cfg.AuthBrowserVNCURL, keyring: keyring, started: time.Now().UTC()}
 	r := chi.NewRouter()
 	r.Use(requestID, securityHeaders, recoverer)
 	r.Get("/healthz", s.health)
@@ -59,6 +64,7 @@ func New(cfg config.Config, store *storage.Store) *Server {
 		api.With(s.auth.Require(auth.Owner, auth.Operator)).Post("/connection/{action:pause|resume|sync}", s.connectionAction)
 		api.With(s.auth.Require(auth.Owner)).Post("/connection/auth/start", s.startAuth)
 		api.With(s.auth.Require(auth.Owner)).Post("/connection/auth/cancel", s.cancelAuth)
+		api.With(s.auth.Require(auth.Owner)).Get("/connection/auth/{attemptID}/status", s.authStatus)
 		api.With(s.auth.Require(auth.Owner)).Handle("/connection/auth/{attemptID}/screen/*", http.HandlerFunc(s.browserScreen))
 
 		api.With(s.auth.Require(auth.Owner)).Post("/webhooks", s.createEndpoint)
@@ -178,6 +184,51 @@ func (s *Server) cancelAuth(w http.ResponseWriter, r *http.Request) {
 	audit(s.store, r, "auth.cancel", in.AttemptID)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "CANCELLED"})
 }
+func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) {
+	identity, _ := auth.FromContext(r.Context())
+	attemptID := chi.URLParam(r, "attemptID")
+	attempt, err := s.store.AuthAttemptForOwner(r.Context(), attemptID, identity.Email)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "ACB browser session not found")
+		return
+	}
+	session, err := s.browser.Status(r.Context(), attemptID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "ACB browser status unavailable")
+		return
+	}
+	if session.Status == "VERIFIED" {
+		handoff, err := s.browser.Handoff(r.Context(), attemptID)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "ACB browser session handoff failed")
+			return
+		}
+		if s.keyring == nil {
+			writeError(w, http.StatusServiceUnavailable, "session encryption is unavailable")
+			return
+		}
+		envelope, err := s.keyring.Encrypt(handoff, []byte("acb-session:"+attempt.ConnectionID))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "session encryption failed")
+			return
+		}
+		encrypted, err := json.Marshal(envelope)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "session encoding failed")
+			return
+		}
+		conn, err := s.store.CompleteAuthSession(r.Context(), attemptID, encrypted)
+		if err != nil {
+			writeError(w, http.StatusConflict, "ACB browser session was superseded")
+			return
+		}
+		audit(s.store, r, "auth.verified", conn.ID)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "MONITORING"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": session.Status})
+}
+
 func (s *Server) browserScreen(w http.ResponseWriter, r *http.Request) {
 	identity, _ := auth.FromContext(r.Context())
 	attemptID := chi.URLParam(r, "attemptID")
@@ -317,7 +368,7 @@ func requestIDFromContext(ctx context.Context) string {
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
 		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")

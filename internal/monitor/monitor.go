@@ -20,6 +20,7 @@ type BankClient interface {
 type Monitor struct {
 	store        *storage.Store
 	client       BankClient
+	sessions     *SessionLoader
 	pollInterval time.Duration
 	mu           sync.Mutex
 }
@@ -33,6 +34,11 @@ func New(store *storage.Store, client BankClient, interval time.Duration) *Monit
 		client:       client,
 		pollInterval: interval,
 	}
+}
+
+func (m *Monitor) WithSessionLoader(loader *SessionLoader) *Monitor {
+	m.sessions = loader
+	return m
 }
 
 // PollOnce executes a single poll cycle if the connection is in MONITORING state.
@@ -49,6 +55,11 @@ func (m *Monitor) PollOnce(ctx context.Context) error {
 	}
 	if m.client == nil {
 		return errors.New("bank client not configured")
+	}
+	if m.sessions != nil {
+		if err := m.sessions.Restore(ctx, conn.ID, conn.Generation); err != nil {
+			return fmt.Errorf("restore ACB session: %w", err)
+		}
 	}
 
 	poll, err := m.store.StartPoll(ctx)

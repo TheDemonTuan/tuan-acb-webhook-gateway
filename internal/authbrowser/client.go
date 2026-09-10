@@ -28,12 +28,12 @@ func NewClient(baseURL string) *Client {
 
 func (c *Client) Start(ctx context.Context, attemptID string) (Session, error) {
 	body, _ := json.Marshal(map[string]string{"attemptId": attemptID})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/sessions", bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/sessions", bytes.NewReader(body))
 	if err != nil {
 		return Session{}, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	response, err := c.http.Do(req)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := c.http.Do(request)
 	if err != nil {
 		return Session{}, fmt.Errorf("start ACB browser: %w", err)
 	}
@@ -49,11 +49,11 @@ func (c *Client) Start(ctx context.Context, attemptID string) (Session, error) {
 }
 
 func (c *Client) Cancel(ctx context.Context, attemptID string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+"/sessions/"+attemptID, nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+"/sessions/"+attemptID, nil)
 	if err != nil {
 		return err
 	}
-	response, err := c.http.Do(req)
+	response, err := c.http.Do(request)
 	if err != nil {
 		return err
 	}
@@ -62,4 +62,46 @@ func (c *Client) Cancel(ctx context.Context, attemptID string) error {
 		return fmt.Errorf("ACB browser cancel returned %d", response.StatusCode)
 	}
 	return nil
+}
+
+func (c *Client) Status(ctx context.Context, attemptID string) (Session, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/sessions/"+attemptID+"/status", nil)
+	if err != nil {
+		return Session{}, err
+	}
+	response, err := c.http.Do(request)
+	if err != nil {
+		return Session{}, err
+	}
+	defer response.Body.Close()
+	var session Session
+	if err := json.NewDecoder(response.Body).Decode(&session); err != nil {
+		return Session{}, err
+	}
+	if response.StatusCode != http.StatusOK {
+		return Session{}, fmt.Errorf("ACB browser status returned %d", response.StatusCode)
+	}
+	return session, nil
+}
+
+func (c *Client) Handoff(ctx context.Context, attemptID string) ([]byte, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/sessions/"+attemptID+"/handoff", nil)
+	if err != nil {
+		return nil, err
+	}
+	response, err := c.http.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	var payload struct {
+		Session string `json:"session"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	if response.StatusCode != http.StatusOK || payload.Session == "" {
+		return nil, fmt.Errorf("ACB browser handoff returned %d", response.StatusCode)
+	}
+	return []byte(payload.Session), nil
 }

@@ -133,6 +133,7 @@ export default function App() {
   const [endpointName, setEndpointName] = useState('');
   const [endpointURL, setEndpointURL] = useState('');
   const [activeAttempt, setActiveAttempt] = useState<{ id: string; screenURL: string } | null>(null);
+  const [authState, setAuthState] = useState<string>('');
   const [newEndpointSecret, setNewEndpointSecret] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
 
@@ -189,6 +190,26 @@ export default function App() {
     const timer = window.setInterval(() => void load(), 10_000);
     return () => window.clearInterval(timer);
   }, [active]);
+
+  useEffect(() => {
+    if (!activeAttempt) return;
+    const check = async () => {
+      try {
+        const result = await api<{ status: string }>(`/connection/auth/${activeAttempt.id}/status`);
+        setAuthState(result.status);
+        if (result.status === 'MONITORING') {
+          setActiveAttempt(null);
+          setNotice({ kind: 'ok', text: 'ACB đã xác thực. Hệ thống đang bắt đầu theo dõi giao dịch.' });
+          await load();
+        }
+      } catch (error) {
+        setNotice({ kind: 'error', text: error instanceof Error ? error.message : 'Không thể kiểm tra trạng thái đăng nhập ACB.' });
+      }
+    };
+    void check();
+    const timer = window.setInterval(() => void check(), 3_000);
+    return () => window.clearInterval(timer);
+  }, [activeAttempt]);
 
   const mutate = async (path: string, body?: unknown) => {
     const res = await api(path, {
@@ -442,7 +463,7 @@ export default function App() {
                           </button>
                         </div>
                         <p style={{ margin: '12px 0', fontSize: '0.85rem', color: '#9dabbe' }}>
-                          Nhập mật khẩu, OTP và CAPTCHA trực tiếp trong trang ACB. Dashboard không nhận hoặc lưu các giá trị này.
+                          Nhập mật khẩu, OTP và CAPTCHA trực tiếp trong trang ACB. Dashboard không nhận hoặc lưu các giá trị này. Trạng thái: <strong>{authState || 'ĐANG KẾT NỐI'}</strong>.
                         </p>
                         <iframe title="Đăng nhập ACB" src={activeAttempt.screenURL} style={{ width: '100%', height: 720, border: '1px solid #263750', borderRadius: 8, background: '#fff' }} />
                       </div>
