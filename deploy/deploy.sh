@@ -59,8 +59,12 @@ if ! docker compose --env-file "$env_file" -f "$compose_file" pull gateway auth-
 fi
 
 PORT="${PORT:-8080}" "$script_dir/verify-deployment.sh"
-if [[ -n "$current" && "$current" != "$image_ref" ]]; then
-  printf '%s\n' "$current" > "$script_dir/.previous-image"
+if [[ -n "$gateway_current" && "$gateway_current" != "$image_ref" ]]; then
+  printf '%s\n' "$gateway_current" > "$script_dir/.previous-image"
 fi
-printf '%s\n' "$image_ref" > "$current_file"
-printf 'Deployment successful: %s\n' "$image_ref"
+if [[ -n "$browser_current" && "$browser_current" != "$browser_image_ref" ]]; then
+  printf '%s\n' "$browser_current" > "$script_dir/.previous-browser-image"
+fi
+printf '%s\n' "$image_ref" > "$gateway_current_file"
+printf '%s\n' "$browser_image_ref" > "$browser_current_file"
+printf 'Deployment successful: gateway=%s auth-browser=%s\n' "$image_ref" "$browser_image_ref"
