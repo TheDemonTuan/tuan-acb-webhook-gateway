@@ -17,6 +17,10 @@ flock -n 9 || { printf 'Another deployment is active.\n' >&2; exit 1; }
 mkdir -p "$script_dir/data" "$script_dir/secrets"
 chmod 775 "$script_dir/data" || true
 
+# Stop and remove any containers from previous transitional project names to free ports
+docker stop tuan-bank-gateway tuan-bank-gateway-tunnel 2>/dev/null || true
+docker rm -f tuan-bank-gateway tuan-bank-gateway-tunnel 2>/dev/null || true
+
 # Ensure secrets/app_master_key file exists before Docker mounts it
 if [[ ! -f "$script_dir/secrets/app_master_key" ]]; then
   if [[ -n "${APP_MASTER_KEY:-}" ]]; then

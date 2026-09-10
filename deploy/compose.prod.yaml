@@ -29,7 +29,6 @@ services:
       OWNER_SUBJECTS: ${OWNER_SUBJECTS:-${CLOUDFLARE_ACCESS_OWNER_EMAIL:-thedemontuan@gmail.com}}
     ports:
       - "127.0.0.1:8090:8090"
-      - "127.0.0.1:8080:8080"
     volumes:
       - gateway_data:/data:rw
       - ./secrets/app_master_key:/run/secrets/app_master_key:ro
