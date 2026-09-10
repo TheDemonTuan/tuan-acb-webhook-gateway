@@ -20,7 +20,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/network"
+	"github.com/chromedp/cdproto/storage"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 	"github.com/thedemontuan/tuan-bank-gateway/internal/authbrowser"
@@ -272,63 +274,80 @@ func (s *server) handoff(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) observeLogin(ctx context.Context, id, debugURL string) {
+	allocatorCtx, allocatorCancel := chromedp.NewRemoteAllocator(ctx, debugURL)
+	defer allocatorCancel()
+	browserCtx, browserCancel := chromedp.NewContext(allocatorCtx)
+	defer browserCancel()
+
+	browser, err := chromedp.FromContext(browserCtx).Allocator.Allocate(browserCtx)
+	if err != nil {
+		slog.Warn("attach ACB Chromium observer", "attempt_id", id, "error", err)
+		return
+	}
+	executor := cdp.WithExecutor(browserCtx, browser)
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(2 * time.Second):
+		case <-ticker.C:
 		}
-		allocatorCtx, cancel := chromedp.NewRemoteAllocator(ctx, debugURL)
-		browserCtx, browserCancel := chromedp.NewContext(allocatorCtx)
-		var currentURL string
-		var cookies []*network.Cookie
-		var targets []*target.Info
-		err := chromedp.Run(browserCtx, chromedp.ActionFunc(func(runCtx context.Context) error {
-			var targetErr error
-			targets, targetErr = target.GetTargets().Do(runCtx)
-			return targetErr
-		}))
-		if err == nil {
-			for _, info := range targets {
-				if info.Type != "page" || !strings.Contains(strings.ToLower(info.URL), "online.acb.com.vn") {
-					continue
-				}
-				pageCtx, pageCancel := chromedp.NewContext(browserCtx, chromedp.WithTargetID(info.TargetID))
-				err = chromedp.Run(pageCtx, chromedp.Location(&currentURL), chromedp.ActionFunc(func(runCtx context.Context) error {
-					var cookieErr error
-					cookies, cookieErr = network.GetCookies().WithURLs([]string{currentURL}).Do(runCtx)
-					return cookieErr
-				}))
-				pageCancel()
-				if err == nil {
-					break
-				}
-			}
-		}
-		browserCancel()
+		checkCtx, cancel := context.WithTimeout(executor, 5*time.Second)
+		currentURL, cookies, err := browserLoginState(checkCtx)
 		cancel()
 		if err != nil || !authenticatedACB(currentURL, cookies) {
 			continue
 		}
-		serializable := make([]authbrowser.Cookie, 0, len(cookies))
-		for _, cookie := range cookies {
-			serializable = append(serializable, authbrowser.Cookie{Name: cookie.Name, Value: cookie.Value, Domain: cookie.Domain, Path: cookie.Path, Expires: time.Unix(int64(cookie.Expires), 0).UTC(), Secure: cookie.Secure, HTTPOnly: cookie.HTTPOnly})
-		}
-		payload, err := json.Marshal(serializable)
+		handoff, err := encodeHandoff(cookies)
 		if err != nil {
+			slog.Warn("encode ACB browser handoff", "attempt_id", id, "error", err)
 			continue
 		}
-		nonce := make([]byte, 24)
-		_, _ = rand.Read(nonce)
 		s.mu.Lock()
 		if s.session != nil && s.session.AttemptID == id && s.session.Status == "AWAITING_USER_LOGIN" {
-			s.session.handoff = base64.RawURLEncoding.EncodeToString(nonce) + "." + base64.RawURLEncoding.EncodeToString(payload)
+			s.session.handoff = handoff
 			s.session.verified = true
 			s.session.Status = "VERIFIED"
 		}
 		s.mu.Unlock()
 		return
 	}
+}
+
+func browserLoginState(ctx context.Context) (string, []*network.Cookie, error) {
+	targets, err := target.GetTargets().Do(ctx)
+	if err != nil {
+		return "", nil, err
+	}
+	currentURL := ""
+	for _, info := range targets {
+		if info.Type == "page" && strings.Contains(strings.ToLower(info.URL), "online.acb.com.vn") {
+			currentURL = info.URL
+			break
+		}
+	}
+	if currentURL == "" {
+		return "", nil, nil
+	}
+	cookies, err := storage.GetCookies().Do(ctx)
+	return currentURL, cookies, err
+}
+
+func encodeHandoff(cookies []*network.Cookie) (string, error) {
+	serializable := make([]authbrowser.Cookie, 0, len(cookies))
+	for _, cookie := range cookies {
+		serializable = append(serializable, authbrowser.Cookie{Name: cookie.Name, Value: cookie.Value, Domain: cookie.Domain, Path: cookie.Path, Expires: time.Unix(int64(cookie.Expires), 0).UTC(), Secure: cookie.Secure, HTTPOnly: cookie.HTTPOnly})
+	}
+	payload, err := json.Marshal(serializable)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, 24)
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(payload) + "." + base64.RawURLEncoding.EncodeToString(nonce), nil
 }
 
 func waitBrowserReady(ctx context.Context, debugURL string, exited <-chan error) error {
@@ -401,15 +420,14 @@ func terminalStatus(status string) bool {
 	}
 }
 
-func authenticatedACB(currentURL string, cookies []*network.Cookie) bool {
-	lowerURL := strings.ToLower(currentURL)
-	if !strings.Contains(lowerURL, "online.acb.com.vn") || strings.Contains(lowerURL, "/acbib/request") {
+func authenticatedACB(location string, cookies []*network.Cookie) bool {
+	lowerLocation := strings.ToLower(location)
+	if !strings.Contains(lowerLocation, "online.acb.com.vn") || strings.Contains(lowerLocation, "obkloginop") || strings.Contains(lowerLocation, "login") {
 		return false
 	}
 	for _, cookie := range cookies {
-		name := strings.ToLower(cookie.Name)
-		if strings.Contains(name, "session") || strings.Contains(name, "jsession") {
-			return cookie.Value != ""
+		if strings.Contains(strings.ToLower(cookie.Domain), "acb.com.vn") && cookie.Value != "" {
+			return true
 		}
 	}
 	return false

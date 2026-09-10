@@ -212,13 +212,13 @@ func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if session.Status == "VERIFIED" {
+		if s.keyring == nil {
+			writeError(w, http.StatusServiceUnavailable, "session encryption is unavailable")
+			return
+		}
 		handoff, err := s.browser.Handoff(r.Context(), attemptID)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, "ACB browser session handoff failed")
-			return
-		}
-		if s.keyring == nil {
-			writeError(w, http.StatusServiceUnavailable, "session encryption is unavailable")
 			return
 		}
 		envelope, err := s.keyring.Encrypt([]byte(handoff), []byte("acb-session:"+attempt.ConnectionID))
