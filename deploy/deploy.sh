@@ -21,7 +21,7 @@ if [[ ! -f "$script_dir/secrets/app_master_key" ]]; then
   if [[ -n "${APP_MASTER_KEY:-}" ]]; then
     printf '%s\n' "$APP_MASTER_KEY" > "$script_dir/secrets/app_master_key"
   elif grep -q '^APP_MASTER_KEY=' "$env_file" 2>/dev/null; then
-    val="$(grep '^APP_MASTER_KEY=' "$env_file" | head -n1 | cut -d= -f2- | tr -d '"'"'[:space:]')"
+    val="$(grep '^APP_MASTER_KEY=' "$env_file" | head -n1 | cut -d= -f2- | tr -d ' "[:space:]' | tr -d "'")"
     if [[ -n "$val" ]]; then
       printf '%s\n' "$val" > "$script_dir/secrets/app_master_key"
     else
