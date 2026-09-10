@@ -45,15 +45,47 @@ func NewClient(base string, transport http.RoundTripper) (*Client, error) {
 	}}}, nil
 }
 
+func (c *Client) History(ctx context.Context, endpoint string, fields map[string]string) (Response, error) {
+	if fields["dse_operationName"] == "" || fields["dse_processorState"] == "" {
+		return Response{}, errors.New("ACB history request is missing current form state")
+	}
+	requestURL, err := c.endpoint(endpoint)
+	if err != nil {
+		return Response{}, err
+	}
+	values := url.Values{}
+	for key, value := range fields {
+		values.Set(key, value)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), strings.NewReader(values.Encode()))
+	if err != nil {
+		return Response{}, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	return c.do(req)
+}
+
 func (c *Client) Get(ctx context.Context, endpoint string) (Response, error) {
-	url, err := c.baseURL.Parse(endpoint)
-	if err != nil || !strings.EqualFold(url.Hostname(), OfficialHost) {
-		return Response{}, errors.New("invalid ACB endpoint")
+	url, err := c.endpoint(endpoint)
+	if err != nil {
+		return Response{}, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url.String(), nil)
 	if err != nil {
 		return Response{}, err
 	}
+	return c.do(req)
+}
+
+func (c *Client) endpoint(endpoint string) (*url.URL, error) {
+	requestURL, err := c.baseURL.Parse(endpoint)
+	if err != nil || !strings.EqualFold(requestURL.Hostname(), OfficialHost) {
+		return nil, errors.New("invalid ACB endpoint")
+	}
+	return requestURL, nil
+}
+
+func (c *Client) do(req *http.Request) (Response, error) {
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return Response{}, err
