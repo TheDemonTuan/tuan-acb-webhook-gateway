@@ -48,6 +48,16 @@ jobs:
         run: bash -n deploy/*.sh
       - name: Check generated source and whitespace
         run: git diff --check
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.auth-browser
+          push: false
+          tags: tuan-bank-gateway-auth-browser:deploy-smoke
+          load: true
+      - name: Smoke test auth-browser production image
+        run: ./deploy/smoke-test-auth-browser.sh tuan-bank-gateway-auth-browser:deploy-smoke
 
   image:
     name: Build GHCR image
@@ -163,5 +173,7 @@ jobs:
           chmod 600 "$tmp"
           mv "$tmp" "$env_file"
           cd "$DEPLOY_PATH"
+          export IMAGE_REF="$IMAGE"
+          export AUTH_BROWSER_IMAGE_REF="$BROWSER_IMAGE"
           ./deploy.sh "$IMAGE" "$BROWSER_IMAGE"
           REMOTE

@@ -57,6 +57,9 @@ func TestHelperProcess(t *testing.T) {
 						"webSocketDebuggerUrl": "ws://127.0.0.1:" + port + "/devtools/browser/1",
 					})
 				})
+				mux.HandleFunc("/json/list", func(w http.ResponseWriter, r *http.Request) {
+					_ = json.NewEncoder(w).Encode([]map[string]string{{"type": "page", "url": acbLoginURL}})
+				})
 				server := &http.Server{Handler: mux}
 				go server.Serve(listener)
 				defer server.Close()
@@ -78,19 +81,42 @@ func fakeBrowserCmd(ctx context.Context, mode string, extraArgs ...string) *exec
 
 func TestWaitBrowserReady(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/json/version" {
+		switch r.URL.Path {
+		case "/json/version":
+			_ = json.NewEncoder(w).Encode(map[string]string{"webSocketDebuggerUrl": "ws://127.0.0.1/devtools/browser/1"})
+		case "/json/list":
+			_ = json.NewEncoder(w).Encode([]map[string]string{{"type": "page", "url": acbLoginURL}})
+		default:
 			http.NotFound(w, r)
-			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]string{"webSocketDebuggerUrl": "ws://127.0.0.1/devtools/browser/1"})
 	}))
 	defer server.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	done := make(chan struct{})
 	if err := waitBrowserReady(ctx, server.URL, done, nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWaitBrowserReadyRequiresStableACBTarget(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/json/version":
+			_ = json.NewEncoder(w).Encode(map[string]string{"webSocketDebuggerUrl": "ws://127.0.0.1/devtools/browser/1"})
+		case "/json/list":
+			_ = json.NewEncoder(w).Encode([]map[string]string{{"type": "page", "url": "about:blank"}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
+	defer cancel()
+	if err := waitBrowserReady(ctx, server.URL, make(chan struct{}), nil); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("got %v, want deadline while ACB target is unavailable", err)
 	}
 }
 

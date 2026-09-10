@@ -196,13 +196,15 @@ if [[ "$del_code" != "204" ]]; then
   exit 1
 fi
 
-echo "Verifying cancelled session returns 404 on status check..."
-after_del_code=$(curl -s -o /dev/null -w "%{http_code}" "http://${host}:${AUTH_BROWSER_PORT}/sessions/${attempt_id}/status")
-if [[ "$after_del_code" != "404" ]]; then
-  echo "Error: Expected HTTP 404 after cancellation, got $after_del_code" >&2
+echo "Verifying cancelled session remains queryable with terminal status..."
+after_del_resp=$(curl -s -w "\n%{http_code}" "http://${host}:${AUTH_BROWSER_PORT}/sessions/${attempt_id}/status")
+after_del_code=$(echo "$after_del_resp" | tail -n1)
+after_del_body=$(echo "$after_del_resp" | sed '$d')
+if [[ "$after_del_code" != "200" ]] || ! echo "$after_del_body" | grep -q '"status":"CANCELLED"'; then
+  echo "Error: Expected HTTP 200 CANCELLED after cancellation, got HTTP $after_del_code (body: $after_del_body)" >&2
   exit 1
 fi
-echo "Session cancellation confirmed."
+echo "Session cancellation confirmed with terminal status CANCELLED."
 
 echo "Starting a new session after cancellation to verify clean reset..."
 attempt_id_2="smoke-test-2-$(date +%s)-$RANDOM"

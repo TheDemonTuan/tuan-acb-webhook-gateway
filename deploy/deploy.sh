@@ -5,9 +5,15 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 env_file="${ENV_FILE:-$script_dir/.env.production}"
 compose_file="${COMPOSE_FILE:-$script_dir/compose.prod.yaml}"
 image_ref="${1:-${IMAGE_REF:-}}"
+browser_image_ref="${2:-${AUTH_BROWSER_IMAGE_REF:-}}"
+image_pattern='^[^[:space:]]+@sha256:[a-f0-9]{64}$'
 
 [[ -f "$env_file" ]] || { printf 'Missing production env file: %s\n' "$env_file" >&2; exit 1; }
-[[ "$image_ref" =~ ^[^[:space:]]+@sha256:[a-f0-9]{64}$ || "$image_ref" =~ ^[^[:space:]]+:[a-zA-Z0-9_.-]+$ ]] || { printf 'Pass an image reference or immutable digest as first argument.\n' >&2; exit 1; }
+[[ "$image_ref" =~ $image_pattern ]] || { printf 'Pass an immutable gateway image digest as first argument.\n' >&2; exit 1; }
+[[ "$browser_image_ref" =~ $image_pattern ]] || { printf 'Pass an immutable auth-browser image digest as second argument.\n' >&2; exit 1; }
+
+export IMAGE_REF="$image_ref"
+export AUTH_BROWSER_IMAGE_REF="$browser_image_ref"
 
 lock="$script_dir/.deploy.lock"
 exec 9>"$lock"
@@ -38,14 +44,17 @@ if [[ ! -f "$script_dir/secrets/app_master_key" ]]; then
 fi
 chmod 644 "$script_dir/secrets/app_master_key"
 
-IMAGE_REF="$image_ref" docker compose --env-file "$env_file" -f "$compose_file" config --quiet
-current_file="$script_dir/.deployed-image"
-current="$(cat "$current_file" 2>/dev/null || true)"
+docker compose --env-file "$env_file" -f "$compose_file" config --quiet
+gateway_current_file="$script_dir/.deployed-image"
+browser_current_file="$script_dir/.deployed-browser-image"
+gateway_current="$(cat "$gateway_current_file" 2>/dev/null || true)"
+browser_current="$(cat "$browser_current_file" 2>/dev/null || true)"
 
-if ! IMAGE_REF="$image_ref" docker compose --env-file "$env_file" -f "$compose_file" up -d --remove-orphans; then
-  echo "Docker compose up failed. Dumping container status and logs:" >&2
-  IMAGE_REF="$image_ref" docker compose --env-file "$env_file" -f "$compose_file" ps -a || true
-  IMAGE_REF="$image_ref" docker compose --env-file "$env_file" -f "$compose_file" logs --tail 50 || true
+if ! docker compose --env-file "$env_file" -f "$compose_file" pull gateway auth-browser || \
+   ! docker compose --env-file "$env_file" -f "$compose_file" up -d --remove-orphans --wait; then
+  echo "Docker compose deployment failed. Dumping container status and logs:" >&2
+  docker compose --env-file "$env_file" -f "$compose_file" ps -a || true
+  docker compose --env-file "$env_file" -f "$compose_file" logs --tail 50 gateway auth-browser || true
   exit 1
 fi
 

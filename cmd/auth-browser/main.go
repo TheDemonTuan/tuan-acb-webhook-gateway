@@ -605,9 +605,65 @@ func waitBrowserReady(ctx context.Context, debugURL string, done <-chan struct{}
 			}
 			decodeErr := json.NewDecoder(io.LimitReader(response.Body, 32<<10)).Decode(&version)
 			response.Body.Close()
-			if response.StatusCode == http.StatusOK && decodeErr == nil && version.WebSocketDebuggerURL != "" {
-				return nil
+			if response.StatusCode != http.StatusOK || decodeErr != nil || version.WebSocketDebuggerURL == "" {
+				continue
 			}
+			if err := waitACBTargetStable(ctx, client, debugURL, done); err != nil {
+				return err
+			}
+			return nil
+		}
+	}
+}
+
+func waitACBTargetStable(ctx context.Context, client *http.Client, debugURL string, done <-chan struct{}) error {
+	const stableFor = 2 * time.Second
+	stableSince := time.Time{}
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return errors.New("Chromium exited before the ACB page became stable")
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, debugURL+"/json/list", nil)
+		if err != nil {
+			stableSince = time.Time{}
+			continue
+		}
+		response, err := client.Do(request)
+		if err != nil {
+			stableSince = time.Time{}
+			continue
+		}
+		var targets []struct {
+			Type string `json:"type"`
+			URL  string `json:"url"`
+		}
+		decodeErr := json.NewDecoder(io.LimitReader(response.Body, 128<<10)).Decode(&targets)
+		response.Body.Close()
+		found := false
+		if response.StatusCode == http.StatusOK && decodeErr == nil {
+			for _, targetInfo := range targets {
+				if targetInfo.Type == "page" && strings.Contains(strings.ToLower(targetInfo.URL), "online.acb.com.vn") {
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			stableSince = time.Time{}
+			continue
+		}
+		if stableSince.IsZero() {
+			stableSince = time.Now()
+			continue
+		}
+		if time.Since(stableSince) >= stableFor {
+			return nil
 		}
 	}
 }

@@ -6,7 +6,23 @@ host="${HOST:-127.0.0.1}"
 port="${PORT:-8090}"
 timeout="${READY_TIMEOUT:-120}"
 compose_file="${COMPOSE_FILE:-$script_dir/compose.prod.yaml}"
+expected_gateway_image="${IMAGE_REF:-}"
+expected_browser_image="${AUTH_BROWSER_IMAGE_REF:-}"
 start="$(date +%s)"
+
+verify_image() {
+  local container_name="$1"
+  local expected="$2"
+  local service_name="$3"
+  [[ -n "$expected" ]] || { printf 'Expected image is missing for %s.\n' "$service_name" >&2; return 1; }
+  local actual
+  actual="$(docker inspect --format '{{.Config.Image}}' "$container_name" 2>/dev/null || true)"
+  if [[ "$actual" != "$expected" ]]; then
+    printf 'Image mismatch for %s: expected=%s actual=%s\n' "$service_name" "$expected" "${actual:-missing}" >&2
+    return 1
+  fi
+  printf '%s is running expected image %s\n' "$service_name" "$expected"
+}
 
 # Step 1: Verify gateway readiness
 printf 'Waiting for Gateway readiness at http://%s:%s (timeout: %ss)...\n' "$host" "$port" "$timeout"
@@ -33,12 +49,14 @@ while true; do
   sleep 2
 done
 
-# Step 2: Verify auth-browser health and report restart diagnostics
+# Step 2: Verify immutable images and auth-browser health.
 # Explicit constraint: NEVER create or cancel production login sessions.
 if command -v docker >/dev/null 2>&1 && [[ -f "$compose_file" ]]; then
-  if docker compose -f "$compose_file" config --services 2>/dev/null | grep -q "^auth-browser$"; then
+  verify_image "${GATEWAY_CONTAINER:-bank-event-gateway}" "$expected_gateway_image" "gateway"
+  if docker compose --env-file "${ENV_FILE:-$script_dir/.env.production}" -f "$compose_file" config --services 2>/dev/null | grep -q "^auth-browser$"; then
     echo "Verifying auth-browser container health..."
     container_name="${AUTH_BROWSER_CONTAINER:-bank-gateway-auth-browser}"
+    verify_image "$container_name" "$expected_browser_image" "auth-browser"
     ab_timeout="${AUTH_BROWSER_READY_TIMEOUT:-30}"
     ab_start="$(date +%s)"
     ab_healthy=0
