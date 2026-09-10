@@ -1,75 +1,73 @@
-name: bank-event-gateway
+name: tuan-bank-gateway
 
 services:
   gateway:
-    image: ${IMAGE_REF:-ghcr.io/thedemontuan/tuan-acb-email-webhook:latest}
-    container_name: bank-event-gateway
+    image: ${IMAGE_REF:?Set an immutable gateway image digest}
+    container_name: tuan-bank-gateway
     restart: unless-stopped
     init: true
-
-    # Security hardening
     read_only: true
-    user: "1000:1000"
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    tmpfs:
-      - /tmp:size=64M,mode=1777
-
-    # Resource limits
-    deploy:
-      resources:
-        limits:
-          cpus: '1.0'
-          memory: 512M
-          pids: 100
-        reservations:
-          memory: 128M
-
-    # Loopback port bind
-    ports:
-      - "127.0.0.1:8090:8090"
-
+    user: "65532:65532"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      APP_ENV: production
+      LISTEN_ADDR: 0.0.0.0:8080
+      DATA_DIR: /data
+      DATABASE_PATH: /data/gateway.db
+      TZ: Asia/Ho_Chi_Minh
+      APP_MASTER_KEY_FILE: /run/secrets/app_master_key
+      DEFAULT_POLL_INTERVAL_SEC: "15"
+      FAST_POLL_INTERVAL_SEC: "5"
+      CF_ACCESS_ISSUER: ${CF_ACCESS_ISSUER:?Set Cloudflare Access issuer}
+      CF_ACCESS_AUDIENCE: ${CF_ACCESS_AUDIENCE:?Set Cloudflare Access audience}
+      CF_ACCESS_JWKS_URL: ${CF_ACCESS_JWKS_URL:?Set Cloudflare Access JWKS URL}
     volumes:
-      - ./data:/app/data:rw
-      - ./credentials:/app/credentials:rw
-      - ./secrets:/app/secrets:ro
-
-    env_file:
-      - .env.production
-
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
+      - gateway_data:/data:rw
+      - ./secrets/app_master_key:/run/secrets/app_master_key:ro
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=64m
+    networks: [ingress_private, egress]
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/health"]
+      test: ["CMD", "/gateway", "--healthcheck"]
       interval: 15s
       timeout: 5s
       retries: 3
       start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.75"
+          memory: 512M
+          pids: 100
 
   cloudflared:
-    image: cloudflare/cloudflared:2026.8.3
-    container_name: bank-gateway-cloudflared
+    image: cloudflare/cloudflared:2026.9.0
+    container_name: tuan-bank-gateway-tunnel
     restart: unless-stopped
     init: true
-    user: "10001:10001"
+    read_only: true
+    user: "65532:65532"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    command: tunnel run --token ${CLOUDFLARE_TUNNEL_TOKEN:?Set tunnel token}
     depends_on:
       gateway:
         condition: service_healthy
-    command: tunnel run --token ${CLOUDFLARE_TUNNEL_TOKEN}
-    env_file:
-      - .env.production
-    read_only: true
-    pids_limit: 100
-    mem_limit: 128m
-    cpus: 0.25
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+    networks: [ingress_private, egress]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+          pids: 100
+
+# auth-browser is intentionally not included until PR 0 proves browser sandbox,
+# authorized ACB login, and session handoff. It must never expose VNC/CDP ports.
+volumes:
+  gateway_data:
+
+networks:
+  ingress_private:
+    internal: true
+  egress: {}

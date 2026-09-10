@@ -1,4 +1,6 @@
 node_modules/
+web/node_modules/
+internal/httpui/dist/assets/
 dist/
 data/
 *.log
@@ -8,6 +10,8 @@ data/
 credentials/
 secrets/
 coverage/
+web/test-results/
+web/playwright-report/
 .DS_Store
 *.db
 *.db-shm
