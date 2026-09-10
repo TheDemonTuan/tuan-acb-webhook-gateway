@@ -57,7 +57,7 @@ jobs:
           tags: tuan-bank-gateway-auth-browser:deploy-smoke
           load: true
       - name: Smoke test auth-browser production image
-        run: ./deploy/smoke-test-auth-browser.sh tuan-bank-gateway-auth-browser:deploy-smoke
+        run: bash deploy/smoke-test-auth-browser.sh tuan-bank-gateway-auth-browser:deploy-smoke
 
   image:
     name: Build GHCR image
