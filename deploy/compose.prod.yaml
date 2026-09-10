@@ -61,6 +61,12 @@ services:
     environment:
       HOME: /tmp
     expose: ["8181", "6080"]
+    healthcheck:
+      test: ["CMD", "/auth-browser", "--healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
     tmpfs:
       - /tmp:rw,nosuid,nodev,size=1g,mode=1777
     deploy:

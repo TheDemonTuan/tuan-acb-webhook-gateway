@@ -157,7 +157,7 @@ func (s *Server) startAuth(w http.ResponseWriter, r *http.Request) {
 	session, err := s.browser.Start(r.Context(), attempt.ID)
 	if err != nil {
 		_ = s.store.FinishAuthAttempt(r.Context(), attempt.ID, "FAILED")
-		writeError(w, http.StatusServiceUnavailable, "ACB browser is not available")
+		writeError(w, http.StatusServiceUnavailable, "Không thể khởi động trình duyệt ACB. Vui lòng thử lại.")
 		return
 	}
 	session.ScreenURL = "/api/v1/connection/auth/" + attempt.ID + "/screen/vnc.html?autoconnect=true&resize=remote&path=api/v1/connection/auth/" + attempt.ID + "/screen/websockify"
@@ -194,7 +194,21 @@ func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	session, err := s.browser.Status(r.Context(), attemptID)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "ACB browser status unavailable")
+		if authbrowser.IsHTTPStatus(err, http.StatusNotFound) {
+			_ = s.store.FinishAuthAttempt(r.Context(), attemptID, "FAILED")
+			writeJSON(w, http.StatusOK, map[string]string{"status": "FAILED", "error": "Phiên trình duyệt ACB đã kết thúc. Vui lòng mở phiên mới."})
+			return
+		}
+		writeError(w, http.StatusBadGateway, "Không thể kết nối dịch vụ trình duyệt ACB. Vui lòng thử lại.")
+		return
+	}
+	if session.Status == "FAILED" || session.Status == "EXPIRED" {
+		_ = s.store.FinishAuthAttempt(r.Context(), attemptID, session.Status)
+		message := "Không thể khởi động trình duyệt ACB. Vui lòng mở phiên mới."
+		if session.Status == "EXPIRED" {
+			message = "Phiên đăng nhập ACB đã hết hạn. Vui lòng mở phiên mới."
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": session.Status, "error": message})
 		return
 	}
 	if session.Status == "VERIFIED" {
@@ -207,7 +221,7 @@ func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusServiceUnavailable, "session encryption is unavailable")
 			return
 		}
-		envelope, err := s.keyring.Encrypt(handoff, []byte("acb-session:"+attempt.ConnectionID))
+		envelope, err := s.keyring.Encrypt([]byte(handoff), []byte("acb-session:"+attempt.ConnectionID))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "session encryption failed")
 			return

@@ -17,6 +17,7 @@ import {
   Webhook,
   XCircle,
 } from 'lucide-react';
+import { apiErrorMessage } from './api';
 
 type Status = {
   service: string;
@@ -90,19 +91,24 @@ type AuditLog = {
 
 const nav = ['Tổng quan', 'Kết nối ACB', 'Giao dịch', 'Webhooks', 'Phân phối', 'Polling', 'Chẩn đoán', 'Audit'];
 
+const errorMessage = (error: unknown, fallback = 'Yêu cầu không thành công. Vui lòng thử lại.'): string =>
+  error instanceof Error ? error.message : fallback;
+
 const api = async <T,>(path: string, init?: RequestInit): Promise<T> => {
-  const response = await fetch(`/api/v1${path}`, { credentials: 'same-origin', ...init });
-  if (!response.ok) {
-    const text = await response.text();
-    let message = response.statusText || `HTTP ${response.status}`;
-    try {
-      message = JSON.parse(text).error ?? message;
-    } catch {
-      if (text.trim()) message = text.trim();
-    }
-    throw new Error(message);
+  let response: Response;
+  try {
+    response = await fetch(`/api/v1${path}`, { credentials: 'same-origin', ...init });
+  } catch {
+    throw new Error('Không thể kết nối máy chủ. Vui lòng kiểm tra kết nối và thử lại.');
   }
-  return response.json() as Promise<T>;
+  if (!response.ok) {
+    throw new Error(await apiErrorMessage(response));
+  }
+  try {
+    return (await response.json()) as T;
+  } catch {
+    throw new Error('Máy chủ trả về dữ liệu không hợp lệ. Vui lòng thử lại.');
+  }
 };
 
 function Card({ title, value, detail, icon: Icon }: { title: string; value: string; detail: string; icon: typeof Database }) {
@@ -193,23 +199,41 @@ export default function App() {
 
   useEffect(() => {
     if (!activeAttempt) return;
+    let cancelled = false;
+    let checking = false;
+    let timer: number | undefined;
     const check = async () => {
+      if (checking || cancelled) return;
+      checking = true;
       try {
-        const result = await api<{ status: string }>(`/connection/auth/${activeAttempt.id}/status`);
+        const result = await api<{ status: string; error?: string }>(`/connection/auth/${activeAttempt.id}/status`);
+        if (cancelled) return;
         setAuthState(result.status);
         if (result.status === 'MONITORING') {
           setActiveAttempt(null);
           setNotice({ kind: 'ok', text: 'ACB đã xác thực. Hệ thống đang bắt đầu theo dõi giao dịch.' });
           await load();
+          return;
+        }
+        if (result.status === 'FAILED' || result.status === 'EXPIRED') {
+          setActiveAttempt(null);
+          setNotice({ kind: 'error', text: result.error ?? 'Phiên đăng nhập ACB đã kết thúc. Vui lòng mở phiên mới.' });
+          await load();
+          return;
         }
       } catch (error) {
-        setNotice({ kind: 'error', text: error instanceof Error ? error.message : 'Không thể kiểm tra trạng thái đăng nhập ACB.' });
+        if (!cancelled) setNotice({ kind: 'error', text: errorMessage(error, 'Không thể kiểm tra trạng thái đăng nhập ACB.') });
+      } finally {
+        checking = false;
+        if (!cancelled) timer = window.setTimeout(() => void check(), 3_000);
       }
     };
     void check();
-    const timer = window.setInterval(() => void check(), 3_000);
-    return () => window.clearInterval(timer);
-  }, [activeAttempt]);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [activeAttempt?.id]);
 
   const mutate = async (path: string, body?: unknown) => {
     const res = await api(path, {
@@ -227,17 +251,21 @@ export default function App() {
       await mutate('/connection/configure', { accountMasked });
       setNotice({ kind: 'ok', text: 'Đã lưu kết nối.' });
     } catch (error) {
-      setNotice({ kind: 'error', text: String(error) });
+      setNotice({ kind: 'error', text: errorMessage(error) });
     }
   };
 
   const startAuth = async () => {
     try {
-      const res = (await mutate('/connection/auth/start')) as { attemptId: string; screenUrl: string };
+      setAuthState('STARTING');
+      setNotice({ kind: 'ok', text: 'Đang khởi động trình duyệt ACB…' });
+      const res = (await mutate('/connection/auth/start')) as { attemptId: string; screenUrl: string; status: string };
       setActiveAttempt({ id: res.attemptId, screenURL: res.screenUrl });
-      setNotice({ kind: 'ok', text: 'Đã mở trình duyệt ACB trên server. Nhập trực tiếp mật khẩu, OTP và CAPTCHA trong trang ACB bên dưới.' });
+      setAuthState(res.status);
+      setNotice({ kind: 'ok', text: 'Trình duyệt ACB đã sẵn sàng. Nhập trực tiếp mật khẩu, OTP và CAPTCHA trong trang bên dưới.' });
     } catch (error) {
-      setNotice({ kind: 'error', text: String(error) });
+      setAuthState('FAILED');
+      setNotice({ kind: 'error', text: errorMessage(error, 'Không thể khởi động trình duyệt ACB.') });
     }
   };
 
@@ -246,9 +274,10 @@ export default function App() {
     try {
       await mutate('/connection/auth/cancel', { attemptId: activeAttempt.id });
       setActiveAttempt(null);
+      setAuthState('CANCELLED');
       setNotice({ kind: 'ok', text: 'Đã hủy phiên đăng nhập ACB.' });
     } catch (error) {
-      setNotice({ kind: 'error', text: String(error) });
+      setNotice({ kind: 'error', text: errorMessage(error) });
     }
   };
 
@@ -263,7 +292,7 @@ export default function App() {
       }
       setNotice({ kind: 'ok', text: 'Đã tạo endpoint ở trạng thái DISABLED.' });
     } catch (error) {
-      setNotice({ kind: 'error', text: String(error) });
+      setNotice({ kind: 'error', text: errorMessage(error) });
     }
   };
 
@@ -272,7 +301,7 @@ export default function App() {
       await mutate(path);
       setNotice({ kind: 'ok', text: 'Đã ghi nhận thao tác.' });
     } catch (error) {
-      setNotice({ kind: 'error', text: String(error) });
+      setNotice({ kind: 'error', text: errorMessage(error) });
     }
   };
 
@@ -421,7 +450,7 @@ export default function App() {
                     <CheckCircle2 size={16} style={{ display: 'inline', marginRight: 6 }} />
                     Phiên ACB đang hoạt động bình thường. Bạn có thể xác thực lại bất cứ lúc nào nếu cần gia hạn phiên.
                     <div style={{ marginTop: 12 }}>
-                      <button onClick={startAuth} style={{ padding: '6px 12px', borderRadius: 6 }}>
+                      <button onClick={startAuth} disabled={authState === 'STARTING'} style={{ padding: '6px 12px', borderRadius: 6 }}>
                         Gia hạn / Đăng nhập lại phiên ACB
                       </button>
                     </div>
@@ -435,6 +464,7 @@ export default function App() {
                     {!activeAttempt ? (
                       <button
                         onClick={startAuth}
+                        disabled={authState === 'STARTING'}
                         style={{
                           padding: '8px 16px',
                           background: '#2b5c8f',
