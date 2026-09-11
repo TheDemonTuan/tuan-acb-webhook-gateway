@@ -971,7 +971,13 @@ func validHistoryForm(form browserFormState) bool {
 
 func evaluateHistoryForm(ctx context.Context, browserCtx context.Context, targetID target.ID) (browserFormState, error) {
 	tabCtx, tabCancel := chromedp.NewContext(browserCtx, chromedp.WithTargetID(targetID))
-	defer tabCancel()
+	defer func() {
+		c := chromedp.FromContext(tabCtx)
+		if c != nil && c.Target != nil {
+			c.Target.TargetID = ""
+		}
+		tabCancel()
+	}()
 	var form browserFormState
 	if err := chromedp.Run(tabCtx, chromedp.Evaluate(acbHistoryFormScript, &form)); err != nil {
 		return browserFormState{}, err
@@ -987,7 +993,8 @@ const acbHistoryFormScript = `(() => {
 		'storeName', 'CheckRef', 'EdtRef', 'CheckDoiUng',
 		'activeDatetimeYN', 'FromDate', 'ToDate'
 	]);
-	for (const form of document.forms) {
+
+	function extractFormFields(form) {
 		const fields = {};
 		for (const element of form.elements) {
 			if (!element.name || !allowed.has(element.name) || element.disabled) continue;
@@ -995,10 +1002,53 @@ const acbHistoryFormScript = `(() => {
 			if ((type === 'checkbox' || type === 'radio') && !element.checked) continue;
 			fields[element.name] = element.value || '';
 		}
-		if (fields.dse_sessionId || (fields.dse_operationName && fields.dse_processorState)) {
-			return { action: form.action || location.href, fields };
+		return fields;
+	}
+
+	let bestForm = null;
+	let bestScore = -1;
+
+	for (const form of document.forms) {
+		const fields = extractFormFields(form);
+		if (!fields.dse_sessionId && !fields.dse_processorState) continue;
+
+		let score = 0;
+		if (fields.dse_operationName === 'ibkacctDetailProc') score += 10;
+		if (fields.AccountNbr) score += 5;
+		if (fields.dse_processorId) score += 3;
+		if (fields.dse_sessionId) score += 2;
+		if (fields.dse_processorState) score += 1;
+
+		if (score > bestScore) {
+			bestScore = score;
+			bestForm = { action: form.action || location.href, fields };
 		}
 	}
+
+	if (bestForm) {
+		// If AccountNbr was not in the form itself, search the DOM for it
+		if (!bestForm.fields.AccountNbr) {
+			const acctEl = document.querySelector('[name="AccountNbr" i], select[name*="account" i] option:checked, [id*="AccountNbr" i]');
+			if (acctEl) {
+				const val = acctEl.value || acctEl.textContent || '';
+				const clean = val.trim();
+				if (clean && clean.length >= 6) {
+					bestForm.fields.AccountNbr = clean;
+				}
+			}
+		}
+		// If we are still on the overview/welcome page without the detail processor, try clicking the account
+		if (bestForm.fields.dse_operationName !== 'ibkacctDetailProc') {
+			try {
+				const link = document.querySelector('a[href*="ibkacctdetailproc" i], [onclick*="ibkacctdetailproc" i], [class*="account-card" i], [class*="acct-card" i], [class*="account-item" i]');
+				if (link && typeof link.click === 'function') {
+					link.click();
+				}
+			} catch (e) {}
+		}
+		return bestForm;
+	}
+
 	return { action: '', fields: {} };
 })()`
 

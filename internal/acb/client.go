@@ -124,7 +124,16 @@ func (c *Client) Bootstrap(ctx context.Context) (Response, error) {
 		return Response{}, errors.New("ACB authenticated form state is unavailable")
 	}
 	fields := cloneFields(c.bootstrapFields)
-	fields["dse_nextEventName"] = "byDate"
+	if fields["dse_operationName"] == "ibkacctDetailProc" {
+		fields["dse_nextEventName"] = "byDate"
+		nowVN := time.Now().UTC().Add(7 * time.Hour)
+		if fields["ToDate"] == "" {
+			fields["ToDate"] = nowVN.Format("02/01/2006")
+		}
+		if fields["FromDate"] == "" {
+			fields["FromDate"] = nowVN.AddDate(0, 0, -30).Format("02/01/2006")
+		}
+	}
 	values := url.Values{}
 	for key, value := range fields {
 		values.Set(key, value)
@@ -204,6 +213,33 @@ func (c *Client) do(req *http.Request) (Response, error) {
 	}
 	if req.Header.Get("Referer") == "" {
 		req.Header.Set("Referer", "https://online.acb.com.vn/acbib/Request")
+	}
+	if req.Header.Get("Origin") == "" && req.Method == http.MethodPost {
+		req.Header.Set("Origin", "https://online.acb.com.vn")
+	}
+	if req.Header.Get("Sec-Ch-Ua") == "" {
+		req.Header.Set("Sec-Ch-Ua", `"Not(A:Brand";v="99", "Chromium";v="133", "Google Chrome";v="133"`)
+	}
+	if req.Header.Get("Sec-Ch-Ua-Mobile") == "" {
+		req.Header.Set("Sec-Ch-Ua-Mobile", "?0")
+	}
+	if req.Header.Get("Sec-Ch-Ua-Platform") == "" {
+		req.Header.Set("Sec-Ch-Ua-Platform", `"Linux"`)
+	}
+	if req.Header.Get("Sec-Fetch-Dest") == "" {
+		req.Header.Set("Sec-Fetch-Dest", "document")
+	}
+	if req.Header.Get("Sec-Fetch-Mode") == "" {
+		req.Header.Set("Sec-Fetch-Mode", "navigate")
+	}
+	if req.Header.Get("Sec-Fetch-Site") == "" {
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
+	}
+	if req.Header.Get("Sec-Fetch-User") == "" {
+		req.Header.Set("Sec-Fetch-User", "?1")
+	}
+	if req.Header.Get("Upgrade-Insecure-Requests") == "" {
+		req.Header.Set("Upgrade-Insecure-Requests", "1")
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {

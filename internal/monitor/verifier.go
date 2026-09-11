@@ -3,6 +3,7 @@ package monitor
 import (
 	"context"
 	"errors"
+	"log/slog"
 
 	"github.com/thedemontuan/tuan-bank-gateway/internal/acb"
 )
@@ -27,6 +28,7 @@ func (v *SessionVerifier) VerifySession(ctx context.Context, connectionID string
 	if err != nil {
 		return err
 	}
+	slog.Info("ACB session bootstrap verified", "kind", response.Kind, "status", response.StatusCode, "url", response.URL)
 	switch response.Kind {
 	case acb.AccountDetailPage, acb.HistoryPage:
 		return nil

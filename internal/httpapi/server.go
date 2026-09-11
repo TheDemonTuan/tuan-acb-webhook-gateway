@@ -390,10 +390,11 @@ func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.authVerifier.VerifySession(r.Context(), attempt.ConnectionID, attempt.Generation, encrypted); err != nil {
-			slog.Warn("ACB HTTP session verification failed", "attempt_id", attemptID, "generation", attempt.Generation, "error", err)
-			_ = s.browser.Cancel(r.Context(), attemptID)
-			_ = s.store.FinishAuthAttempt(r.Context(), attemptID, "FAILED")
-			writeJSON(w, http.StatusOK, map[string]string{"status": "FAILED", "error": "Không thể xác minh phiên ACB để đọc lịch sử. Vui lòng mở phiên mới."})
+			slog.Warn("ACB HTTP session verification pending or failed", "attempt_id", attemptID, "generation", attempt.Generation, "error", err)
+			writeJSON(w, http.StatusOK, map[string]string{
+				"status": "VERIFYING",
+				"error":  "Đã đăng nhập ACB thành công. Vui lòng bấm vào tài khoản thanh toán trên màn hình để kết nối lịch sử giao dịch.",
+			})
 			return
 		}
 		completedConn, err := s.store.CompleteAuthSession(r.Context(), attemptID, encrypted)

@@ -207,15 +207,15 @@ func TestAuthBrowserVerificationFailureNeverEntersMonitoring(t *testing.T) {
 
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://example.test/api/v1/connection/auth/"+attempt.ID+"/status", nil))
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"FAILED"`) {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"VERIFYING"`) {
 		t.Fatalf("response=%d %s", response.Code, response.Body.String())
 	}
 	connection, err := store.Connection(ctx)
-	if err != nil || connection.State != "AUTH_REQUIRED" {
-		t.Fatalf("connection=%+v err=%v", connection, err)
+	if err != nil || connection.State == "MONITORING" {
+		t.Fatalf("connection entered monitoring on failed verification: %+v err=%v", connection, err)
 	}
-	if cancelled != 1 {
-		t.Fatalf("browser cancel count=%d, want 1", cancelled)
+	if cancelled != 0 {
+		t.Fatalf("browser should NOT be cancelled on retryable verification failure, got %d", cancelled)
 	}
 }
 
