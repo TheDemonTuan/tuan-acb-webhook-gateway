@@ -104,4 +104,9 @@ CREATE INDEX IF NOT EXISTS idx_transactions_connection_date ON transactions(conn
 CREATE INDEX IF NOT EXISTS idx_deliveries_due ON deliveries(status, next_attempt_at);
 CREATE INDEX IF NOT EXISTS idx_poll_runs_connection_started ON poll_runs(connection_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at DESC);
+`}, {3, "2026-09-11-pagination-indexes", `
+CREATE INDEX IF NOT EXISTS idx_transactions_page ON transactions(first_seen_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_deliveries_page ON deliveries(created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_poll_runs_page ON poll_runs(started_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_page ON audit_logs(created_at DESC, id DESC);
 `}}

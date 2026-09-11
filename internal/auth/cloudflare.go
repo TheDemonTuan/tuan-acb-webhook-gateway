@@ -82,9 +82,10 @@ func (v *CloudflareVerifier) Verify(ctx context.Context, raw string) (Identity, 
 		Issuer: v.issuer,
 		Time:   now,
 	}
-	if v.audience != "" && v.audience != "*" && v.audience != "any" {
-		expected.AnyAudience = jwt.Audience{v.audience}
+	if v.audience == "" || v.audience == "*" || strings.EqualFold(v.audience, "any") {
+		return Identity{}, errors.New("Cloudflare Access audience is not configured securely")
 	}
+	expected.AnyAudience = jwt.Audience{v.audience}
 	if err = claims.ValidateWithLeeway(expected, 60*time.Second); err != nil {
 		slog.Warn("Cloudflare JWT claims validation failed",
 			"error", err,

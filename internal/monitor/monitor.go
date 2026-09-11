@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"sync"
 	"time"
 
@@ -25,25 +26,37 @@ type syncRequest struct {
 }
 
 type Monitor struct {
-	store        *storage.Store
-	client       BankClient
-	sessions     *SessionLoader
-	pollInterval time.Duration
-	mu           sync.Mutex
-	syncMu       sync.Mutex
-	syncReq      *syncRequest
-	syncCh       chan struct{}
+	store           *storage.Store
+	client          BankClient
+	sessions        *SessionLoader
+	pollMinInterval time.Duration
+	pollMaxInterval time.Duration
+	nextInterval    func(time.Duration, time.Duration) time.Duration
+	mu              sync.Mutex
+	syncMu          sync.Mutex
+	syncReq         *syncRequest
+	syncCh          chan struct{}
 }
 
-func New(store *storage.Store, client BankClient, interval time.Duration) *Monitor {
-	if interval < 2*time.Second {
-		interval = 15 * time.Second
+func New(store *storage.Store, client BankClient, minInterval, maxInterval time.Duration) *Monitor {
+	if minInterval < 2*time.Second {
+		minInterval = 10 * time.Second
+	}
+	if maxInterval < minInterval {
+		maxInterval = minInterval
 	}
 	return &Monitor{
-		store:        store,
-		client:       client,
-		pollInterval: interval,
-		syncCh:       make(chan struct{}, 1),
+		store:           store,
+		client:          client,
+		pollMinInterval: minInterval,
+		pollMaxInterval: maxInterval,
+		nextInterval: func(minimum, maximum time.Duration) time.Duration {
+			if maximum <= minimum {
+				return minimum
+			}
+			return minimum + time.Duration(rand.Int64N(int64(maximum-minimum)+1))
+		},
+		syncCh: make(chan struct{}, 1),
 	}
 }
 
@@ -141,11 +154,18 @@ func (m *Monitor) pollOnce(ctx context.Context, expected *syncRequest) error {
 	poll.Classifier = string(resp.Kind)
 	poll.HTTPStatus = resp.StatusCode
 
-	if resp.Kind == acb.LoginPage || resp.Kind == acb.OTPChallenge {
+	if resp.Kind == acb.LoginPage {
 		poll.Status = "AUTH_REQUIRED"
 		poll.Error = "SESSION_EXPIRED"
 		_ = m.store.FinishPoll(ctx, poll)
-		slog.Warn("ACB session expired, transitioned to AUTH_REQUIRED")
+		slog.Warn("ACB confirmed the session is no longer authenticated; transitioned to AUTH_REQUIRED")
+		return nil
+	}
+	if resp.Kind == acb.OTPChallenge || resp.Kind == acb.CaptchaPage {
+		poll.Status = "AUTH_REQUIRED"
+		poll.Error = string(resp.Kind)
+		_ = m.store.FinishPoll(ctx, poll)
+		slog.Warn("ACB requires interactive authentication", "challenge", resp.Kind)
 		return nil
 	}
 
@@ -202,6 +222,12 @@ func (m *Monitor) pollOnce(ctx context.Context, expected *syncRequest) error {
 		if histResp.Kind == acb.LoginPage {
 			poll.Status = "AUTH_REQUIRED"
 			poll.Error = "SESSION_EXPIRED"
+			_ = m.store.FinishPoll(ctx, poll)
+			return nil
+		}
+		if histResp.Kind == acb.OTPChallenge || histResp.Kind == acb.CaptchaPage {
+			poll.Status = "AUTH_REQUIRED"
+			poll.Error = string(histResp.Kind)
 			_ = m.store.FinishPoll(ctx, poll)
 			return nil
 		}
@@ -263,13 +289,18 @@ func (m *Monitor) pollOnce(ctx context.Context, expected *syncRequest) error {
 	}
 
 	poll.Status = "SUCCEEDED"
-	return m.store.FinishPoll(ctx, poll)
+	if err := m.store.FinishPoll(ctx, poll); err != nil {
+		return err
+	}
+	if m.sessions != nil {
+		if err := m.sessions.Persist(ctx, conn.ID, conn.Generation); err != nil {
+			slog.Warn("could not persist refreshed ACB session", "error", err)
+		}
+	}
+	return nil
 }
 
 func (m *Monitor) Run(ctx context.Context) {
-	ticker := time.NewTicker(m.pollInterval)
-	defer ticker.Stop()
-
 	m.syncMu.Lock()
 	if m.syncCh == nil {
 		m.syncCh = make(chan struct{}, 1)
@@ -277,32 +308,34 @@ func (m *Monitor) Run(ctx context.Context) {
 	syncCh := m.syncCh
 	m.syncMu.Unlock()
 
+	timer := time.NewTimer(m.nextInterval(m.pollMinInterval, m.pollMaxInterval))
+	defer timer.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-syncCh:
-			if ctx.Err() != nil {
-				return
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
 			}
 			m.syncMu.Lock()
 			req := m.syncReq
 			m.syncReq = nil
 			m.syncMu.Unlock()
-
 			if req != nil {
 				if err := m.pollOnce(ctx, req); err != nil {
 					slog.Warn("monitor sync poll completed with error", "error", err)
 				}
-				ticker.Reset(m.pollInterval)
 			}
-		case <-ticker.C:
-			if ctx.Err() != nil {
-				return
-			}
-			if err := m.PollOnce(ctx); err != nil {
+		case <-timer.C:
+			if err := m.pollOnce(ctx, nil); err != nil {
 				slog.Warn("monitor poll cycle completed with error", "error", err)
 			}
 		}
+		timer.Reset(m.nextInterval(m.pollMinInterval, m.pollMaxInterval))
 	}
 }

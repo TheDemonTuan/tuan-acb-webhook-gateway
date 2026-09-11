@@ -20,6 +20,7 @@ func TestClassifyPage(t *testing.T) {
 		{"account", "https://online.acb.com.vn/acbib/Request", `ibkacctDetailProc dse_processorState AccountNbr`, AccountDetailPage},
 		{"account query form", "https://online.acb.com.vn/acbib/Request", `ibkacctDetailProc dse_processorState AccountNbr FromDate ToDate Ngày giao dịch`, AccountDetailPage},
 		{"account with safekey menu and motphan", "https://online.acb.com.vn/acbib/Request", `<li><a>Đăng ký ACB SafeKey</a></li> <a href="ibktraNoTruocHanMotPhanProc"> ibkacctDetailProc dse_processorState AccountNbr`, AccountDetailPage},
+		{"account with logout script", "https://online.acb.com.vn/acbib/Request", `<script>function logout(){submit('displayPageNotLoginOp')}</script> ibkacctDetailProc dse_processorState AccountNbr`, AccountDetailPage},
 		{"history", "https://online.acb.com.vn/acbib/Request", `ibkacctDetailProc dse_processorState AccountNbr Số GD Ghi nợ Ghi có`, HistoryPage},
 		{"history with safekey menu", "https://online.acb.com.vn/acbib/Request", `<li><a>Đăng ký ACB SafeKey</a></li> <a href="ibktraNoTruocHanMotPhanProc"> ibkacctDetailProc dse_processorState AccountNbr Số GD Ghi nợ Ghi có`, HistoryPage},
 		{"summary page", "https://online.acb.com.vn/acbib/Request", `ibkacctSumProc dse_processorState AccountNumber <li><a>Đăng ký ACB SafeKey</a></li>`, AccountDetailPage},

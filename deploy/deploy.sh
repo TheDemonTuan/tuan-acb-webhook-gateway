@@ -42,7 +42,7 @@ if [[ ! -f "$script_dir/secrets/app_master_key" ]]; then
     openssl rand -hex 32 > "$script_dir/secrets/app_master_key"
   fi
 fi
-chmod 644 "$script_dir/secrets/app_master_key"
+chmod 600 "$script_dir/secrets/app_master_key"
 
 docker compose --env-file "$env_file" -f "$compose_file" config --quiet
 gateway_current_file="$script_dir/.deployed-image"

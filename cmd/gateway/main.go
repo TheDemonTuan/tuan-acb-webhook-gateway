@@ -86,7 +86,7 @@ func main() {
 		logger.Error("create ACB client", "error", err)
 		os.Exit(1)
 	}
-	bankMonitor := monitor.New(store, acbClient, cfg.PollInterval)
+	bankMonitor := monitor.New(store, acbClient, cfg.PollMinInterval, cfg.PollMaxInterval)
 	var sessionLoader *monitor.SessionLoader
 	if keyring != nil {
 		sessionLoader = monitor.NewSessionLoader(store, keyring, acbClient)
@@ -103,8 +103,14 @@ func main() {
 	}
 
 	server := httpapi.New(cfg, store).WithSyncRequester(bankMonitor)
-	if sessionLoader != nil {
-		server.WithAuthVerifier(monitor.NewSessionVerifier(sessionLoader, acbClient))
+	if keyring != nil {
+		verifierClient, verifierErr := acb.NewClient("https://online.acb.com.vn", nil)
+		if verifierErr != nil {
+			logger.Error("create ACB session verifier client", "error", verifierErr)
+			os.Exit(1)
+		}
+		verifierLoader := monitor.NewSessionLoader(store, keyring, verifierClient)
+		server.WithAuthVerifier(monitor.NewSessionVerifier(verifierLoader, verifierClient))
 	}
 	handler := server.Handler()
 	var servers []*http.Server

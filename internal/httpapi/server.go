@@ -12,6 +12,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -63,14 +64,15 @@ func New(cfg config.Config, store *storage.Store) *Server {
 	r.Get("/readyz", s.ready)
 	r.Get("/ready", s.ready)
 	r.Route("/api/v1", func(api chi.Router) {
+		api.Use(s.auth.Require(auth.Owner, auth.Operator, auth.Viewer))
 		api.Get("/status", s.status)
 		api.Get("/csrf", auth.CSRF)
-		api.With(s.auth.Require(auth.Owner, auth.Operator, auth.Viewer)).Get("/connection", s.connection)
-		api.With(s.auth.Require(auth.Owner, auth.Operator, auth.Viewer)).Get("/webhooks", s.endpoints)
-		api.With(s.auth.Require(auth.Owner, auth.Operator, auth.Viewer)).Get("/transactions", s.transactions)
-		api.With(s.auth.Require(auth.Owner, auth.Operator, auth.Viewer)).Get("/deliveries", s.deliveries)
-		api.With(s.auth.Require(auth.Owner, auth.Operator, auth.Viewer)).Get("/poll-runs", s.pollRuns)
-		api.With(s.auth.Require(auth.Owner, auth.Operator, auth.Viewer)).Get("/audit", s.auditLogs)
+		api.Get("/connection", s.connection)
+		api.Get("/webhooks", s.endpoints)
+		api.Get("/transactions", s.transactions)
+		api.Get("/deliveries", s.deliveries)
+		api.Get("/poll-runs", s.pollRuns)
+		api.Get("/audit", s.auditLogs)
 
 		api.With(s.auth.Require(auth.Owner)).Post("/connection/configure", s.configure)
 		api.With(s.auth.Require(auth.Owner, auth.Operator)).Post("/connection/{action:pause|resume|sync}", s.connectionAction)
@@ -447,37 +449,85 @@ func (s *Server) browserScreen(w http.ResponseWriter, r *http.Request) {
 	proxy.ServeHTTP(w, r)
 }
 
+func pageParams(r *http.Request) (int, string, error) {
+	limit := 50
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 100 {
+			return 0, "", errors.New("limit must be between 1 and 100")
+		}
+		limit = parsed
+	}
+	return limit, r.URL.Query().Get("cursor"), nil
+}
+
 func (s *Server) transactions(w http.ResponseWriter, r *http.Request) {
-	items, err := s.store.ListTransactions(r.Context(), 200)
+	limit, cursor, err := pageParams(r)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "storage_error")
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	page, err := s.store.ListTransactionsPage(r.Context(), limit, cursor)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if cursor != "" {
+			status = http.StatusBadRequest
+		}
+		writeError(w, status, "pagination request failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
 }
 func (s *Server) deliveries(w http.ResponseWriter, r *http.Request) {
-	items, err := s.store.ListDeliveries(r.Context(), 50)
+	limit, cursor, err := pageParams(r)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "storage_error")
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	page, err := s.store.ListDeliveriesPage(r.Context(), limit, cursor)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if cursor != "" {
+			status = http.StatusBadRequest
+		}
+		writeError(w, status, "pagination request failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
 }
 func (s *Server) pollRuns(w http.ResponseWriter, r *http.Request) {
-	items, err := s.store.ListPollRuns(r.Context(), 50)
+	limit, cursor, err := pageParams(r)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "storage_error")
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	page, err := s.store.ListPollRunsPage(r.Context(), limit, cursor)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if cursor != "" {
+			status = http.StatusBadRequest
+		}
+		writeError(w, status, "pagination request failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
 }
 func (s *Server) auditLogs(w http.ResponseWriter, r *http.Request) {
-	items, err := s.store.ListAuditLogs(r.Context(), 50)
+	limit, cursor, err := pageParams(r)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "storage_error")
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	page, err := s.store.ListAuditLogsPage(r.Context(), limit, cursor)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if cursor != "" {
+			status = http.StatusBadRequest
+		}
+		writeError(w, status, "pagination request failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
 }
 func (s *Server) endpoints(w http.ResponseWriter, r *http.Request) {
 	items, err := s.store.Endpoints(r.Context())

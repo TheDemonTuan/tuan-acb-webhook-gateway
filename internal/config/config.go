@@ -20,8 +20,8 @@ type Config struct {
 	DatabasePath       string
 	MasterKeyFile      string
 	Timezone           *time.Location
-	PollInterval       time.Duration
-	FastPollInterval   time.Duration
+	PollMinInterval    time.Duration
+	PollMaxInterval    time.Duration
 	CloudflareIssuer   string
 	CloudflareAudience string
 	CloudflareJWKSURL  string
@@ -37,13 +37,16 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("load timezone: %w", err)
 	}
-	poll, err := seconds("DEFAULT_POLL_INTERVAL_SEC", 15, 5, 300)
+	pollMin, err := seconds("POLL_MIN_INTERVAL_SEC", 10, 5, 300)
 	if err != nil {
 		return Config{}, err
 	}
-	fast, err := seconds("FAST_POLL_INTERVAL_SEC", 5, 5, 300)
+	pollMax, err := seconds("POLL_MAX_INTERVAL_SEC", 30, 5, 300)
 	if err != nil {
 		return Config{}, err
+	}
+	if pollMin > pollMax {
+		return Config{}, fmt.Errorf("POLL_MIN_INTERVAL_SEC must be less than or equal to POLL_MAX_INTERVAL_SEC")
 	}
 	dataDir := value("DATA_DIR", "data")
 	production := value("APP_ENV", "development") == "production"
@@ -82,8 +85,8 @@ func Load() (Config, error) {
 		DatabasePath:       value("DATABASE_PATH", filepath.Join(dataDir, "gateway.db")),
 		MasterKeyFile:      masterKeyFile,
 		Timezone:           loc,
-		PollInterval:       poll,
-		FastPollInterval:   fast,
+		PollMinInterval:    pollMin,
+		PollMaxInterval:    pollMax,
 		CloudflareIssuer:   cfIssuer,
 		CloudflareAudience: cfAud,
 		CloudflareJWKSURL:  cfJWKS,
@@ -104,11 +107,8 @@ func Load() (Config, error) {
 		if len(cfg.Roles.Owners) == 0 {
 			return Config{}, fmt.Errorf("OWNER_SUBJECTS is required in production")
 		}
-		if cfg.CloudflareIssuer == "" || cfg.CloudflareAudience == "" || cfg.CloudflareJWKSURL == "" {
-			return Config{}, fmt.Errorf("Cloudflare Access issuer, audience, and JWKS URL are required in production")
-		}
-		if len(cfg.Roles.Owners) == 0 {
-			return Config{}, fmt.Errorf("OWNER_SUBJECTS is required in production")
+		if cfg.CloudflareIssuer == "" || cfg.CloudflareAudience == "" || cfg.CloudflareJWKSURL == "" || cfg.CloudflareAudience == "*" || strings.EqualFold(cfg.CloudflareAudience, "any") {
+			return Config{}, fmt.Errorf("specific Cloudflare Access issuer, audience, and JWKS URL are required in production")
 		}
 	}
 	if cfg.MasterKeyFile != "" && !filepath.IsAbs(cfg.MasterKeyFile) {

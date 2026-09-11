@@ -8,6 +8,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/thedemontuan/tuan-bank-gateway/internal/authbrowser"
@@ -24,6 +25,7 @@ type Client struct {
 	bootstrap       *url.URL
 	bootstrapFields map[string]string
 	http            *http.Client
+	mu              sync.Mutex
 }
 
 type Response struct {
@@ -67,7 +69,9 @@ func isAllowedACBCookieDomain(domain string) bool {
 // RestoreCookies accepts only cookies bound to the official ACB host. The
 // caller supplies encrypted storage; no cookie ever crosses the dashboard API.
 func (c *Client) RestoreSession(handoff authbrowser.Handoff) error {
-	if err := c.RestoreCookies(handoff.Cookies); err != nil {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.restoreCookies(handoff.Cookies); err != nil {
 		return err
 	}
 	c.bootstrap = nil
@@ -94,6 +98,12 @@ func (c *Client) RestoreSession(handoff authbrowser.Handoff) error {
 }
 
 func (c *Client) RestoreCookies(cookies []authbrowser.Cookie) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.restoreCookies(cookies)
+}
+
+func (c *Client) restoreCookies(cookies []authbrowser.Cookie) error {
 	for _, cookie := range cookies {
 		if cookie.Name == "" || cookie.Value == "" || !isAllowedACBCookieDomain(cookie.Domain) {
 			return errors.New("invalid ACB session cookie")
@@ -111,6 +121,48 @@ func (c *Client) RestoreCookies(cookies []authbrowser.Cookie) error {
 	return nil
 }
 
+func (c *Client) SnapshotSession() (authbrowser.Handoff, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.bootstrap == nil || len(c.bootstrapFields) == 0 {
+		return authbrowser.Handoff{}, errors.New("ACB authenticated form state is unavailable")
+	}
+	cookies := c.http.Jar.Cookies(c.bootstrap)
+	snapshot := authbrowser.Handoff{
+		Version: 1,
+		URL:     c.bootstrap.String(),
+		Action:  c.bootstrap.String(),
+		Fields:  cloneFields(c.bootstrapFields),
+		Cookies: make([]authbrowser.Cookie, 0, len(cookies)),
+	}
+	for _, cookie := range cookies {
+		if cookie.Name == "" || cookie.Value == "" {
+			continue
+		}
+		snapshot.Cookies = append(snapshot.Cookies, authbrowser.Cookie{Name: cookie.Name, Value: cookie.Value, Domain: OfficialHost, Path: "/", Expires: cookie.Expires, Secure: true, HTTPOnly: cookie.HttpOnly})
+	}
+	if len(snapshot.Cookies) == 0 {
+		return authbrowser.Handoff{}, errors.New("ACB session has no cookies")
+	}
+	return snapshot, nil
+}
+
+func (c *Client) updateFormState(response Response) {
+	if response.Kind != AccountDetailPage && response.Kind != HistoryPage {
+		return
+	}
+	form, err := ExtractHistoryForm(response.Body)
+	if err != nil {
+		return
+	}
+	action, err := c.endpoint(form.Action)
+	if err != nil || form.Fields["dse_sessionId"] == "" || form.Fields["dse_processorState"] == "" {
+		return
+	}
+	c.bootstrap = action
+	c.bootstrapFields = cloneFields(form.Fields)
+}
+
 func cloneFields(fields map[string]string) map[string]string {
 	cloned := make(map[string]string, len(fields))
 	for key, value := range fields {
@@ -120,6 +172,8 @@ func cloneFields(fields map[string]string) map[string]string {
 }
 
 func (c *Client) Bootstrap(ctx context.Context) (Response, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.bootstrap == nil || len(c.bootstrapFields) == 0 {
 		return Response{}, errors.New("ACB authenticated form state is unavailable")
 	}
@@ -156,6 +210,8 @@ func (c *Client) Bootstrap(ctx context.Context) (Response, error) {
 }
 
 func (c *Client) History(ctx context.Context, endpoint string, fields map[string]string) (Response, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if fields["dse_operationName"] == "" || fields["dse_processorState"] == "" {
 		return Response{}, errors.New("ACB history request is missing current form state")
 	}
@@ -186,6 +242,8 @@ func (c *Client) History(ctx context.Context, endpoint string, fields map[string
 }
 
 func (c *Client) Get(ctx context.Context, endpoint string) (Response, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	var requestURL *url.URL
 	if endpoint == "" && c.bootstrap != nil {
 		copy := *c.bootstrap
@@ -269,5 +327,7 @@ func (c *Client) do(req *http.Request) (Response, error) {
 	if err != nil {
 		return Response{}, err
 	}
-	return Response{URL: resp.Request.URL.String(), StatusCode: resp.StatusCode, Body: string(body), Kind: ClassifyPage(resp.Request.URL.String(), string(body))}, nil
+	result := Response{URL: resp.Request.URL.String(), StatusCode: resp.StatusCode, Body: string(body), Kind: ClassifyPage(resp.Request.URL.String(), string(body))}
+	c.updateFormState(result)
+	return result, nil
 }

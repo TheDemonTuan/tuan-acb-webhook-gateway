@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -27,6 +28,40 @@ func TestCompleteAuthSessionRejectsStaleGeneration(t *testing.T) {
 	}
 	if _, err = store.CompleteAuthSession(ctx, attempt.ID, []byte("stale_session")); err == nil {
 		t.Fatal("expected stale generation to be rejected")
+	}
+}
+
+func TestTransactionCursorPaginationIsStable(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "pagination.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	connection, _ := store.ConfigureConnection(ctx, "***1234")
+	for i := 0; i < 5; i++ {
+		_, err := store.IngestTransaction(ctx, TransactionInput{
+			ConnectionID: connection.ID, SemanticKey: fmt.Sprintf("ACB:%d", i), CanonicalHash: fmt.Sprintf("hash%d", i),
+			TransactionAt: "2026-09-11", EffectiveAt: "2026-09-11", Credit: int64(i + 1), ParserVersion: "v1",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	first, err := store.ListTransactionsPage(ctx, 2, "")
+	if err != nil || len(first.Items) != 2 || first.NextCursor == "" {
+		t.Fatalf("unexpected first page: %+v %v", first, err)
+	}
+	second, err := store.ListTransactionsPage(ctx, 2, first.NextCursor)
+	if err != nil || len(second.Items) != 2 || second.NextCursor == "" {
+		t.Fatalf("unexpected second page: %+v %v", second, err)
+	}
+	if first.Items[1].ID == second.Items[0].ID {
+		t.Fatal("cursor returned duplicate row")
+	}
+	if _, err := store.ListTransactionsPage(ctx, 2, "not-a-cursor"); err == nil {
+		t.Fatal("expected invalid cursor error")
 	}
 }
 

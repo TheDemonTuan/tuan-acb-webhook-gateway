@@ -33,7 +33,7 @@ func ClassifyPage(finalURL, body string) PageKind {
 
 	lowerURL := strings.ToLower(finalURL)
 	if containsAny(lowerURL, "login.jsp", "displaypagenotloginop", "obkloginop", "/acbib/webmbtt") ||
-		containsAny(page, "displaypagenotloginop", "obkloginop", "webmbtt", "phiên làm việc đã hết hạn", "phien lam viec da het han", "vui lòng đăng nhập lại", "vui long dang nhap lai") {
+		containsAny(page, "phiên làm việc đã hết hạn", "phien lam viec da het han", "vui lòng đăng nhập lại", "vui long dang nhap lai") {
 		return LoginPage
 	}
 
@@ -53,7 +53,8 @@ func ClassifyPage(finalURL, body string) PageKind {
 			loginSignals++
 		}
 	}
-	if loginSignals >= 2 {
+	metaRefresh := strings.Contains(page, "http-equiv=\"refresh\"") || strings.Contains(page, "http-equiv='refresh'") || strings.Contains(page, "http-equiv = \"refresh\"")
+	if loginSignals >= 2 || (containsAny(page, "displaypagenotloginop", "obkloginop", "webmbtt") && metaRefresh) {
 		return LoginPage
 	}
 

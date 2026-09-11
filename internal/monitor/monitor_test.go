@@ -15,15 +15,17 @@ import (
 
 type mockBankClient struct {
 	getResp     acb.Response
+	getErr      error
 	historyResp acb.Response
+	historyErr  error
 }
 
 func (m *mockBankClient) Bootstrap(ctx context.Context) (acb.Response, error) {
-	return m.getResp, nil
+	return m.getResp, m.getErr
 }
 
 func (m *mockBankClient) History(ctx context.Context, endpoint string, fields map[string]string) (acb.Response, error) {
-	return m.historyResp, nil
+	return m.historyResp, m.historyErr
 }
 
 const mockHistoryHTML = `
@@ -48,6 +50,32 @@ const mockHistoryHTML = `
   </tr>
 </table>
 `
+
+func TestTransportFailureKeepsMonitoringGeneration(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.Open(ctx, filepath.Join(t.TempDir(), "gateway.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	connection, _ := store.ConfigureConnection(ctx, "***1234")
+	_, _ = store.DB().ExecContext(ctx, `UPDATE connections SET state='MONITORING'`)
+	m := New(store, &mockBankClient{getErr: errors.New("connection reset by peer")}, 10*time.Second, 30*time.Second)
+	if err := m.PollOnce(ctx); err == nil {
+		t.Fatal("expected transport error")
+	}
+	got, err := store.Connection(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != "MONITORING" || got.Generation != connection.Generation {
+		t.Fatalf("transient failure changed session: %+v", got)
+	}
+	runs, err := store.ListPollRuns(ctx, 10)
+	if err != nil || len(runs) != 1 || runs[0].Status != "FAILED" {
+		t.Fatalf("unexpected poll records: %+v %v", runs, err)
+	}
+}
 
 func TestMonitorPollHappyPath(t *testing.T) {
 	ctx := context.Background()
@@ -76,7 +104,7 @@ func TestMonitorPollHappyPath(t *testing.T) {
 		},
 	}
 
-	m := New(store, mock, 5*time.Second)
+	m := New(store, mock, 5*time.Second, 5*time.Second)
 	err = m.PollOnce(ctx)
 	if err != nil {
 		t.Fatalf("poll failed: %v", err)
@@ -119,7 +147,7 @@ func TestMonitorSessionExpired(t *testing.T) {
 		},
 	}
 
-	m := New(store, mock, 5*time.Second)
+	m := New(store, mock, 5*time.Second, 5*time.Second)
 	err = m.PollOnce(ctx)
 	if err != nil {
 		t.Fatalf("poll failed: %v", err)
@@ -159,7 +187,7 @@ func TestRequestSyncRejectsNonMonitoring(t *testing.T) {
 	defer store.Close()
 
 	mock := &mockBankClient{}
-	m := New(store, mock, 5*time.Second)
+	m := New(store, mock, 5*time.Second, 5*time.Second)
 
 	// No connection configured
 	err = m.RequestSync(ctx)
@@ -224,7 +252,7 @@ func TestRequestSyncPreservesGenerationAndSession(t *testing.T) {
 		},
 	}
 
-	m := New(store, mock, 5*time.Second)
+	m := New(store, mock, 5*time.Second, 5*time.Second)
 
 	// Run monitor in background
 	go m.Run(ctx)
@@ -289,7 +317,7 @@ func TestRequestSyncActualQueuedPoll(t *testing.T) {
 	}
 
 	// Long poll interval so periodic poll won't fire during test
-	m := New(store, mock, 1*time.Hour)
+	m := New(store, mock, 1*time.Hour, 1*time.Hour)
 	go m.Run(ctx)
 
 	if err := m.RequestSync(ctx); err != nil {
@@ -348,7 +376,7 @@ func TestRequestSyncStaleSyncSkipped(t *testing.T) {
 		},
 	}
 
-	m := New(store, mock, 1*time.Hour)
+	m := New(store, mock, 1*time.Hour, 1*time.Hour)
 
 	// Enqueue sync while in MONITORING (gen 0)
 	if err := m.RequestSync(ctx); err != nil {
@@ -404,7 +432,7 @@ func TestRequestSyncCoalescing(t *testing.T) {
 		},
 	}
 
-	m := New(store, mock, 1*time.Hour)
+	m := New(store, mock, 1*time.Hour, 1*time.Hour)
 
 	// Call RequestSync multiple times concurrently before Run starts
 	const n = 10
@@ -475,7 +503,7 @@ func TestRequestSyncConcurrentNormalPoll(t *testing.T) {
 		},
 	}
 
-	m := New(store, mock, 1*time.Hour)
+	m := New(store, mock, 1*time.Hour, 1*time.Hour)
 
 	// Start normal poll in a goroutine
 	normalDone := make(chan error, 1)

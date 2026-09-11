@@ -15,6 +15,10 @@ type SessionRestorer interface {
 	RestoreSession(authbrowser.Handoff) error
 }
 
+type SessionSnapshotter interface {
+	SnapshotSession() (authbrowser.Handoff, error)
+}
+
 type SessionLoader struct {
 	store            *storage.Store
 	keyring          *security.Keyring
@@ -44,6 +48,33 @@ func (l *SessionLoader) Restore(ctx context.Context, connectionID string, genera
 		return err
 	}
 	return l.restoreLocked(connectionID, generation, stored.Envelope)
+}
+
+func (l *SessionLoader) Persist(ctx context.Context, connectionID string, generation int64) error {
+	if l == nil || l.keyring == nil {
+		return errors.New("ACB session loader is unavailable")
+	}
+	snapshotter, ok := l.restorer.(SessionSnapshotter)
+	if !ok {
+		return nil
+	}
+	handoff, err := snapshotter.SnapshotSession()
+	if err != nil {
+		return err
+	}
+	plaintext, err := authbrowser.EncodeHandoff(handoff, []byte("refresh"))
+	if err != nil {
+		return err
+	}
+	envelope, err := l.keyring.Encrypt([]byte(plaintext), []byte("acb-session:"+connectionID))
+	if err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(envelope)
+	if err != nil {
+		return err
+	}
+	return l.store.RefreshSession(ctx, connectionID, generation, encoded, envelope.KeyID)
 }
 
 func (l *SessionLoader) RestoreEnvelope(connectionID string, generation int64, encoded []byte) error {

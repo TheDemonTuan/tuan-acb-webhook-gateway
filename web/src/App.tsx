@@ -89,6 +89,8 @@ type AuditLog = {
   createdAt: string;
 };
 
+type PageResponse<T> = { items: T[]; nextCursor?: string };
+
 const nav = ['Tổng quan', 'Kết nối ACB', 'Giao dịch', 'Webhooks', 'Phân phối', 'Polling', 'Chẩn đoán', 'Audit'];
 
 const errorMessage = (error: unknown, fallback = 'Yêu cầu không thành công. Vui lòng thử lại.'): string =>
@@ -107,18 +109,44 @@ function Card({ title, value, detail, icon: Icon }: { title: string; value: stri
   );
 }
 
-function parseTxnDate(dateStr: string): Date | null {
+const VIETNAM_TIME_ZONE = 'Asia/Ho_Chi_Minh';
+
+const formatVietnamTime = (value?: string): string => {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat('vi-VN', {
+    timeZone: VIETNAM_TIME_ZONE,
+    dateStyle: 'short',
+    timeStyle: 'medium',
+    hourCycle: 'h23',
+  }).format(date);
+};
+
+const vietnamDateKey = (date = new Date()): string => {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: VIETNAM_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${value.year}-${value.month}-${value.day}`;
+};
+
+function transactionDateKey(dateStr: string): string | null {
   if (!dateStr) return null;
   const match = dateStr.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
-  if (match) {
-    const day = parseInt(match[1], 10);
-    const month = parseInt(match[2], 10) - 1;
-    const year = parseInt(match[3], 10);
-    return new Date(year, month, day);
-  }
-  const d = new Date(dateStr);
-  return isNaN(d.getTime()) ? null : d;
+  if (match) return `${match[3]}-${match[2].padStart(2, '0')}-${match[1].padStart(2, '0')}`;
+  const date = new Date(dateStr);
+  return Number.isNaN(date.getTime()) ? null : vietnamDateKey(date);
 }
+
+const shiftDateKey = (key: string, days: number): string => {
+  const date = new Date(`${key}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+};
 
 export default function App() {
   const [active, setActive] = useState('Tổng quan');
@@ -129,6 +157,8 @@ export default function App() {
   const [deliveries, setDeliveries] = useState<Delivery[]>([]);
   const [pollRuns, setPollRuns] = useState<PollRun[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [nextCursors, setNextCursors] = useState<Record<string, string | undefined>>({});
+  const [pageLoading, setPageLoading] = useState(false);
 
   const [dateFilter, setDateFilter] = useState<'today' | 'yesterday' | '7days' | '30days' | 'all' | 'custom'>('today');
   const [customStartDate, setCustomStartDate] = useState<string>('');
@@ -137,64 +167,35 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState<string>('');
 
   const filteredTransactions = useMemo(() => {
-    const now = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
-    const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
-
-    const yesterdayStart = new Date(todayStart);
-    yesterdayStart.setDate(yesterdayStart.getDate() - 1);
-    const yesterdayEnd = new Date(todayEnd);
-    yesterdayEnd.setDate(yesterdayEnd.getDate() - 1);
-
-    const sevenDaysStart = new Date(todayStart);
-    sevenDaysStart.setDate(sevenDaysStart.getDate() - 7);
-
-    const thirtyDaysStart = new Date(todayStart);
-    thirtyDaysStart.setDate(thirtyDaysStart.getDate() - 30);
+    const today = vietnamDateKey();
+    const yesterday = shiftDateKey(today, -1);
+    const sevenDaysStart = shiftDateKey(today, -7);
+    const thirtyDaysStart = shiftDateKey(today, -30);
 
     return transactions.filter((t) => {
-      const d = parseTxnDate(t.transactionDate);
-      if (d) {
-        if (dateFilter === 'today') {
-          if (d < todayStart || d > todayEnd) return false;
-        } else if (dateFilter === 'yesterday') {
-          if (d < yesterdayStart || d > yesterdayEnd) return false;
-        } else if (dateFilter === '7days') {
-          if (d < sevenDaysStart) return false;
-        } else if (dateFilter === '30days') {
-          if (d < thirtyDaysStart) return false;
-        } else if (dateFilter === 'custom') {
-          if (customStartDate) {
-            const [y, m, day] = customStartDate.split('-').map(Number);
-            const start = new Date(y, m - 1, day, 0, 0, 0);
-            if (d < start) return false;
-          }
-          if (customEndDate) {
-            const [y, m, day] = customEndDate.split('-').map(Number);
-            const end = new Date(y, m - 1, day, 23, 59, 59, 999);
-            if (d > end) return false;
-          }
+      const dateKey = transactionDateKey(t.transactionDate);
+      if (dateKey) {
+        if (dateFilter === 'today' && dateKey !== today) return false;
+        if (dateFilter === 'yesterday' && dateKey !== yesterday) return false;
+        if (dateFilter === '7days' && (dateKey < sevenDaysStart || dateKey > today)) return false;
+        if (dateFilter === '30days' && (dateKey < thirtyDaysStart || dateKey > today)) return false;
+        if (dateFilter === 'custom') {
+          if (customStartDate && dateKey < customStartDate) return false;
+          if (customEndDate && dateKey > customEndDate) return false;
         }
+      } else if (dateFilter !== 'all') {
+        return false;
       }
-
       if (typeFilter === 'credit' && t.credit <= 0) return false;
       if (typeFilter === 'debit' && t.debit <= 0) return false;
-
       if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase().trim();
-        const num = t.semanticKey.toLowerCase();
-        const desc = (t.description || '').toLowerCase();
-        const date = t.transactionDate.toLowerCase();
-        const money = `${t.credit} ${t.debit}`;
-        if (!num.includes(q) && !desc.includes(q) && !date.includes(q) && !money.includes(q)) {
-          return false;
-        }
+        const q = searchQuery.trim().toLowerCase();
+        const values = [t.semanticKey, t.description || '', t.transactionDate, `${t.credit} ${t.debit}`];
+        if (!values.some((value) => value.toLowerCase().includes(q))) return false;
       }
-
       return true;
     });
   }, [transactions, dateFilter, customStartDate, customEndDate, typeFilter, searchQuery]);
-
   const { totalCredit, totalDebit } = useMemo(() => {
     let credit = 0;
     let debit = 0;
@@ -218,6 +219,7 @@ export default function App() {
   const [actionPending, setActionPending] = useState(false);
   const [syncPending, setSyncPending] = useState(false);
   const loadSeq = useRef(0);
+  const expandedPages = useRef(new Set<string>());
 
   const acbState = connection?.connection?.state ?? status?.acb?.state ?? 'UNCONFIGURED';
   const connected =
@@ -247,38 +249,80 @@ export default function App() {
     // Fetch tab-specific data
     if (active === 'Giao dịch' || active === 'Tổng quan') {
       try {
-        const txRes = await api<{ items: Transaction[] }>('/transactions');
-        if (seq === loadSeq.current) setTransactions(txRes.items);
+        const txRes = await api<PageResponse<Transaction>>('/transactions?limit=50');
+        if (seq === loadSeq.current) {
+          setTransactions((current) => current.length > 50
+            ? [...txRes.items, ...current.filter((item) => !txRes.items.some((fresh) => fresh.id === item.id))]
+            : txRes.items);
+          if (!expandedPages.current.has('transactions')) setNextCursors((current) => ({ ...current, transactions: txRes.nextCursor }));
+        }
       } catch {
         // ignore
       }
     } else if (active === 'Phân phối') {
       try {
-        const delRes = await api<{ items: Delivery[] }>('/deliveries');
-        if (seq === loadSeq.current) setDeliveries(delRes.items);
+        const delRes = await api<PageResponse<Delivery>>('/deliveries?limit=50');
+        if (seq === loadSeq.current) {
+          setDeliveries((current) => current.length > 50
+            ? [...delRes.items, ...current.filter((item) => !delRes.items.some((fresh) => fresh.id === item.id))]
+            : delRes.items);
+          if (!expandedPages.current.has('deliveries')) setNextCursors((current) => ({ ...current, deliveries: delRes.nextCursor }));
+        }
       } catch {
         // ignore
       }
     } else if (active === 'Polling') {
       try {
-        const pRes = await api<{ items: PollRun[] }>('/poll-runs');
-        if (seq === loadSeq.current) setPollRuns(pRes.items);
+        const pRes = await api<PageResponse<PollRun>>('/poll-runs?limit=50');
+        if (seq === loadSeq.current) {
+          setPollRuns((current) => current.length > 50
+            ? [...pRes.items, ...current.filter((item) => !pRes.items.some((fresh) => fresh.id === item.id))]
+            : pRes.items);
+          if (!expandedPages.current.has('polls')) setNextCursors((current) => ({ ...current, polls: pRes.nextCursor }));
+        }
       } catch {
         // ignore
       }
     } else if (active === 'Audit') {
       try {
-        const aRes = await api<{ items: AuditLog[] }>('/audit');
-        if (seq === loadSeq.current) setAuditLogs(aRes.items);
+        const aRes = await api<PageResponse<AuditLog>>('/audit?limit=50');
+        if (seq === loadSeq.current) {
+          setAuditLogs((current) => current.length > 50
+            ? [...aRes.items, ...current.filter((item) => !aRes.items.some((fresh) => fresh.id === item.id))]
+            : aRes.items);
+          if (!expandedPages.current.has('audit')) setNextCursors((current) => ({ ...current, audit: aRes.nextCursor }));
+        }
       } catch {
         // ignore
       }
     }
   };
 
+  const loadMore = async <T,>(
+    key: string,
+    path: string,
+    items: T[],
+    setItems: (items: T[]) => void,
+  ) => {
+    const cursor = nextCursors[key];
+    if (!cursor || pageLoading) return;
+    setPageLoading(true);
+    try {
+      const page = await api<PageResponse<T>>(`${path}?limit=50&cursor=${encodeURIComponent(cursor)}`);
+      const seen = new Set(items.map((item) => (item as { id: string }).id));
+      setItems([...items, ...page.items.filter((item) => !seen.has((item as { id: string }).id))]);
+      expandedPages.current.add(key);
+      setNextCursors((current) => ({ ...current, [key]: page.nextCursor }));
+    } catch (error) {
+      setNotice({ kind: 'error', text: errorMessage(error) });
+    } finally {
+      setPageLoading(false);
+    }
+  };
+
   useEffect(() => {
     void load();
-    const timer = window.setInterval(() => void load(), 10_000);
+    const timer = window.setInterval(() => void load(), 5_000);
     return () => window.clearInterval(timer);
   }, [active]);
 
@@ -876,6 +920,11 @@ export default function App() {
               </table>
             )}
           </div>
+          {nextCursors.transactions && (
+            <button disabled={pageLoading} onClick={() => void loadMore('transactions', '/transactions', transactions, setTransactions)}>
+              {pageLoading ? 'Đang tải…' : 'Tải thêm giao dịch'}
+            </button>
+          )}
         </section>
       );
     }
@@ -1018,7 +1067,7 @@ export default function App() {
                     <th style={{ padding: '10px 8px' }}>Event ID</th>
                     <th style={{ padding: '10px 8px' }}>Trạng thái</th>
                     <th style={{ padding: '10px 8px' }}>Số lần thử</th>
-                    <th style={{ padding: '10px 8px' }}>Thời gian</th>
+                    <th style={{ padding: '10px 8px' }}>Thời gian (UTC+7)</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1041,13 +1090,18 @@ export default function App() {
                         </span>
                       </td>
                       <td style={{ padding: '10px 8px' }}>{d.attempts}</td>
-                      <td style={{ padding: '10px 8px' }}>{d.updatedAt}</td>
+                      <td style={{ padding: '10px 8px' }}>{formatVietnamTime(d.updatedAt)}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             )}
           </div>
+          {nextCursors.deliveries && (
+            <button disabled={pageLoading} onClick={() => void loadMore('deliveries', '/deliveries', deliveries, setDeliveries)}>
+              {pageLoading ? 'Đang tải…' : 'Tải thêm phân phối'}
+            </button>
+          )}
         </section>
       );
     }
@@ -1070,7 +1124,7 @@ export default function App() {
                     <th style={{ padding: '10px 8px' }}>Phân loại</th>
                     <th style={{ padding: '10px 8px' }}>HTTP</th>
                     <th style={{ padding: '10px 8px' }}>Dòng thấy</th>
-                    <th style={{ padding: '10px 8px' }}>Thời gian</th>
+                    <th style={{ padding: '10px 8px' }}>Thời gian (UTC+7)</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1100,13 +1154,18 @@ export default function App() {
                       <td style={{ padding: '10px 8px' }}>{p.classifier || '-'}</td>
                       <td style={{ padding: '10px 8px' }}>{p.httpStatus || '-'}</td>
                       <td style={{ padding: '10px 8px' }}>{p.rowsSeen}</td>
-                      <td style={{ padding: '10px 8px' }}>{p.startedAt}</td>
+                      <td style={{ padding: '10px 8px' }}>{formatVietnamTime(p.startedAt)}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             )}
           </div>
+          {nextCursors.polls && (
+            <button disabled={pageLoading} onClick={() => void loadMore('polls', '/poll-runs', pollRuns, setPollRuns)}>
+              {pageLoading ? 'Đang tải…' : 'Tải thêm lần polling'}
+            </button>
+          )}
         </section>
       );
     }
@@ -1153,7 +1212,7 @@ export default function App() {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
                 <thead>
                   <tr style={{ borderBottom: '1px solid #263750', textAlign: 'left', color: '#7ec4ff' }}>
-                    <th style={{ padding: '10px 8px' }}>Thời gian</th>
+                    <th style={{ padding: '10px 8px' }}>Thời gian (UTC+7)</th>
                     <th style={{ padding: '10px 8px' }}>Tác nhân</th>
                     <th style={{ padding: '10px 8px' }}>Vai trò</th>
                     <th style={{ padding: '10px 8px' }}>Hành động</th>
@@ -1163,7 +1222,7 @@ export default function App() {
                 <tbody>
                   {auditLogs.map((a) => (
                     <tr key={a.id} style={{ borderBottom: '1px solid #162438' }}>
-                      <td style={{ padding: '10px 8px' }}>{a.createdAt}</td>
+                      <td style={{ padding: '10px 8px' }}>{formatVietnamTime(a.createdAt)}</td>
                       <td style={{ padding: '10px 8px', fontFamily: 'monospace' }}>{a.subject}</td>
                       <td style={{ padding: '10px 8px' }}>{a.role}</td>
                       <td style={{ padding: '10px 8px', color: '#7ec4ff' }}>{a.action}</td>
@@ -1174,6 +1233,11 @@ export default function App() {
               </table>
             )}
           </div>
+          {nextCursors.audit && (
+            <button disabled={pageLoading} onClick={() => void loadMore('audit', '/audit', auditLogs, setAuditLogs)}>
+              {pageLoading ? 'Đang tải…' : 'Tải thêm nhật ký'}
+            </button>
+          )}
         </section>
       );
     }
@@ -1200,6 +1264,8 @@ export default function App() {
     actionPending,
     syncPending,
     syncDisabled,
+    nextCursors,
+    pageLoading,
   ]);
 
   return (
