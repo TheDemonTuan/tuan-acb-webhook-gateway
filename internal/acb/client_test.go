@@ -66,6 +66,22 @@ func TestClientRejectsEndpointOutsideOfficialHost(t *testing.T) {
 	}
 }
 
+func TestEndpointResolvesACBIBPrefix(t *testing.T) {
+	client, err := NewClient("https://online.acb.com.vn", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ep := range []string{"Request", "/Request", "/acbib/Request"} {
+		u, err := client.endpoint(ep)
+		if err != nil {
+			t.Fatalf("endpoint(%q) failed: %v", ep, err)
+		}
+		if u.Path != "/acbib/Request" {
+			t.Fatalf("endpoint(%q) got path %q, want /acbib/Request", ep, u.Path)
+		}
+	}
+}
+
 func TestRestoreCookiesAllowsACBAndOnlineDomains(t *testing.T) {
 	client, err := NewClient("https://online.acb.com.vn", nil)
 	if err != nil {

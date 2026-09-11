@@ -115,6 +115,14 @@ func (c *Client) Get(ctx context.Context, endpoint string) (Response, error) {
 }
 
 func (c *Client) endpoint(endpoint string) (*url.URL, error) {
+	if !strings.HasPrefix(endpoint, "https://") && !strings.HasPrefix(endpoint, "http://") {
+		if !strings.HasPrefix(endpoint, "/") {
+			endpoint = "/" + endpoint
+		}
+		if !strings.HasPrefix(endpoint, "/acbib") {
+			endpoint = "/acbib" + endpoint
+		}
+	}
 	requestURL, err := c.baseURL.Parse(endpoint)
 	if err != nil || !strings.EqualFold(requestURL.Hostname(), OfficialHost) {
 		return nil, errors.New("invalid ACB endpoint")

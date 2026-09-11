@@ -8,6 +8,7 @@ func TestClassifyPage(t *testing.T) {
 		want            PageKind
 	}{
 		{"login HTTP 200", "https://online.acb.com.vn/acbib/Request", `<input name="username"><input type="password" name="password">`, LoginPage},
+		{"login with captcha", "https://online.acb.com.vn/acbib/Request", `<input name="username"><input type="password" name="password"><input name="captcha" placeholder="Mã xác nhận">`, LoginPage},
 		{"login redirect errorPage", "https://online.acb.com.vn/acbib/Request?dse_errorPage=login.jsp", `some text`, LoginPage},
 		{"login redirect displayPageNotLoginOp", "https://online.acb.com.vn/acbib/Request?dse_operationName=displayPageNotLoginOp", `some text`, LoginPage},
 		{"login webmbtt redirect", "https://online.acb.com.vn/acbib/webmbtt", `some text`, LoginPage},
