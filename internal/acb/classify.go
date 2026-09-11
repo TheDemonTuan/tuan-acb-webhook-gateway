@@ -1,6 +1,7 @@
 package acb
 
 import (
+	"html"
 	"net/url"
 	"strings"
 )
@@ -20,7 +21,7 @@ const (
 // ClassifyPage uses independent page signals. It must not turn unknown markup
 // into an empty transaction history.
 func ClassifyPage(finalURL, body string) PageKind {
-	page := strings.ToLower(body)
+	page := strings.ToLower(html.UnescapeString(body))
 	location, _ := url.Parse(finalURL)
 	host := strings.ToLower(location.Hostname())
 	if host != "" && host != "online.acb.com.vn" {
@@ -36,16 +37,6 @@ func ClassifyPage(finalURL, body string) PageKind {
 		return LoginPage
 	}
 
-	loginSignals := 0
-	for _, signal := range []string{"username", "tên truy cập", "ten truy cap", "password", "mật khẩu", "mat khau", "obkloginop"} {
-		if strings.Contains(page, signal) {
-			loginSignals++
-		}
-	}
-	if loginSignals >= 2 {
-		return LoginPage
-	}
-
 	if strings.Contains(page, "ibkacctdetailproc") && containsAny(page, "accountnbr", "dse_processorstate") {
 		if containsAny(page, "sogd", "sogiaodich", "so gd", "số gd") || (containsAny(page, "ghino", "ghi no", "ghi nợ") && containsAny(page, "ghico", "ghi co", "ghi có")) {
 			return HistoryPage
@@ -54,6 +45,16 @@ func ClassifyPage(finalURL, body string) PageKind {
 	}
 	if strings.Contains(page, "ibkacctsumproc") && containsAny(page, "accountnbr", "accountnumber", "dse_processorstate") {
 		return AccountDetailPage
+	}
+
+	loginSignals := 0
+	for _, signal := range []string{"username", "tên truy cập", "ten truy cap", "password", "mật khẩu", "mat khau", "obkloginop"} {
+		if strings.Contains(page, signal) {
+			loginSignals++
+		}
+	}
+	if loginSignals >= 2 {
+		return LoginPage
 	}
 
 	if containsAny(page, "nhập mã otp", "nhap ma otp", "nhập mã safekey", "nhap ma safekey", "mã xác thực otp", "ma xac thuc otp", "xác thực otp", "xac thuc otp", "xác nhận otp", "xac nhan otp", "mã otp", "ma otp", `name="otp"`, `id="otp"`, `name="safekey"`, `id="safekey"`, `name="authcode"`, `id="authcode"`) {

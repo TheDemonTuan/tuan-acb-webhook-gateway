@@ -1,6 +1,14 @@
 package acb
 
-import "testing"
+import (
+	"testing"
+)
+
+func TestNormalized(t *testing.T) {
+	for _, h := range []string{"Ngày hiệu lực", "Ngày giao dịch", "Số GD", "Ghi nợ", "Ghi có", "Số dư"} {
+		t.Logf("%q -> %q", h, normalized(h))
+	}
+}
 
 func TestParseHistory(t *testing.T) {
 	transactions, err := ParseHistory(`<table><tr><th>Ngày hiệu lực</th><th>Ngày giao dịch</th><th>Số GD</th><th>Ghi nợ</th><th>Ghi có</th><th>Số dư</th><th>Nội dung giao dịch</th></tr><tr><td>10/09/2026</td><td>10/09/2026</td><td>2629</td><td>-</td><td>50.000</td><td>1.250.000</td><td>Thanh toan</td></tr></table>`)
