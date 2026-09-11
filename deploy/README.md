@@ -5,9 +5,9 @@ This directory contains the Go/Bun v2 deployment baseline. The ACB browser sidec
 ## Before deployment
 
 1. Create a non-root `deploy` user and a directory owned by it.
-2. Copy `../.env.example` to `.env.production`; set Cloudflare Access values and a dedicated Tunnel token.
+2. Copy `../.env.example` to `.env.production` and set Cloudflare Access values.
 3. Create `secrets/app_master_key` with one base64-raw 32-byte random key and `chmod 600` it.
-4. Configure Cloudflare Tunnel to route only the gateway web origin to `gateway:8080`; protect it with Cloudflare Access. Do not route `/metrics`, the future browser private RPC, VNC, or CDP.
+4. Join the shared edge ingress (`/opt/edge`) via the internal `edge-acb` network and configure Cloudflare Access. Do not expose `/metrics`, the private browser RPC, VNC, or CDP to the public.
 5. Apply host egress firewall controls before enabling future ACB browser automation. Docker bridge alone is not an egress allowlist.
 6. Use a local SSD-backed volume and configure encrypted off-VPS backups plus a restore drill.
 
