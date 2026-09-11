@@ -245,7 +245,7 @@ export default function App() {
     if (csrfRes.status === 'fulfilled') setCsrf(csrfRes.value.token);
 
     // Fetch tab-specific data
-    if (active === 'Giao dịch') {
+    if (active === 'Giao dịch' || active === 'Tổng quan') {
       try {
         const txRes = await api<{ items: Transaction[] }>('/transactions');
         if (seq === loadSeq.current) setTransactions(txRes.items);
@@ -673,12 +673,176 @@ export default function App() {
     if (active === 'Giao dịch') {
       return (
         <section className="panel">
-          <h2>Giao dịch</h2>
-          <p className="muted">Danh sách giao dịch tài khoản ACB được nhận diện và chuẩn hóa gần realtime.</p>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12 }}>
+            <div>
+              <h2>Giao dịch</h2>
+              <p className="muted">Danh sách giao dịch tài khoản ACB được nhận diện và chuẩn hóa realtime.</p>
+            </div>
+            <button onClick={() => void triggerSync()} disabled={syncDisabled} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <RefreshCw size={15} className={syncPending ? 'spin' : ''} /> Quét giao dịch mới
+            </button>
+          </div>
+
+          {/* Quick Date Filters */}
+          <div style={{ marginTop: 20, display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+            <span style={{ fontSize: '0.82rem', color: '#7ec4ff', fontWeight: 600, marginRight: 4 }}>Thời gian:</span>
+            {[
+              { id: 'today', label: 'Hôm nay (Mặc định)' },
+              { id: 'yesterday', label: 'Hôm qua' },
+              { id: '7days', label: '7 ngày qua' },
+              { id: '30days', label: '30 ngày qua' },
+              { id: 'all', label: 'Tất cả' },
+              { id: 'custom', label: 'Tùy chọn khoảng ngày...' },
+            ].map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setDateFilter(tab.id as any)}
+                style={{
+                  padding: '6px 12px',
+                  borderRadius: 8,
+                  fontSize: '0.8rem',
+                  border: dateFilter === tab.id ? '1px solid #5aaae8' : '1px solid #263750',
+                  background: dateFilter === tab.id ? '#18375b' : '#0e192b',
+                  color: dateFilter === tab.id ? '#ffffff' : '#8da1bd',
+                  cursor: 'pointer',
+                  fontWeight: dateFilter === tab.id ? 700 : 400,
+                }}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Custom Date Range Picker */}
+          {dateFilter === 'custom' && (
+            <div style={{ marginTop: 12, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', padding: '10px 14px', background: '#112239', borderRadius: 10, border: '1px solid #263e60' }}>
+              <label style={{ fontSize: '0.8rem', color: '#a7b9d2', display: 'flex', alignItems: 'center', gap: 6 }}>
+                Từ ngày:
+                <input
+                  type="date"
+                  value={customStartDate}
+                  onChange={(e) => setCustomStartDate(e.target.value)}
+                  style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #334d70', background: '#09111f', color: '#e8edf6', fontSize: '0.8rem' }}
+                />
+              </label>
+              <label style={{ fontSize: '0.8rem', color: '#a7b9d2', display: 'flex', alignItems: 'center', gap: 6 }}>
+                Đến ngày:
+                <input
+                  type="date"
+                  value={customEndDate}
+                  onChange={(e) => setCustomEndDate(e.target.value)}
+                  style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #334d70', background: '#09111f', color: '#e8edf6', fontSize: '0.8rem' }}
+                />
+              </label>
+              {(customStartDate || customEndDate) && (
+                <button
+                  type="button"
+                  onClick={() => { setCustomStartDate(''); setCustomEndDate(''); }}
+                  style={{ fontSize: '0.75rem', padding: '4px 8px', background: 'transparent', border: '1px solid #445d7e', borderRadius: 6, color: '#9dabbe' }}
+                >
+                  Xóa lọc ngày
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Type Filter & Search Bar */}
+          <div style={{ marginTop: 14, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <span style={{ fontSize: '0.82rem', color: '#7ec4ff', fontWeight: 600, marginRight: 4 }}>Loại:</span>
+              {[
+                { id: 'all', label: 'Tất cả' },
+                { id: 'credit', label: 'Tiền vào (+)' },
+                { id: 'debit', label: 'Tiền ra (-)' },
+              ].map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setTypeFilter(t.id as any)}
+                  style={{
+                    padding: '5px 10px',
+                    borderRadius: 6,
+                    fontSize: '0.78rem',
+                    border: typeFilter === t.id ? '1px solid #5aaae8' : '1px solid #263750',
+                    background: typeFilter === t.id ? '#18375b' : '#0e192b',
+                    color: typeFilter === t.id ? '#ffffff' : '#8da1bd',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <input
+                type="text"
+                placeholder="Tìm theo nội dung, số GD, số tiền..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                style={{
+                  padding: '6px 12px',
+                  borderRadius: 8,
+                  border: '1px solid #263750',
+                  background: '#09111f',
+                  color: '#e8edf6',
+                  fontSize: '0.82rem',
+                  minWidth: 260,
+                }}
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #334d70', background: 'transparent', color: '#9dabbe', fontSize: '0.75rem' }}
+                >
+                  Xóa
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Summary Stats Cards */}
+          <div style={{ marginTop: 16, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
+            <div style={{ padding: '10px 14px', background: '#101c30', borderRadius: 10, border: '1px solid #1f3350' }}>
+              <div style={{ fontSize: '0.72rem', color: '#7ec4ff', fontWeight: 600 }}>GIAO DỊCH HIỂN THỊ</div>
+              <div style={{ fontSize: '1.15rem', fontWeight: 700, marginTop: 4 }}>
+                {filteredTransactions.length} <span style={{ fontSize: '0.8rem', color: '#8da1bd', fontWeight: 400 }}>/ {transactions.length} tổng số</span>
+              </div>
+            </div>
+            <div style={{ padding: '10px 14px', background: '#101c30', borderRadius: 10, border: '1px solid #1f3350' }}>
+              <div style={{ fontSize: '0.72rem', color: '#52b788', fontWeight: 600 }}>TỔNG TIỀN VÀO</div>
+              <div style={{ fontSize: '1.15rem', fontWeight: 700, marginTop: 4, color: '#52b788' }}>
+                +{totalCredit.toLocaleString('vi-VN')} <span style={{ fontSize: '0.75rem' }}>VND</span>
+              </div>
+            </div>
+            <div style={{ padding: '10px 14px', background: '#101c30', borderRadius: 10, border: '1px solid #1f3350' }}>
+              <div style={{ fontSize: '0.72rem', color: '#e63946', fontWeight: 600 }}>TỔNG TIỀN RA</div>
+              <div style={{ fontSize: '1.15rem', fontWeight: 700, marginTop: 4, color: '#e63946' }}>
+                -{totalDebit.toLocaleString('vi-VN')} <span style={{ fontSize: '0.75rem' }}>VND</span>
+              </div>
+            </div>
+          </div>
 
           <div style={{ marginTop: 18, overflowX: 'auto' }}>
-            {transactions.length === 0 ? (
-              <p className="empty">Chưa có giao dịch nào được ghi nhận. Khi ACB có giao dịch tiền vào/ra, dữ liệu sẽ hiển thị tại đây.</p>
+            {filteredTransactions.length === 0 ? (
+              <div style={{ padding: '36px 16px', textAlign: 'center', background: '#09111f', borderRadius: 12, border: '1px dashed #263750', marginTop: 12 }}>
+                <p style={{ color: '#8da1bd', fontSize: '0.9rem', margin: 0 }}>
+                  {dateFilter === 'today'
+                    ? 'Hôm nay chưa có giao dịch mới nào được ghi nhận.'
+                    : 'Không tìm thấy giao dịch nào phù hợp với bộ lọc hiện tại.'}
+                </p>
+                {dateFilter === 'today' && transactions.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setDateFilter('all')}
+                    style={{ marginTop: 12, padding: '6px 14px', borderRadius: 8, background: '#18375b', border: '1px solid #5aaae8', color: '#fff', fontSize: '0.82rem' }}
+                  >
+                    Xem tất cả {transactions.length} giao dịch gần đây
+                  </button>
+                )}
+              </div>
             ) : (
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
                 <thead>
@@ -692,7 +856,7 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {transactions.map((t) => (
+                  {filteredTransactions.map((t) => (
                     <tr key={t.id} style={{ borderBottom: '1px solid #162438' }}>
                       <td style={{ padding: '10px 8px', fontFamily: 'monospace' }}>{t.semanticKey.replace('ACB:', '')}</td>
                       <td style={{ padding: '10px 8px' }}>{t.transactionDate}</td>

@@ -605,10 +605,16 @@ func spa(files fs.FS) http.Handler {
 		if requested != "." && requested != "" {
 			if f, err := files.Open(requested); err == nil {
 				_ = f.Close()
+				if strings.HasPrefix(requested, "assets/") {
+					w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+				}
 				static.ServeHTTP(w, r)
 				return
 			}
 		}
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
 		r.URL.Path = "/"
 		static.ServeHTTP(w, r)
 	})
