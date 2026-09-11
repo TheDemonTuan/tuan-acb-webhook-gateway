@@ -112,7 +112,12 @@ func (c *Client) endpoint(endpoint string) (*url.URL, error) {
 	return requestURL, nil
 }
 
+const DefaultUserAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+
 func (c *Client) do(req *http.Request) (Response, error) {
+	if req.Header.Get("User-Agent") == "" {
+		req.Header.Set("User-Agent", DefaultUserAgent)
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return Response{}, err
