@@ -308,8 +308,17 @@ func TestRequestSyncActualQueuedPoll(t *testing.T) {
 		t.Fatalf("expected 1 call from queued sync, got %d", callCount.Load())
 	}
 
-	summary, err := store.DeliverySummary(ctx)
-	if err != nil || summary.Pending != 1 {
+	var summary storage.DeliverySummary
+	summaryDeadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(summaryDeadline) {
+		summary, err = store.DeliverySummary(ctx)
+		if err == nil && summary.Pending == 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if summary.Pending != 1 {
 		t.Fatalf("expected 1 pending delivery from queued poll, got %+v %v", summary, err)
 	}
 }
