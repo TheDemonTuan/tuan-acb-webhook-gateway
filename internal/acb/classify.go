@@ -46,17 +46,21 @@ func ClassifyPage(finalURL, body string) PageKind {
 		return LoginPage
 	}
 
-	if containsAny(page, "otp", "safekey", "mã otp", "ma otp") {
-		return OTPChallenge
-	}
-	if containsAny(page, "captcha", "mã xác nhận", "ma xac nhan") {
-		return CaptchaPage
-	}
 	if strings.Contains(page, "ibkacctdetailproc") && containsAny(page, "accountnbr", "dse_processorstate") {
-		if containsAny(page, "fromdate", "todate", "ngày giao dịch", "ngay giao dich") {
+		if containsAny(page, "fromdate", "todate", "ngày giao dịch", "ngay giao dich", "sogd", "sogiaodich", "ghi nợ", "ghi no", "ghi có", "ghi co", "số dư", "so du") {
 			return HistoryPage
 		}
 		return AccountDetailPage
+	}
+	if strings.Contains(page, "ibkacctsumproc") && containsAny(page, "accountnbr", "accountnumber", "dse_processorstate") {
+		return AccountDetailPage
+	}
+
+	if containsAny(page, "nhập mã otp", "nhap ma otp", "nhập mã safekey", "nhap ma safekey", "mã xác thực otp", "ma xac thuc otp", "xác thực otp", "xac thuc otp", "xác nhận otp", "xac nhan otp", "mã otp", "ma otp", `name="otp"`, `id="otp"`, `name="safekey"`, `id="safekey"`, `name="authcode"`, `id="authcode"`) {
+		return OTPChallenge
+	}
+	if containsAny(page, "mã xác nhận", "ma xac nhan", "mã kiểm tra", "ma kiem tra", `name="captcha"`, `id="captcha"`) {
+		return CaptchaPage
 	}
 	return UnknownPage
 }

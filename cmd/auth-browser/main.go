@@ -481,7 +481,7 @@ func (s *server) observeLogin(ctx context.Context, id, debugURL string, done <-c
 		}
 
 		s.mu.Lock()
-		if s.session == nil || s.session.AttemptID != id || s.session.Status != "AWAITING_USER_LOGIN" {
+		if s.session == nil || s.session.AttemptID != id || (s.session.Status != "AWAITING_USER_LOGIN" && s.session.Status != "VERIFIED") {
 			s.mu.Unlock()
 			return
 		}
@@ -489,7 +489,14 @@ func (s *server) observeLogin(ctx context.Context, id, debugURL string, done <-c
 
 		connected, verified := s.runObserverCycle(ctx, id, debugURL, done, ticker)
 		if verified {
-			return
+			select {
+			case <-ctx.Done():
+				return
+			case <-done:
+				return
+			case <-time.After(1 * time.Second):
+			}
+			continue
 		}
 		if !connected {
 			select {
@@ -539,7 +546,7 @@ func (s *server) runObserverCycle(ctx context.Context, id, debugURL string, done
 		}
 
 		s.mu.Lock()
-		if s.session == nil || s.session.AttemptID != id || s.session.Status != "AWAITING_USER_LOGIN" {
+		if s.session == nil || s.session.AttemptID != id || (s.session.Status != "AWAITING_USER_LOGIN" && s.session.Status != "VERIFIED") {
 			s.mu.Unlock()
 			return true, false
 		}
@@ -565,7 +572,7 @@ func (s *server) runObserverCycle(ctx context.Context, id, debugURL string, done
 			continue
 		}
 		s.mu.Lock()
-		if s.session != nil && s.session.AttemptID == id && s.session.Status == "AWAITING_USER_LOGIN" {
+		if s.session != nil && s.session.AttemptID == id && (s.session.Status == "AWAITING_USER_LOGIN" || s.session.Status == "VERIFIED") {
 			s.session.handoff = handoff
 			s.session.verified = true
 			s.session.Status = "VERIFIED"
@@ -966,7 +973,19 @@ func browserLoginState(ctx context.Context, browserCtx context.Context) (string,
 }
 
 func validHistoryForm(form browserFormState) bool {
-	return form.Action != "" && form.Fields["dse_sessionId"] != "" && form.Fields["dse_processorState"] != ""
+	if form.Action == "" || form.Fields["dse_sessionId"] == "" || form.Fields["dse_processorState"] == "" {
+		return false
+	}
+	if form.Fields["dse_operationName"] == "ibkacctSumProc" {
+		return false
+	}
+	if form.Fields["dse_operationName"] != "" && form.Fields["dse_operationName"] != "ibkacctDetailProc" {
+		return false
+	}
+	if form.Fields["dse_operationName"] == "ibkacctDetailProc" && form.Fields["AccountNbr"] == "" {
+		return false
+	}
+	return true
 }
 
 func evaluateHistoryForm(ctx context.Context, browserCtx context.Context, targetID target.ID) (browserFormState, error) {
@@ -1038,9 +1057,9 @@ const acbHistoryFormScript = `(() => {
 			}
 		}
 		// If we are still on the overview/welcome page without the detail processor, try clicking the account
-		if (bestForm.fields.dse_operationName !== 'ibkacctDetailProc') {
+		if bestForm.fields.dse_operationName !== 'ibkacctDetailProc' || !bestForm.fields.AccountNbr {
 			try {
-				const link = document.querySelector('a[href*="ibkacctdetailproc" i], [onclick*="ibkacctdetailproc" i], [class*="account-card" i], [class*="acct-card" i], [class*="account-item" i]');
+				const link = document.querySelector('a[href*="ibkacctdetailproc" i], a[href*="AccountNbr" i], a.acc_bold, [onclick*="ibkacctdetailproc" i], [class*="account-card" i], [class*="acct-card" i], [class*="account-item" i]');
 				if (link && typeof link.click === 'function') {
 					link.click();
 				}
@@ -1048,6 +1067,13 @@ const acbHistoryFormScript = `(() => {
 		}
 		return bestForm;
 	}
+
+	try {
+		const link = document.querySelector('a[href*="ibkacctdetailproc" i], a[href*="AccountNbr" i], a.acc_bold');
+		if (link && typeof link.click === 'function') {
+			link.click();
+		}
+	} catch (e) {}
 
 	return { action: '', fields: {} };
 })()`

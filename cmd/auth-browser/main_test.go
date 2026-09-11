@@ -24,6 +24,66 @@ import (
 	"github.com/thedemontuan/tuan-bank-gateway/internal/authbrowser"
 )
 
+func TestValidHistoryForm(t *testing.T) {
+	cases := []struct {
+		name string
+		form browserFormState
+		want bool
+	}{
+		{
+			name: "empty",
+			form: browserFormState{},
+			want: false,
+		},
+		{
+			name: "summary page rejected",
+			form: browserFormState{
+				Action: "https://online.acb.com.vn/acbib/Request",
+				Fields: map[string]string{
+					"dse_sessionId":      "session123",
+					"dse_processorState": "initial",
+					"dse_operationName":  "ibkacctSumProc",
+				},
+			},
+			want: false,
+		},
+		{
+			name: "detail page missing account rejected",
+			form: browserFormState{
+				Action: "https://online.acb.com.vn/acbib/Request",
+				Fields: map[string]string{
+					"dse_sessionId":      "session123",
+					"dse_processorState": "acctDetailPage",
+					"dse_operationName":  "ibkacctDetailProc",
+					"AccountNbr":         "",
+				},
+			},
+			want: false,
+		},
+		{
+			name: "detail page with account accepted",
+			form: browserFormState{
+				Action: "https://online.acb.com.vn/acbib/Request",
+				Fields: map[string]string{
+					"dse_sessionId":      "session123",
+					"dse_processorState": "acctDetailPage",
+					"dse_operationName":  "ibkacctDetailProc",
+					"AccountNbr":         "40478827",
+				},
+			},
+			want: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := validHistoryForm(tc.form); got != tc.want {
+				t.Fatalf("validHistoryForm(%+v) = %v, want %v", tc.form, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestHelperProcess(t *testing.T) {
 	if os.Getenv("GO_WANT_HELPER_PROCESS") != "1" {
 		return

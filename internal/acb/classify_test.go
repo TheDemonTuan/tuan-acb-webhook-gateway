@@ -18,7 +18,10 @@ func TestClassifyPage(t *testing.T) {
 		{"captcha", "https://online.acb.com.vn/acbib/Request", `captcha Mã xác nhận`, CaptchaPage},
 		{"maintenance", "https://online.acb.com.vn/acbib/Request", `Hệ thống đang bảo trì`, MaintenancePage},
 		{"account", "https://online.acb.com.vn/acbib/Request", `ibkacctDetailProc dse_processorState AccountNbr`, AccountDetailPage},
+		{"account with safekey menu and motphan", "https://online.acb.com.vn/acbib/Request", `<li><a>Đăng ký ACB SafeKey</a></li> <a href="ibktraNoTruocHanMotPhanProc"> ibkacctDetailProc dse_processorState AccountNbr`, AccountDetailPage},
 		{"history", "https://online.acb.com.vn/acbib/Request", `ibkacctDetailProc dse_processorState AccountNbr FromDate ToDate`, HistoryPage},
+		{"history with safekey menu", "https://online.acb.com.vn/acbib/Request", `<li><a>Đăng ký ACB SafeKey</a></li> <a href="ibktraNoTruocHanMotPhanProc"> ibkacctDetailProc dse_processorState AccountNbr Ngày giao dịch Số dư`, HistoryPage},
+		{"summary page", "https://online.acb.com.vn/acbib/Request", `ibkacctSumProc dse_processorState AccountNumber <li><a>Đăng ký ACB SafeKey</a></li>`, AccountDetailPage},
 		{"untrusted host", "https://example.test/", `ibkacctDetailProc AccountNbr`, UnknownPage},
 	}
 	for _, tc := range cases {
