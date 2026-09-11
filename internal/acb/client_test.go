@@ -36,6 +36,26 @@ func TestClientClassifiesLoginPage(t *testing.T) {
 	}
 }
 
+func TestSessionCookieSurvivesRestoreAndIsSent(t *testing.T) {
+	var gotCookie string
+	client, err := NewClient("https://online.acb.com.vn", roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		gotCookie = r.Header.Get("Cookie")
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`ibkacctDetailProc dse_processorState AccountNbr`)), Request: r}, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.RestoreCookies([]authbrowser.Cookie{{Name: "JSESSIONID", Value: "session-value", Domain: "online.acb.com.vn", Path: "/", Secure: true, HTTPOnly: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Get(context.Background(), "/acbib/Request"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotCookie, "JSESSIONID=session-value") {
+		t.Fatalf("session cookie missing from request: %q", gotCookie)
+	}
+}
+
 func TestHistorySendsCurrentFormState(t *testing.T) {
 	client, err := NewClient("https://online.acb.com.vn", roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.Method != http.MethodPost {

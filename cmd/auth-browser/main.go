@@ -946,7 +946,13 @@ func encodeHandoff(cookies []*network.Cookie) (string, error) {
 	}
 	serializable := make([]authbrowser.Cookie, 0, len(filtered))
 	for _, cookie := range filtered {
-		serializable = append(serializable, authbrowser.Cookie{Name: cookie.Name, Value: cookie.Value, Domain: cookie.Domain, Path: cookie.Path, Expires: time.Unix(int64(cookie.Expires), 0).UTC(), Secure: cookie.Secure, HTTPOnly: cookie.HTTPOnly})
+		// CDP represents session cookies with a non-positive expiry. Keep its
+		// zero-value representation so net/http's cookie jar does not discard it.
+		expires := time.Time{}
+		if cookie.Expires > 0 {
+			expires = time.Unix(int64(cookie.Expires), 0).UTC()
+		}
+		serializable = append(serializable, authbrowser.Cookie{Name: cookie.Name, Value: cookie.Value, Domain: cookie.Domain, Path: cookie.Path, Expires: expires, Secure: cookie.Secure, HTTPOnly: cookie.HTTPOnly})
 	}
 	payload, err := json.Marshal(serializable)
 	if err != nil {

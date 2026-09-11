@@ -157,6 +157,54 @@ func TestEncodeHandoffKeepsCookiesBeforeNonce(t *testing.T) {
 	}
 }
 
+func TestEncodeHandoffPreservesSessionCookie(t *testing.T) {
+	handoff, err := encodeHandoff([]*network.Cookie{{Name: "JSESSIONID", Value: "secret", Domain: "online.acb.com.vn", Path: "/", Expires: -1, Secure: true, HTTPOnly: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedCookies, _, ok := strings.Cut(handoff, ".")
+	if !ok {
+		t.Fatalf("invalid handoff framing: %q", handoff)
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(encodedCookies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cookies []authbrowser.Cookie
+	if err := json.Unmarshal(payload, &cookies); err != nil {
+		t.Fatal(err)
+	}
+	if len(cookies) != 1 {
+		t.Fatalf("got %d cookies, want 1", len(cookies))
+	}
+	if !cookies[0].Expires.IsZero() {
+		t.Fatalf("session cookie expiry = %s, want zero", cookies[0].Expires)
+	}
+}
+
+func TestEncodeHandoffPreservesPersistentCookieExpiry(t *testing.T) {
+	expected := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Second)
+	handoff, err := encodeHandoff([]*network.Cookie{{Name: "persistent", Value: "secret", Domain: "online.acb.com.vn", Path: "/", Expires: float64(expected.Unix())}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedCookies, _, ok := strings.Cut(handoff, ".")
+	if !ok {
+		t.Fatalf("invalid handoff framing: %q", handoff)
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(encodedCookies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cookies []authbrowser.Cookie
+	if err := json.Unmarshal(payload, &cookies); err != nil {
+		t.Fatal(err)
+	}
+	if len(cookies) != 1 || !cookies[0].Expires.Equal(expected) {
+		t.Fatalf("persistent cookie expiry = %s, want %s", cookies[0].Expires, expected)
+	}
+}
+
 func TestAuthenticatedACBRejectsLoginRoutes(t *testing.T) {
 	cookies := []*network.Cookie{{Name: "JSESSIONID", Domain: ".acb.com.vn", Value: "present"}}
 	signals := domSignals{
