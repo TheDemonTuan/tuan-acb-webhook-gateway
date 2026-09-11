@@ -44,8 +44,14 @@ func NewClient(base string, transport http.RoundTripper) (*Client, error) {
 		transport = http.DefaultTransport
 	}
 	return &Client{baseURL: parsed, http: &http.Client{Jar: jar, Timeout: DefaultClientTimeout, Transport: transport, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
 		if !strings.EqualFold(req.URL.Hostname(), OfficialHost) {
 			return errors.New("ACB redirect leaves official host")
+		}
+		if req.URL.Scheme == "https" && req.URL.Port() == "443" {
+			req.URL.Host = req.URL.Hostname()
 		}
 		return nil
 	}}}, nil

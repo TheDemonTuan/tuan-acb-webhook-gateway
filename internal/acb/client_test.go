@@ -101,3 +101,29 @@ func TestRestoreCookiesAllowsACBAndOnlineDomains(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckRedirectStripsPort443(t *testing.T) {
+	var requestedHost string
+	client, err := NewClient("https://online.acb.com.vn", roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/start" {
+			header := make(http.Header)
+			header.Set("Location", "https://online.acb.com.vn:443/target")
+			return &http.Response{StatusCode: http.StatusFound, Header: header, Request: r}, nil
+		}
+		requestedHost = r.URL.Host
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("ok")), Request: r}, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Get(context.Background(), "/start")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if requestedHost != "online.acb.com.vn" {
+		t.Fatalf("expected host to be stripped of port 443, got %q", requestedHost)
+	}
+}
