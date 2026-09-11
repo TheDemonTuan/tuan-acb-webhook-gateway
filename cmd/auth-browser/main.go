@@ -558,7 +558,7 @@ func (s *server) runObserverCycle(ctx context.Context, id, debugURL string, done
 		if err != nil {
 			continue
 		}
-		if !authenticatedACB(currentURL, signals, cookies) {
+		if !authenticatedACB(currentURL, signals, cookies) || !validHistoryForm(form) {
 			if reason != "" && (reason != lastReason || time.Since(lastLogTime) >= 10*time.Second) {
 				slog.Info("ACB observer waiting", "attempt_id", id, "reason", reason)
 				lastReason = reason
@@ -1057,7 +1057,7 @@ const acbHistoryFormScript = `(() => {
 			}
 		}
 		// If we are still on the overview/welcome page without the detail processor, try clicking the account
-		if bestForm.fields.dse_operationName !== 'ibkacctDetailProc' || !bestForm.fields.AccountNbr {
+		if (bestForm.fields.dse_operationName !== 'ibkacctDetailProc' || !bestForm.fields.AccountNbr) {
 			try {
 				const link = document.querySelector('a[href*="ibkacctdetailproc" i], a[href*="AccountNbr" i], a.acc_bold, [onclick*="ibkacctdetailproc" i], [class*="account-card" i], [class*="acct-card" i], [class*="account-item" i]');
 				if (link && typeof link.click === 'function') {
