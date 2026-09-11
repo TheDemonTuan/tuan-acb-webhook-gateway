@@ -135,7 +135,7 @@ func TestWaitBrowserReadyReportsEarlyExit(t *testing.T) {
 }
 
 func TestEncodeHandoffKeepsCookiesBeforeNonce(t *testing.T) {
-	handoff, err := encodeHandoff("https://online.acb.com.vn/acbib/AccountSummary", []*network.Cookie{{Name: "JSESSIONID", Value: "secret", Domain: ".acb.com.vn", Path: "/"}})
+	handoff, err := encodeHandoff("https://online.acb.com.vn/acbib/AccountSummary", []*network.Cookie{{Name: "JSESSIONID", Value: "secret", Domain: ".acb.com.vn", Path: "/"}}, browserFormState{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestEncodeHandoffKeepsCookiesBeforeNonce(t *testing.T) {
 }
 
 func TestEncodeHandoffPreservesSessionCookie(t *testing.T) {
-	handoff, err := encodeHandoff("https://online.acb.com.vn/acbib/AccountSummary", []*network.Cookie{{Name: "JSESSIONID", Value: "secret", Domain: "online.acb.com.vn", Path: "/", Expires: -1, Secure: true, HTTPOnly: true}})
+	handoff, err := encodeHandoff("https://online.acb.com.vn/acbib/AccountSummary", []*network.Cookie{{Name: "JSESSIONID", Value: "secret", Domain: "online.acb.com.vn", Path: "/", Expires: -1, Secure: true, HTTPOnly: true}}, browserFormState{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +174,7 @@ func TestEncodeHandoffPreservesSessionCookie(t *testing.T) {
 
 func TestEncodeHandoffPreservesPersistentCookieExpiry(t *testing.T) {
 	expected := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Second)
-	handoff, err := encodeHandoff("https://online.acb.com.vn/acbib/AccountSummary", []*network.Cookie{{Name: "persistent", Value: "secret", Domain: "online.acb.com.vn", Path: "/", Expires: float64(expected.Unix())}})
+	handoff, err := encodeHandoff("https://online.acb.com.vn/acbib/AccountSummary", []*network.Cookie{{Name: "persistent", Value: "secret", Domain: "online.acb.com.vn", Path: "/", Expires: float64(expected.Unix())}}, browserFormState{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,7 +349,7 @@ func TestCookieFilteringAndDomainBoundary(t *testing.T) {
 
 	// Mixed cookies passed to encodeHandoff: only valid ACB cookies are retained
 	mixed := append(validScopedCookies, invalidCookies...)
-	handoff, err := encodeHandoff("https://online.acb.com.vn/acbib/AccountSummary", mixed)
+	handoff, err := encodeHandoff("https://online.acb.com.vn/acbib/AccountSummary", mixed, browserFormState{})
 	if err != nil {
 		t.Fatalf("encodeHandoff failed: %v", err)
 	}
@@ -362,7 +362,7 @@ func TestCookieFilteringAndDomainBoundary(t *testing.T) {
 	}
 
 	// Only invalid cookies: encodeHandoff must error
-	if _, err := encodeHandoff("https://online.acb.com.vn/acbib/AccountSummary", invalidCookies); err == nil {
+	if _, err := encodeHandoff("https://online.acb.com.vn/acbib/AccountSummary", invalidCookies, browserFormState{}); err == nil {
 		t.Fatal("expected error when encodeHandoff has no valid ACB cookies")
 	}
 }
@@ -1063,7 +1063,7 @@ func TestRealisticCDP_MultiTabTargetSelectionAndTabReplacement(t *testing.T) {
 
 	// Evaluate while logged out: should not verify
 	checkCtx, checkCancel := context.WithTimeout(executor, 5*time.Second)
-	currURL, signals, cookies, reason, err := browserLoginState(checkCtx, bctx)
+	currURL, signals, cookies, _, reason, err := browserLoginState(checkCtx, bctx)
 	checkCancel()
 	if err != nil {
 		t.Fatalf("browserLoginState returned error: %v", err)
@@ -1103,7 +1103,7 @@ func TestRealisticCDP_MultiTabTargetSelectionAndTabReplacement(t *testing.T) {
 
 	// Now evaluate again: should verify
 	checkCtx2, checkCancel2 := context.WithTimeout(executor, 5*time.Second)
-	currURL, signals, cookies, _, err = browserLoginState(checkCtx2, bctx)
+	currURL, signals, cookies, _, _, err = browserLoginState(checkCtx2, bctx)
 	checkCancel2()
 	if err != nil {
 		t.Fatalf("browserLoginState error on authenticated page: %v", err)
@@ -1124,7 +1124,7 @@ func TestRealisticCDP_MultiTabTargetSelectionAndTabReplacement(t *testing.T) {
 
 	// Evaluate again on replaced tab: should seamlessly identify Tab 3 as authenticated
 	checkCtx3, checkCancel3 := context.WithTimeout(executor, 5*time.Second)
-	currURL, signals, cookies, _, err = browserLoginState(checkCtx3, bctx)
+	currURL, signals, cookies, _, _, err = browserLoginState(checkCtx3, bctx)
 	checkCancel3()
 	if err != nil {
 		t.Fatalf("browserLoginState error on replaced tab: %v", err)

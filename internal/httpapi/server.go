@@ -29,8 +29,13 @@ type SyncRequester interface {
 	RequestSync(context.Context) error
 }
 
+type AuthVerifier interface {
+	VerifySession(context.Context, string, int64, []byte) error
+}
+
 type Server struct {
 	syncRequester SyncRequester
+	authVerifier  AuthVerifier
 	cfg           config.Config
 	store         *storage.Store
 	auth          *auth.Middleware
@@ -84,6 +89,11 @@ func New(cfg config.Config, store *storage.Store) *Server {
 	s.handler = r
 	return s
 }
+func (s *Server) WithAuthVerifier(verifier AuthVerifier) *Server {
+	s.authVerifier = verifier
+	return s
+}
+
 func (s *Server) WithSyncRequester(requester SyncRequester) *Server {
 	s.syncRequester = requester
 	return s
@@ -373,6 +383,17 @@ func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) {
 		encrypted, err := json.Marshal(envelope)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "session encoding failed")
+			return
+		}
+		if s.authVerifier == nil {
+			writeError(w, http.StatusServiceUnavailable, "ACB session verification is unavailable")
+			return
+		}
+		if err := s.authVerifier.VerifySession(r.Context(), attempt.ConnectionID, attempt.Generation, encrypted); err != nil {
+			slog.Warn("ACB HTTP session verification failed", "attempt_id", attemptID, "generation", attempt.Generation, "error", err)
+			_ = s.browser.Cancel(r.Context(), attemptID)
+			_ = s.store.FinishAuthAttempt(r.Context(), attemptID, "FAILED")
+			writeJSON(w, http.StatusOK, map[string]string{"status": "FAILED", "error": "Không thể xác minh phiên ACB để đọc lịch sử. Vui lòng mở phiên mới."})
 			return
 		}
 		completedConn, err := s.store.CompleteAuthSession(r.Context(), attemptID, encrypted)

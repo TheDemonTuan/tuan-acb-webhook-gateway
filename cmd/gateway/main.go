@@ -87,8 +87,10 @@ func main() {
 		os.Exit(1)
 	}
 	bankMonitor := monitor.New(store, acbClient, cfg.PollInterval)
+	var sessionLoader *monitor.SessionLoader
 	if keyring != nil {
-		bankMonitor.WithSessionLoader(monitor.NewSessionLoader(store, keyring, acbClient))
+		sessionLoader = monitor.NewSessionLoader(store, keyring, acbClient)
+		bankMonitor.WithSessionLoader(sessionLoader)
 	}
 	go bankMonitor.Run(ctx)
 
@@ -100,7 +102,11 @@ func main() {
 		addresses = append(addresses, strings.TrimSuffix(primaryAddr, ":8080")+":8090")
 	}
 
-	handler := httpapi.New(cfg, store).WithSyncRequester(bankMonitor).Handler()
+	server := httpapi.New(cfg, store).WithSyncRequester(bankMonitor)
+	if sessionLoader != nil {
+		server.WithAuthVerifier(monitor.NewSessionVerifier(sessionLoader, acbClient))
+	}
+	handler := server.Handler()
 	var servers []*http.Server
 	errCh := make(chan error, len(addresses))
 

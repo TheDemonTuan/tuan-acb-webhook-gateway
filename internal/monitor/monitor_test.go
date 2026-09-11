@@ -18,7 +18,7 @@ type mockBankClient struct {
 	historyResp acb.Response
 }
 
-func (m *mockBankClient) Get(ctx context.Context, endpoint string) (acb.Response, error) {
+func (m *mockBankClient) Bootstrap(ctx context.Context) (acb.Response, error) {
 	return m.getResp, nil
 }
 
@@ -136,9 +136,9 @@ type countingMockClient struct {
 	historyFunc func(ctx context.Context, endpoint string, fields map[string]string) (acb.Response, error)
 }
 
-func (c *countingMockClient) Get(ctx context.Context, endpoint string) (acb.Response, error) {
+func (c *countingMockClient) Bootstrap(ctx context.Context) (acb.Response, error) {
 	if c.getFunc != nil {
-		return c.getFunc(ctx, endpoint)
+		return c.getFunc(ctx, "")
 	}
 	return acb.Response{StatusCode: 200, Kind: acb.HistoryPage, Body: mockHistoryHTML}, nil
 }

@@ -20,9 +20,10 @@ const (
 )
 
 type Client struct {
-	baseURL   *url.URL
-	bootstrap *url.URL
-	http      *http.Client
+	baseURL         *url.URL
+	bootstrap       *url.URL
+	bootstrapFields map[string]string
+	http            *http.Client
 }
 
 type Response struct {
@@ -70,14 +71,25 @@ func (c *Client) RestoreSession(handoff authbrowser.Handoff) error {
 		return err
 	}
 	c.bootstrap = nil
-	if handoff.URL == "" {
-		return nil
+	c.bootstrapFields = nil
+	if handoff.URL != "" {
+		bootstrap, err := c.endpoint(handoff.URL)
+		if err != nil {
+			return errors.New("invalid ACB session bootstrap URL")
+		}
+		c.bootstrap = bootstrap
 	}
-	bootstrap, err := c.endpoint(handoff.URL)
-	if err != nil {
-		return errors.New("invalid ACB session bootstrap URL")
+	if handoff.Action != "" {
+		action, err := c.endpoint(handoff.Action)
+		if err != nil {
+			return errors.New("invalid ACB session form action")
+		}
+		if handoff.Fields["dse_sessionId"] == "" || handoff.Fields["dse_processorState"] == "" {
+			return errors.New("ACB session form state is incomplete")
+		}
+		c.bootstrap = action
+		c.bootstrapFields = cloneFields(handoff.Fields)
 	}
-	c.bootstrap = bootstrap
 	return nil
 }
 
@@ -97,6 +109,30 @@ func (c *Client) RestoreCookies(cookies []authbrowser.Cookie) error {
 	}
 	c.http.Jar = jar
 	return nil
+}
+
+func cloneFields(fields map[string]string) map[string]string {
+	cloned := make(map[string]string, len(fields))
+	for key, value := range fields {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func (c *Client) Bootstrap(ctx context.Context) (Response, error) {
+	if c.bootstrap == nil || len(c.bootstrapFields) == 0 {
+		return Response{}, errors.New("ACB authenticated form state is unavailable")
+	}
+	values := url.Values{}
+	for key, value := range c.bootstrapFields {
+		values.Set(key, value)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.bootstrap.String(), strings.NewReader(values.Encode()))
+	if err != nil {
+		return Response{}, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	return c.do(req)
 }
 
 func (c *Client) History(ctx context.Context, endpoint string, fields map[string]string) (Response, error) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +16,16 @@ import (
 	"github.com/thedemontuan/tuan-bank-gateway/internal/config"
 	"github.com/thedemontuan/tuan-bank-gateway/internal/storage"
 )
+
+type acceptingAuthVerifier struct{}
+
+func (acceptingAuthVerifier) VerifySession(context.Context, string, int64, []byte) error { return nil }
+
+type rejectingAuthVerifier struct{ err error }
+
+func (v rejectingAuthVerifier) VerifySession(context.Context, string, int64, []byte) error {
+	return v.err
+}
 
 func TestAuthBrowserStatusFailures(t *testing.T) {
 	for _, tc := range []struct {
@@ -122,7 +133,7 @@ func TestAuthBrowserStatusTerminalIdempotence(t *testing.T) {
 		DevelopmentSubject: "owner",
 		AuthBrowserURL:     upstream.URL,
 		MasterKeyFile:      keyPath,
-	}, store)
+	}, store).WithAuthVerifier(acceptingAuthVerifier{})
 
 	// First poll transitions to MONITORING
 	w1 := httptest.NewRecorder()
@@ -153,6 +164,58 @@ func TestAuthBrowserStatusTerminalIdempotence(t *testing.T) {
 	server.Handler().ServeHTTP(wScreen, httptest.NewRequest(http.MethodGet, "http://example.test/api/v1/connection/auth/"+attempt.ID+"/screen/vnc.html", nil))
 	if wScreen.Code != http.StatusNotFound {
 		t.Fatalf("VNC screen allowed after terminal: got %d", wScreen.Code)
+	}
+}
+
+func TestAuthBrowserVerificationFailureNeverEntersMonitoring(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.Open(ctx, filepath.Join(t.TempDir(), "gateway.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.ConfigureConnection(ctx, "***1234"); err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := store.StartAuthAttempt(ctx, "", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i + 1)
+	}
+	keyPath := filepath.Join(t.TempDir(), "master.key")
+	if err := os.WriteFile(keyPath, []byte(base64.RawStdEncoding.EncodeToString(key)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cancelled := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/handoff"):
+			_ = json.NewEncoder(w).Encode(map[string]string{"session": "handoff-secret-data"})
+		case r.Method == http.MethodDelete:
+			cancelled++
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]string{"attemptId": attempt.ID, "status": "VERIFIED"})
+		}
+	}))
+	defer upstream.Close()
+	server := New(config.Config{Timezone: time.UTC, DevelopmentSubject: "owner", AuthBrowserURL: upstream.URL, MasterKeyFile: keyPath}, store).
+		WithAuthVerifier(rejectingAuthVerifier{err: errors.New("login page")})
+
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://example.test/api/v1/connection/auth/"+attempt.ID+"/status", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"FAILED"`) {
+		t.Fatalf("response=%d %s", response.Code, response.Body.String())
+	}
+	connection, err := store.Connection(ctx)
+	if err != nil || connection.State != "AUTH_REQUIRED" {
+		t.Fatalf("connection=%+v err=%v", connection, err)
+	}
+	if cancelled != 1 {
+		t.Fatalf("browser cancel count=%d, want 1", cancelled)
 	}
 }
 

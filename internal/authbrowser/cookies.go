@@ -24,9 +24,11 @@ type Cookie struct {
 // from the gateway HTTP client. Version 1 handoffs contain cookies and the
 // authenticated browser URL.
 type Handoff struct {
-	Version int      `json:"version"`
-	URL     string   `json:"url,omitempty"`
-	Cookies []Cookie `json:"cookies"`
+	Version int               `json:"version"`
+	URL     string            `json:"url,omitempty"`
+	Action  string            `json:"action,omitempty"`
+	Fields  map[string]string `json:"fields,omitempty"`
+	Cookies []Cookie          `json:"cookies"`
 }
 
 func EncodeHandoff(handoff Handoff, nonce []byte) (string, error) {

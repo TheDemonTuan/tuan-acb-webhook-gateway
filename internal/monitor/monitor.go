@@ -13,7 +13,7 @@ import (
 )
 
 type BankClient interface {
-	Get(ctx context.Context, endpoint string) (acb.Response, error)
+	Bootstrap(ctx context.Context) (acb.Response, error)
 	History(ctx context.Context, endpoint string, fields map[string]string) (acb.Response, error)
 }
 
@@ -130,7 +130,7 @@ func (m *Monitor) pollOnce(ctx context.Context, expected *syncRequest) error {
 	}
 
 	// 1. Fetch account detail page to verify session and extract form state
-	resp, err := m.client.Get(ctx, "")
+	resp, err := m.client.Bootstrap(ctx)
 	if err != nil {
 		poll.Status = "FAILED"
 		poll.Error = err.Error()

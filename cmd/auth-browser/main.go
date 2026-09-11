@@ -42,6 +42,11 @@ func acbLoginURL() string {
 	return defaultACBLoginURL
 }
 
+type browserFormState struct {
+	Action string            `json:"action"`
+	Fields map[string]string `json:"fields"`
+}
+
 type browserSession struct {
 	AttemptID string    `json:"attemptId"`
 	Status    string    `json:"status"`
@@ -541,7 +546,7 @@ func (s *server) runObserverCycle(ctx context.Context, id, debugURL string, done
 		s.mu.Unlock()
 
 		checkCtx, cancel := context.WithTimeout(executor, 5*time.Second)
-		currentURL, signals, cookies, reason, err := browserLoginState(checkCtx, browserCtx)
+		currentURL, signals, cookies, form, reason, err := browserLoginState(checkCtx, browserCtx)
 		cancel()
 		if err != nil {
 			continue
@@ -554,7 +559,7 @@ func (s *server) runObserverCycle(ctx context.Context, id, debugURL string, done
 			}
 			continue
 		}
-		handoff, err := encodeHandoff(currentURL, cookies)
+		handoff, err := encodeHandoff(currentURL, cookies, form)
 		if err != nil {
 			slog.Warn("encode ACB browser handoff", "attempt_id", id, "error", err)
 			continue
@@ -913,10 +918,10 @@ func classifyWaitingReason(signals domSignals, cookies []*network.Cookie) string
 	return "waiting for user authentication"
 }
 
-func browserLoginState(ctx context.Context, browserCtx context.Context) (string, domSignals, []*network.Cookie, string, error) {
+func browserLoginState(ctx context.Context, browserCtx context.Context) (string, domSignals, []*network.Cookie, browserFormState, string, error) {
 	targets, err := target.GetTargets().Do(ctx)
 	if err != nil {
-		return "", domSignals{}, nil, "failed to get browser targets", err
+		return "", domSignals{}, nil, browserFormState{}, "failed to get browser targets", err
 	}
 	var matchingTargets []*target.Info
 	for _, info := range targets {
@@ -925,12 +930,12 @@ func browserLoginState(ctx context.Context, browserCtx context.Context) (string,
 		}
 	}
 	if len(matchingTargets) == 0 {
-		return "", domSignals{}, nil, "no matching ACB page target found", nil
+		return "", domSignals{}, nil, browserFormState{}, "no matching ACB page target found", nil
 	}
 
 	allCookies, err := storage.GetCookies().Do(ctx)
 	if err != nil {
-		return "", domSignals{}, nil, "failed to read browser cookies", err
+		return "", domSignals{}, nil, browserFormState{}, "failed to read browser cookies", err
 	}
 	acbCookies := filterACBCookies(allCookies)
 
@@ -944,15 +949,59 @@ func browserLoginState(ctx context.Context, browserCtx context.Context) (string,
 		}
 		lastSignals = signals
 		if authenticatedACB(info.URL, signals, acbCookies) {
-			return info.URL, signals, acbCookies, "", nil
+			form, _ := evaluateHistoryForm(ctx, browserCtx, info.TargetID)
+			if validHistoryForm(form) {
+				return info.URL, signals, acbCookies, form, "", nil
+			}
+			lastSignals = signals
 		}
 	}
 
 	reason := classifyWaitingReason(lastSignals, acbCookies)
-	return lastURL, lastSignals, acbCookies, reason, nil
+	if lastSignals.isAuthenticated() {
+		reason = "waiting for authenticated ACB form state"
+	}
+	return lastURL, lastSignals, acbCookies, browserFormState{}, reason, nil
 }
 
-func encodeHandoff(currentURL string, cookies []*network.Cookie) (string, error) {
+func validHistoryForm(form browserFormState) bool {
+	return form.Action != "" && form.Fields["dse_sessionId"] != "" && form.Fields["dse_processorState"] != ""
+}
+
+func evaluateHistoryForm(ctx context.Context, browserCtx context.Context, targetID target.ID) (browserFormState, error) {
+	tabCtx, tabCancel := chromedp.NewContext(browserCtx, chromedp.WithTargetID(targetID))
+	defer tabCancel()
+	var form browserFormState
+	if err := chromedp.Run(tabCtx, chromedp.Evaluate(acbHistoryFormScript, &form)); err != nil {
+		return browserFormState{}, err
+	}
+	return form, nil
+}
+
+const acbHistoryFormScript = `(() => {
+	const allowed = new Set([
+		'dse_applicationId', 'dse_operationName', 'dse_pageId',
+		'dse_processorState', 'dse_errorPage', 'dse_nextEventName',
+		'dse_sessionId', 'dse_processorId', 'dse_processorIdForGenMenu', 'AccountNbr', 'virtualAccount',
+		'storeName', 'CheckRef', 'EdtRef', 'CheckDoiUng',
+		'activeDatetimeYN', 'FromDate', 'ToDate'
+	]);
+	for (const form of document.forms) {
+		const fields = {};
+		for (const element of form.elements) {
+			if (!element.name || !allowed.has(element.name) || element.disabled) continue;
+			const type = (element.type || '').toLowerCase();
+			if ((type === 'checkbox' || type === 'radio') && !element.checked) continue;
+			fields[element.name] = element.value || '';
+		}
+		if (fields.dse_sessionId || (fields.dse_operationName && fields.dse_processorState)) {
+			return { action: form.action || location.href, fields };
+		}
+	}
+	return { action: '', fields: {} };
+})()`
+
+func encodeHandoff(currentURL string, cookies []*network.Cookie, form browserFormState) (string, error) {
 	if !isMatchingACBPageURL(currentURL) {
 		return "", errors.New("invalid authenticated ACB URL")
 	}
@@ -974,7 +1023,7 @@ func encodeHandoff(currentURL string, cookies []*network.Cookie) (string, error)
 	if _, err := rand.Read(nonce); err != nil {
 		return "", err
 	}
-	return authbrowser.EncodeHandoff(authbrowser.Handoff{Version: 1, URL: currentURL, Cookies: serializable}, nonce)
+	return authbrowser.EncodeHandoff(authbrowser.Handoff{Version: 1, URL: currentURL, Action: form.Action, Fields: form.Fields, Cookies: serializable}, nonce)
 }
 
 func waitBrowserReady(ctx context.Context, debugURL string, done <-chan struct{}, item *browserSession) error {

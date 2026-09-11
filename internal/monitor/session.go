@@ -43,8 +43,21 @@ func (l *SessionLoader) Restore(ctx context.Context, connectionID string, genera
 	if err != nil {
 		return err
 	}
+	return l.restoreLocked(connectionID, generation, stored.Envelope)
+}
+
+func (l *SessionLoader) RestoreEnvelope(connectionID string, generation int64, encoded []byte) error {
+	if l == nil || l.keyring == nil || l.restorer == nil {
+		return errors.New("ACB session loader is unavailable")
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.restoreLocked(connectionID, generation, encoded)
+}
+
+func (l *SessionLoader) restoreLocked(connectionID string, generation int64, encoded []byte) error {
 	var envelope security.Envelope
-	if err := json.Unmarshal(stored.Envelope, &envelope); err != nil {
+	if err := json.Unmarshal(encoded, &envelope); err != nil {
 		return errors.New("stored ACB session envelope is invalid")
 	}
 	plaintext, err := l.keyring.Decrypt(envelope, []byte("acb-session:"+connectionID))
