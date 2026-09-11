@@ -754,6 +754,9 @@ func TestRealChromiumIntegration(t *testing.T) {
 }
 
 func TestRealisticCDP_PageDOMSignals(t *testing.T) {
+	if os.Getenv("ACB_BROWSER_INTEGRATION") != "1" {
+		t.Skip("set ACB_BROWSER_INTEGRATION=1 to run the real browser integration test")
+	}
 	browserBin := findDefaultBrowser()
 	if browserBin == "" || browserBin == "chromium" {
 		if _, err := exec.LookPath("google-chrome"); err != nil {
@@ -936,6 +939,9 @@ func TestRealisticCDP_PageDOMSignals(t *testing.T) {
 }
 
 func TestRealisticCDP_MultiTabTargetSelectionAndTabReplacement(t *testing.T) {
+	if os.Getenv("ACB_BROWSER_INTEGRATION") != "1" {
+		t.Skip("set ACB_BROWSER_INTEGRATION=1 to run the real browser integration test")
+	}
 	browserBin := findDefaultBrowser()
 	if browserBin == "" || browserBin == "chromium" {
 		if _, err := exec.LookPath("google-chrome"); err != nil {
