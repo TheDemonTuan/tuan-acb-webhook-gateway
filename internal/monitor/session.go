@@ -2,27 +2,29 @@ package monitor
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"strings"
+	"sync"
 
 	"github.com/thedemontuan/tuan-bank-gateway/internal/authbrowser"
 	"github.com/thedemontuan/tuan-bank-gateway/internal/security"
 	"github.com/thedemontuan/tuan-bank-gateway/internal/storage"
 )
 
-type CookieRestorer interface {
-	RestoreCookies([]authbrowser.Cookie) error
+type SessionRestorer interface {
+	RestoreSession(authbrowser.Handoff) error
 }
 
 type SessionLoader struct {
-	store    *storage.Store
-	keyring  *security.Keyring
-	restorer CookieRestorer
+	store            *storage.Store
+	keyring          *security.Keyring
+	restorer         SessionRestorer
+	mu               sync.Mutex
+	loadedID         string
+	loadedGeneration int64
 }
 
-func NewSessionLoader(store *storage.Store, keyring *security.Keyring, restorer CookieRestorer) *SessionLoader {
+func NewSessionLoader(store *storage.Store, keyring *security.Keyring, restorer SessionRestorer) *SessionLoader {
 	return &SessionLoader{store: store, keyring: keyring, restorer: restorer}
 }
 
@@ -31,6 +33,11 @@ func NewSessionLoader(store *storage.Store, keyring *security.Keyring, restorer 
 func (l *SessionLoader) Restore(ctx context.Context, connectionID string, generation int64) error {
 	if l == nil || l.keyring == nil || l.restorer == nil {
 		return errors.New("ACB session loader is unavailable")
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.loadedID == connectionID && l.loadedGeneration == generation {
+		return nil
 	}
 	stored, err := l.store.Session(ctx, connectionID, generation)
 	if err != nil {
@@ -44,17 +51,14 @@ func (l *SessionLoader) Restore(ctx context.Context, connectionID string, genera
 	if err != nil {
 		return errors.New("stored ACB session cannot be decrypted")
 	}
-	encodedCookies, _, ok := strings.Cut(string(plaintext), ".")
-	if !ok || encodedCookies == "" {
+	handoff, err := authbrowser.DecodeHandoff(string(plaintext))
+	if err != nil {
 		return errors.New("stored ACB session handoff is invalid")
 	}
-	cookieJSON, err := base64.RawURLEncoding.DecodeString(encodedCookies)
-	if err != nil {
-		return errors.New("stored ACB session cookies are invalid")
+	if err := l.restorer.RestoreSession(handoff); err != nil {
+		return err
 	}
-	var cookies []authbrowser.Cookie
-	if err := json.Unmarshal(cookieJSON, &cookies); err != nil || len(cookies) == 0 {
-		return errors.New("stored ACB session has no valid cookies")
-	}
-	return l.restorer.RestoreCookies(cookies)
+	l.loadedID = connectionID
+	l.loadedGeneration = generation
+	return nil
 }

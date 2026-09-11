@@ -56,6 +56,37 @@ func TestSessionCookieSurvivesRestoreAndIsSent(t *testing.T) {
 	}
 }
 
+func TestRestoredSessionUsesAuthenticatedBrowserURL(t *testing.T) {
+	var gotURL string
+	client, err := NewClient("https://online.acb.com.vn", roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		gotURL = r.URL.String()
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`ibkacctDetailProc dse_processorState AccountNbr`)), Request: r}, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.RestoreSession(authbrowser.Handoff{Version: 1, URL: "https://online.acb.com.vn/acbib/AccountSummary?dse_sessionId=opaque", Cookies: []authbrowser.Cookie{{Name: "JSESSIONID", Value: "session-value", Domain: "online.acb.com.vn", Path: "/", Secure: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Get(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+	if gotURL != "https://online.acb.com.vn/acbib/AccountSummary?dse_sessionId=opaque" {
+		t.Fatalf("bootstrap URL = %q", gotURL)
+	}
+}
+
+func TestRestoreSessionRejectsUntrustedBootstrapURL(t *testing.T) {
+	client, err := NewClient("https://online.acb.com.vn", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = client.RestoreSession(authbrowser.Handoff{Version: 1, URL: "https://example.test/steal", Cookies: []authbrowser.Cookie{{Name: "JSESSIONID", Value: "session-value", Domain: "online.acb.com.vn", Path: "/", Secure: true}}})
+	if err == nil {
+		t.Fatal("accepted untrusted bootstrap URL")
+	}
+}
+
 func TestHistorySendsCurrentFormState(t *testing.T) {
 	client, err := NewClient("https://online.acb.com.vn", roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.Method != http.MethodPost {

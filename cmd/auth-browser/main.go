@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -105,6 +104,7 @@ func main() {
 	mux.HandleFunc("DELETE /sessions/{attemptID}", controller.cancel)
 	mux.HandleFunc("GET /sessions/{attemptID}/status", controller.status)
 	mux.HandleFunc("POST /sessions/{attemptID}/handoff", controller.handoff)
+	mux.HandleFunc("POST /sessions/{attemptID}/complete", controller.complete)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		if err := desktopHealth(); err != nil {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
@@ -436,14 +436,27 @@ func (s *server) handoff(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "ACB login has not been verified"})
 		return
 	}
+	handoff := s.session.handoff
+	s.mu.Unlock()
+
+	writeJSON(w, http.StatusOK, map[string]string{"session": handoff})
+}
+
+func (s *server) complete(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("attemptID")
+	s.mu.Lock()
+	if s.session == nil || s.session.AttemptID != id || !s.session.verified {
+		s.mu.Unlock()
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "ACB browser session not found"})
+		return
+	}
 	item := s.session
-	handoff := item.handoff
 	item.handoff = ""
 	item.Status = "COMPLETED"
 	s.mu.Unlock()
 
-	writeJSON(w, http.StatusOK, map[string]string{"session": handoff})
 	s.reapSession(item, 5*time.Second)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *server) observeLogin(ctx context.Context, id, debugURL string, done <-chan struct{}) {
@@ -541,7 +554,7 @@ func (s *server) runObserverCycle(ctx context.Context, id, debugURL string, done
 			}
 			continue
 		}
-		handoff, err := encodeHandoff(cookies)
+		handoff, err := encodeHandoff(currentURL, cookies)
 		if err != nil {
 			slog.Warn("encode ACB browser handoff", "attempt_id", id, "error", err)
 			continue
@@ -939,7 +952,10 @@ func browserLoginState(ctx context.Context, browserCtx context.Context) (string,
 	return lastURL, lastSignals, acbCookies, reason, nil
 }
 
-func encodeHandoff(cookies []*network.Cookie) (string, error) {
+func encodeHandoff(currentURL string, cookies []*network.Cookie) (string, error) {
+	if !isMatchingACBPageURL(currentURL) {
+		return "", errors.New("invalid authenticated ACB URL")
+	}
 	filtered := filterACBCookies(cookies)
 	if len(filtered) == 0 {
 		return "", errors.New("no valid ACB cookies to hand off")
@@ -954,15 +970,11 @@ func encodeHandoff(cookies []*network.Cookie) (string, error) {
 		}
 		serializable = append(serializable, authbrowser.Cookie{Name: cookie.Name, Value: cookie.Value, Domain: cookie.Domain, Path: cookie.Path, Expires: expires, Secure: cookie.Secure, HTTPOnly: cookie.HTTPOnly})
 	}
-	payload, err := json.Marshal(serializable)
-	if err != nil {
-		return "", err
-	}
 	nonce := make([]byte, 24)
 	if _, err := rand.Read(nonce); err != nil {
 		return "", err
 	}
-	return base64.RawURLEncoding.EncodeToString(payload) + "." + base64.RawURLEncoding.EncodeToString(nonce), nil
+	return authbrowser.EncodeHandoff(authbrowser.Handoff{Version: 1, URL: currentURL, Cookies: serializable}, nonce)
 }
 
 func waitBrowserReady(ctx context.Context, debugURL string, done <-chan struct{}, item *browserSession) error {

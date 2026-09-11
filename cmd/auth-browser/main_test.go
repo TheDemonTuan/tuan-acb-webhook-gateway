@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -136,72 +135,55 @@ func TestWaitBrowserReadyReportsEarlyExit(t *testing.T) {
 }
 
 func TestEncodeHandoffKeepsCookiesBeforeNonce(t *testing.T) {
-	handoff, err := encodeHandoff([]*network.Cookie{{Name: "JSESSIONID", Value: "secret", Domain: ".acb.com.vn", Path: "/"}})
+	handoff, err := encodeHandoff("https://online.acb.com.vn/acbib/AccountSummary", []*network.Cookie{{Name: "JSESSIONID", Value: "secret", Domain: ".acb.com.vn", Path: "/"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	encodedCookies, encodedNonce, ok := strings.Cut(handoff, ".")
+	_, encodedNonce, ok := strings.Cut(handoff, ".")
 	if !ok || encodedNonce == "" {
 		t.Fatalf("invalid handoff framing: %q", handoff)
 	}
-	payload, err := base64.RawURLEncoding.DecodeString(encodedCookies)
+	decoded, err := authbrowser.DecodeHandoff(handoff)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var cookies []authbrowser.Cookie
-	if err := json.Unmarshal(payload, &cookies); err != nil {
-		t.Fatal(err)
+	if decoded.Version != 1 || decoded.URL != "https://online.acb.com.vn/acbib/AccountSummary" {
+		t.Fatalf("unexpected handoff metadata: %+v", decoded)
 	}
-	if len(cookies) != 1 || cookies[0].Name != "JSESSIONID" || cookies[0].Value != "secret" {
-		t.Fatalf("unexpected cookies: %+v", cookies)
+	if len(decoded.Cookies) != 1 || decoded.Cookies[0].Name != "JSESSIONID" || decoded.Cookies[0].Value != "secret" {
+		t.Fatalf("unexpected cookies: %+v", decoded.Cookies)
 	}
 }
 
 func TestEncodeHandoffPreservesSessionCookie(t *testing.T) {
-	handoff, err := encodeHandoff([]*network.Cookie{{Name: "JSESSIONID", Value: "secret", Domain: "online.acb.com.vn", Path: "/", Expires: -1, Secure: true, HTTPOnly: true}})
+	handoff, err := encodeHandoff("https://online.acb.com.vn/acbib/AccountSummary", []*network.Cookie{{Name: "JSESSIONID", Value: "secret", Domain: "online.acb.com.vn", Path: "/", Expires: -1, Secure: true, HTTPOnly: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	encodedCookies, _, ok := strings.Cut(handoff, ".")
-	if !ok {
-		t.Fatalf("invalid handoff framing: %q", handoff)
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(encodedCookies)
+	decoded, err := authbrowser.DecodeHandoff(handoff)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var cookies []authbrowser.Cookie
-	if err := json.Unmarshal(payload, &cookies); err != nil {
-		t.Fatal(err)
+	if len(decoded.Cookies) != 1 {
+		t.Fatalf("got %d cookies, want 1", len(decoded.Cookies))
 	}
-	if len(cookies) != 1 {
-		t.Fatalf("got %d cookies, want 1", len(cookies))
-	}
-	if !cookies[0].Expires.IsZero() {
-		t.Fatalf("session cookie expiry = %s, want zero", cookies[0].Expires)
+	if !decoded.Cookies[0].Expires.IsZero() {
+		t.Fatalf("session cookie expiry = %s, want zero", decoded.Cookies[0].Expires)
 	}
 }
 
 func TestEncodeHandoffPreservesPersistentCookieExpiry(t *testing.T) {
 	expected := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Second)
-	handoff, err := encodeHandoff([]*network.Cookie{{Name: "persistent", Value: "secret", Domain: "online.acb.com.vn", Path: "/", Expires: float64(expected.Unix())}})
+	handoff, err := encodeHandoff("https://online.acb.com.vn/acbib/AccountSummary", []*network.Cookie{{Name: "persistent", Value: "secret", Domain: "online.acb.com.vn", Path: "/", Expires: float64(expected.Unix())}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	encodedCookies, _, ok := strings.Cut(handoff, ".")
-	if !ok {
-		t.Fatalf("invalid handoff framing: %q", handoff)
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(encodedCookies)
+	decoded, err := authbrowser.DecodeHandoff(handoff)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var cookies []authbrowser.Cookie
-	if err := json.Unmarshal(payload, &cookies); err != nil {
-		t.Fatal(err)
-	}
-	if len(cookies) != 1 || !cookies[0].Expires.Equal(expected) {
-		t.Fatalf("persistent cookie expiry = %s, want %s", cookies[0].Expires, expected)
+	if len(decoded.Cookies) != 1 || !decoded.Cookies[0].Expires.Equal(expected) {
+		t.Fatalf("persistent cookie expiry = %s, want %s", decoded.Cookies[0].Expires, expected)
 	}
 }
 
@@ -367,28 +349,20 @@ func TestCookieFilteringAndDomainBoundary(t *testing.T) {
 
 	// Mixed cookies passed to encodeHandoff: only valid ACB cookies are retained
 	mixed := append(validScopedCookies, invalidCookies...)
-	handoff, err := encodeHandoff(mixed)
+	handoff, err := encodeHandoff("https://online.acb.com.vn/acbib/AccountSummary", mixed)
 	if err != nil {
 		t.Fatalf("encodeHandoff failed: %v", err)
 	}
-	parts := strings.Split(handoff, ".")
-	if len(parts) != 2 {
-		t.Fatalf("invalid handoff format: %q", handoff)
-	}
-	rawPayload, err := base64.RawURLEncoding.DecodeString(parts[0])
+	decoded, err := authbrowser.DecodeHandoff(handoff)
 	if err != nil {
-		t.Fatalf("decode handoff payload: %v", err)
+		t.Fatalf("decode handoff: %v", err)
 	}
-	var decoded []authbrowser.Cookie
-	if err := json.Unmarshal(rawPayload, &decoded); err != nil {
-		t.Fatalf("unmarshal handoff: %v", err)
-	}
-	if len(decoded) != len(validScopedCookies) {
-		t.Fatalf("expected %d filtered cookies, got %d", len(validScopedCookies), len(decoded))
+	if len(decoded.Cookies) != len(validScopedCookies) {
+		t.Fatalf("expected %d filtered cookies, got %d", len(validScopedCookies), len(decoded.Cookies))
 	}
 
 	// Only invalid cookies: encodeHandoff must error
-	if _, err := encodeHandoff(invalidCookies); err == nil {
+	if _, err := encodeHandoff("https://online.acb.com.vn/acbib/AccountSummary", invalidCookies); err == nil {
 		t.Fatal("expected error when encodeHandoff has no valid ACB cookies")
 	}
 }
@@ -686,11 +660,29 @@ func TestHandoffReapsProcessAndSetsCompleted(t *testing.T) {
 		t.Fatalf("got session token %q, want test-token.nonce", resp.Session)
 	}
 
-	// Process must be reaped
+	// Handoff is retryable and keeps the browser alive until acknowledged.
+	handoffW2 := httptest.NewRecorder()
+	s.handoff(handoffW2, handoffReq)
+	if handoffW2.Code != http.StatusOK {
+		t.Fatalf("second handoff returned HTTP %d: %s", handoffW2.Code, handoffW2.Body.String())
+	}
+	select {
+	case <-session.done:
+		t.Fatal("process was reaped before handoff completion")
+	default:
+	}
+
+	completeReq := httptest.NewRequest(http.MethodPost, "/sessions/handoff-test/complete", nil)
+	completeReq.SetPathValue("attemptID", "handoff-test")
+	completeW := httptest.NewRecorder()
+	s.complete(completeW, completeReq)
+	if completeW.Code != http.StatusNoContent {
+		t.Fatalf("complete returned HTTP %d: %s", completeW.Code, completeW.Body.String())
+	}
 	select {
 	case <-session.done:
 	default:
-		t.Fatal("process was not reaped after handoff")
+		t.Fatal("process was not reaped after handoff completion")
 	}
 
 	// Status must be COMPLETED
@@ -707,13 +699,6 @@ func TestHandoffReapsProcessAndSetsCompleted(t *testing.T) {
 	}
 	if statusResp.Status != "COMPLETED" {
 		t.Fatalf("got status %q, want COMPLETED", statusResp.Status)
-	}
-
-	// Second handoff call must be rejected with 409
-	handoffW2 := httptest.NewRecorder()
-	s.handoff(handoffW2, handoffReq)
-	if handoffW2.Code != http.StatusConflict {
-		t.Fatalf("second handoff returned HTTP %d (expected 409 Conflict)", handoffW2.Code)
 	}
 }
 

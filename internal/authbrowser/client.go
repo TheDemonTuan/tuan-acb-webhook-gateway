@@ -107,6 +107,22 @@ func (c *Client) Handoff(ctx context.Context, attemptID string) (string, error) 
 	return body.Session, nil
 }
 
+func (c *Client) Complete(ctx context.Context, attemptID string) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/sessions/"+attemptID+"/complete", bytes.NewReader(nil))
+	if err != nil {
+		return err
+	}
+	response, err := c.http.Do(request)
+	if err != nil {
+		return fmt.Errorf("complete ACB browser handoff: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		return responseError(response)
+	}
+	return nil
+}
+
 func (c *Client) sessionResponse(request *http.Request, expected int, operation string) (Session, error) {
 	response, err := c.http.Do(request)
 	if err != nil {

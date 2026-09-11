@@ -20,8 +20,9 @@ const (
 )
 
 type Client struct {
-	baseURL *url.URL
-	http    *http.Client
+	baseURL   *url.URL
+	bootstrap *url.URL
+	http      *http.Client
 }
 
 type Response struct {
@@ -64,6 +65,22 @@ func isAllowedACBCookieDomain(domain string) bool {
 
 // RestoreCookies accepts only cookies bound to the official ACB host. The
 // caller supplies encrypted storage; no cookie ever crosses the dashboard API.
+func (c *Client) RestoreSession(handoff authbrowser.Handoff) error {
+	if err := c.RestoreCookies(handoff.Cookies); err != nil {
+		return err
+	}
+	c.bootstrap = nil
+	if handoff.URL == "" {
+		return nil
+	}
+	bootstrap, err := c.endpoint(handoff.URL)
+	if err != nil {
+		return errors.New("invalid ACB session bootstrap URL")
+	}
+	c.bootstrap = bootstrap
+	return nil
+}
+
 func (c *Client) RestoreCookies(cookies []authbrowser.Cookie) error {
 	for _, cookie := range cookies {
 		if cookie.Name == "" || cookie.Value == "" || !isAllowedACBCookieDomain(cookie.Domain) {
@@ -103,11 +120,18 @@ func (c *Client) History(ctx context.Context, endpoint string, fields map[string
 }
 
 func (c *Client) Get(ctx context.Context, endpoint string) (Response, error) {
-	url, err := c.endpoint(endpoint)
-	if err != nil {
-		return Response{}, err
+	var requestURL *url.URL
+	if endpoint == "" && c.bootstrap != nil {
+		copy := *c.bootstrap
+		requestURL = &copy
+	} else {
+		var err error
+		requestURL, err = c.endpoint(endpoint)
+		if err != nil {
+			return Response{}, err
+		}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL.String(), nil)
 	if err != nil {
 		return Response{}, err
 	}

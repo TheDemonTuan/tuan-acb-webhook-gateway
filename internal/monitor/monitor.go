@@ -130,7 +130,7 @@ func (m *Monitor) pollOnce(ctx context.Context, expected *syncRequest) error {
 	}
 
 	// 1. Fetch account detail page to verify session and extract form state
-	resp, err := m.client.Get(ctx, "/acbib/Request")
+	resp, err := m.client.Get(ctx, "")
 	if err != nil {
 		poll.Status = "FAILED"
 		poll.Error = err.Error()

@@ -2,7 +2,6 @@ package monitor
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -14,10 +13,10 @@ import (
 	"github.com/thedemontuan/tuan-bank-gateway/internal/storage"
 )
 
-type recordingRestorer struct{ cookies []authbrowser.Cookie }
+type recordingRestorer struct{ handoff authbrowser.Handoff }
 
-func (r *recordingRestorer) RestoreCookies(cookies []authbrowser.Cookie) error {
-	r.cookies = cookies
+func (r *recordingRestorer) RestoreSession(handoff authbrowser.Handoff) error {
+	r.handoff = handoff
 	return nil
 }
 
@@ -46,9 +45,11 @@ func TestSessionLoaderDecryptsAndRestoresCurrentGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cookies, _ := json.Marshal([]authbrowser.Cookie{{Name: "session", Value: "secret", Domain: ".online.acb.com.vn", Path: "/", Secure: true}})
-	plaintext := []byte(base64.RawURLEncoding.EncodeToString(cookies) + ".handoff")
-	envelope, err := keyring.Encrypt(plaintext, []byte("acb-session:"+connection.ID))
+	plaintext, err := authbrowser.EncodeHandoff(authbrowser.Handoff{Version: 1, URL: "https://online.acb.com.vn/acbib/AccountSummary", Cookies: []authbrowser.Cookie{{Name: "session", Value: "secret", Domain: ".online.acb.com.vn", Path: "/", Secure: true}}}, []byte("handoff"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := keyring.Encrypt([]byte(plaintext), []byte("acb-session:"+connection.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +62,7 @@ func TestSessionLoaderDecryptsAndRestoresCurrentGeneration(t *testing.T) {
 	if err := loader.Restore(ctx, connection.ID, attempt.Generation); err != nil {
 		t.Fatal(err)
 	}
-	if len(restorer.cookies) != 1 || restorer.cookies[0].Value != "secret" {
-		t.Fatalf("cookies=%+v", restorer.cookies)
+	if restorer.handoff.URL != "https://online.acb.com.vn/acbib/AccountSummary" || len(restorer.handoff.Cookies) != 1 || restorer.handoff.Cookies[0].Value != "secret" {
+		t.Fatalf("session=%+v", restorer.handoff)
 	}
 }

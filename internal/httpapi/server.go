@@ -382,6 +382,9 @@ func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusConflict, map[string]string{"code": "AUTH_SESSION_SUPERSEDED", "error": "Phiên đăng nhập ACB đã được thay thế. Vui lòng mở phiên mới."})
 			return
 		}
+		if err := s.browser.Complete(r.Context(), attemptID); err != nil {
+			slog.Warn("complete ACB browser handoff", "attempt_id", attemptID, "error", err)
+		}
 		audit(s.store, r, "auth.verified", completedConn.ID)
 		writeJSON(w, http.StatusOK, map[string]string{"status": "MONITORING"})
 		return
