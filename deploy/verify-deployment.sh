@@ -25,8 +25,13 @@ verify_image() {
 }
 
 # Step 1: Verify gateway readiness
-printf 'Waiting for Gateway readiness at http://%s:%s (timeout: %ss)...\n' "$host" "$port" "$timeout"
+gateway_container="${GATEWAY_CONTAINER:-acb-transaction-gateway}"
+printf 'Waiting for Gateway readiness (%s, timeout: %ss)...\n' "$gateway_container" "$timeout"
 while true; do
+  if [[ "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$gateway_container" 2>/dev/null || true)" == "healthy" ]]; then
+    printf 'Gateway container is healthy: %s\n' "$gateway_container"
+    break
+  fi
   if curl --fail --silent --show-error "http://${host}:${port}/readyz" >/dev/null 2>&1 || \
      curl --fail --silent --show-error "http://${host}:${port}/ready" >/dev/null 2>&1 || \
      curl --fail --silent --show-error "http://${host}:8080/readyz" >/dev/null 2>&1 || \
@@ -52,10 +57,10 @@ done
 # Step 2: Verify immutable images and auth-browser health.
 # Explicit constraint: NEVER create or cancel production login sessions.
 if command -v docker >/dev/null 2>&1 && [[ -f "$compose_file" ]]; then
-  verify_image "${GATEWAY_CONTAINER:-bank-event-gateway}" "$expected_gateway_image" "gateway"
+  verify_image "$gateway_container" "$expected_gateway_image" "gateway"
   if docker compose --env-file "${ENV_FILE:-$script_dir/.env.production}" -f "$compose_file" config --services 2>/dev/null | grep -q "^auth-browser$"; then
     echo "Verifying auth-browser container health..."
-    container_name="${AUTH_BROWSER_CONTAINER:-bank-gateway-auth-browser}"
+    container_name="${AUTH_BROWSER_CONTAINER:-acb-auth-browser}"
     verify_image "$container_name" "$expected_browser_image" "auth-browser"
     ab_timeout="${AUTH_BROWSER_READY_TIMEOUT:-30}"
     ab_start="$(date +%s)"

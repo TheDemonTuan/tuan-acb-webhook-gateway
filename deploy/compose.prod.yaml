@@ -30,8 +30,13 @@ services:
       OWNER_SUBJECTS: ${OWNER_SUBJECTS:-${CLOUDFLARE_ACCESS_OWNER_EMAIL:-}}
       AUTH_BROWSER_URL: http://auth-browser:8181
       AUTH_BROWSER_VNC_URL: http://auth-browser:6080
-    ports:
-      - "127.0.0.1:8090:8090"
+    expose:
+      - "8090"
+    networks:
+      default:
+      edge:
+        aliases:
+          - acb-web
     volumes:
       - gateway_data:/data:rw
       - ./secrets/app_master_key:/run/secrets/app_master_key:ro
@@ -63,6 +68,8 @@ services:
     environment:
       HOME: /tmp
     expose: ["8181", "6080"]
+    networks:
+      - default
     healthcheck:
       test: ["CMD", "/auth-browser", "--healthcheck"]
       interval: 10s
@@ -78,25 +85,12 @@ services:
           memory: 1536M
           pids: 300
 
-  cloudflared:
-    image: cloudflare/cloudflared:2026.9.0
-    container_name: acb-cloudflared
-    restart: unless-stopped
-    init: true
-    read_only: true
-    user: "10001:10001"
-    cap_drop: [ALL]
-    security_opt: ["no-new-privileges:true"]
-    command: tunnel run --token ${CLOUDFLARE_TUNNEL_TOKEN:?Set tunnel token}
-    depends_on:
-      gateway:
-        condition: service_healthy
-    deploy:
-      resources:
-        limits:
-          cpus: "0.25"
-          memory: 128M
-          pids: 100
+networks:
+  default:
+  edge:
+    external: true
+    name: edge-acb
 
 volumes:
   gateway_data:
+    name: bank-event-gateway_gateway_data

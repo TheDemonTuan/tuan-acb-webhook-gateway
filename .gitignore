@@ -16,3 +16,4 @@ web/playwright-report/
 *.db
 *.db-shm
 *.db-wal
+PLAN_ACB_WEB_MONITOR_SERVICE_PRODUCTION.md

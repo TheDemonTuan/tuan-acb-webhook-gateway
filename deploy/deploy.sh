@@ -23,9 +23,9 @@ flock -n 9 || { printf 'Another deployment is active.\n' >&2; exit 1; }
 mkdir -p "$script_dir/data" "$script_dir/secrets"
 chmod 775 "$script_dir/data" || true
 
-# Stop and remove any containers from previous project names to free ports
-docker stop acb-transaction-gateway acb-transaction-gateway-tunnel tuan-bank-gateway tuan-bank-gateway-tunnel 2>/dev/null || true
-docker rm -f acb-transaction-gateway acb-transaction-gateway-tunnel tuan-bank-gateway tuan-bank-gateway-tunnel 2>/dev/null || true
+# Stop and remove any containers from previous project names to free ports and clean up standalone connectors
+docker stop acb-transaction-gateway acb-transaction-gateway-tunnel tuan-bank-gateway tuan-bank-gateway-tunnel bank-event-gateway bank-gateway-auth-browser bank-gateway-cloudflared acb-cloudflared 2>/dev/null || true
+docker rm -f acb-transaction-gateway acb-transaction-gateway-tunnel tuan-bank-gateway tuan-bank-gateway-tunnel bank-event-gateway bank-gateway-auth-browser bank-gateway-cloudflared acb-cloudflared 2>/dev/null || true
 
 # Ensure secrets/app_master_key file exists before Docker mounts it
 if [[ ! -f "$script_dir/secrets/app_master_key" ]]; then
