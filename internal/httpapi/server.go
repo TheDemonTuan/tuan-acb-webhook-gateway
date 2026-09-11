@@ -351,6 +351,13 @@ func (s *Server) browserScreen(w http.ResponseWriter, r *http.Request) {
 		request.URL.Path = "/" + strings.TrimPrefix(chi.URLParam(r, "*"), "/")
 		request.Host = browserURL.Host
 	}
+	proxy.ModifyResponse = func(response *http.Response) error {
+		if chi.URLParam(r, "*") == "vnc.html" && response.StatusCode == http.StatusOK {
+			w.Header().Del("Content-Security-Policy")
+			response.Header.Set("Content-Security-Policy", defaultContentSecurityPolicy+"; img-src 'self' data:")
+		}
+		return nil
+	}
 	proxy.ErrorHandler = func(rw http.ResponseWriter, _ *http.Request, _ error) {
 		writeError(rw, http.StatusBadGateway, "ACB browser screen unavailable")
 	}
@@ -468,6 +475,8 @@ func requestIDFromContext(ctx context.Context) string {
 	v, _ := ctx.Value(requestIDKey{}).(string)
 	return v
 }
+const defaultContentSecurityPolicy = "default-src 'self'; base-uri 'none'; frame-ancestors 'self'; form-action 'self'; object-src 'none'; connect-src 'self'"
+
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -475,7 +484,7 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
 		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; frame-ancestors 'self'; form-action 'self'; object-src 'none'; connect-src 'self'")
+		w.Header().Set("Content-Security-Policy", defaultContentSecurityPolicy)
 		if r.TLS != nil {
 			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		}
