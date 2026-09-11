@@ -111,11 +111,29 @@ func ExtractHistoryForm(markup string) (FormState, error) {
 		return state
 	}
 
+	var bestState FormState
+	var bestScore int = -1
 	for _, f := range forms {
 		s := extractFields(f)
 		if s.Action != "" && s.Fields["dse_processorState"] != "" && s.Fields["dse_operationName"] != "" {
-			return s, nil
+			score := 1
+			if s.Fields["dse_operationName"] == "ibkacctDetailProc" {
+				score += 5
+			}
+			if s.Fields["dse_nextEventName"] == "byDate" || (s.Fields["FromDate"] != "" && s.Fields["ToDate"] != "") {
+				score += 10
+			}
+			if s.Fields["AccountNbr"] != "" {
+				score += 2
+			}
+			if score > bestScore {
+				bestScore = score
+				bestState = s
+			}
 		}
+	}
+	if bestScore >= 0 {
+		return bestState, nil
 	}
 
 	whole := extractFields(doc)

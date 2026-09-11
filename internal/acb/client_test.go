@@ -96,7 +96,7 @@ func TestHistorySendsCurrentFormState(t *testing.T) {
 		if !strings.Contains(string(body), "dse_processorState=fresh") {
 			t.Fatalf("missing state %q", body)
 		}
-		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`ibkacctDetailProc dse_processorState AccountNbr FromDate ToDate`)), Request: r}, nil
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`ibkacctDetailProc dse_processorState AccountNbr Số GD Ghi nợ Ghi có FromDate ToDate`)), Request: r}, nil
 	}))
 	if err != nil {
 		t.Fatal(err)

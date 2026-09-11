@@ -47,7 +47,7 @@ func ClassifyPage(finalURL, body string) PageKind {
 	}
 
 	if strings.Contains(page, "ibkacctdetailproc") && containsAny(page, "accountnbr", "dse_processorstate") {
-		if containsAny(page, "fromdate", "todate", "ngày giao dịch", "ngay giao dich", "sogd", "sogiaodich", "ghi nợ", "ghi no", "ghi có", "ghi co", "số dư", "so du") {
+		if containsAny(page, "sogd", "sogiaodich", "so gd", "số gd") || (containsAny(page, "ghino", "ghi no", "ghi nợ") && containsAny(page, "ghico", "ghi co", "ghi có")) {
 			return HistoryPage
 		}
 		return AccountDetailPage

@@ -57,7 +57,7 @@ func (s *Store) FinishPoll(ctx context.Context, poll PollRun) error {
 			}
 			return nil
 		}
-		if poll.Status == "AUTH_REQUIRED" || poll.Status == "PROTOCOL_CHANGED" {
+		if poll.Status == "AUTH_REQUIRED" {
 			result, err = tx.ExecContext(ctx, `UPDATE connections SET state=?,generation=generation+1,updated_at=? WHERE id=? AND generation=?`, poll.Status, now(), poll.ConnectionID, poll.Generation)
 			if err != nil {
 				return err
@@ -68,6 +68,7 @@ func (s *Store) FinishPoll(ctx context.Context, poll PollRun) error {
 			}
 			return nil
 		}
+		// FAILED or PROTOCOL_CHANGED do not invalidate the authenticated session; connection remains MONITORING
 		return nil
 	})
 }

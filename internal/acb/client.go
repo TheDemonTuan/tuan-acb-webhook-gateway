@@ -126,6 +126,15 @@ func (c *Client) Bootstrap(ctx context.Context) (Response, error) {
 	fields := cloneFields(c.bootstrapFields)
 	if fields["dse_operationName"] == "ibkacctDetailProc" {
 		fields["dse_nextEventName"] = "byDate"
+		if fields["activeDatetimeYN"] == "" {
+			fields["activeDatetimeYN"] = "N"
+		}
+		if fields["CheckRef"] == "" {
+			fields["CheckRef"] = "false"
+		}
+		if fields["CheckDoiUng"] == "" {
+			fields["CheckDoiUng"] = "false"
+		}
 		nowVN := time.Now().UTC().Add(7 * time.Hour)
 		if fields["ToDate"] == "" {
 			fields["ToDate"] = nowVN.Format("02/01/2006")
@@ -150,12 +159,22 @@ func (c *Client) History(ctx context.Context, endpoint string, fields map[string
 	if fields["dse_operationName"] == "" || fields["dse_processorState"] == "" {
 		return Response{}, errors.New("ACB history request is missing current form state")
 	}
+	hFields := cloneFields(fields)
+	if hFields["activeDatetimeYN"] == "" {
+		hFields["activeDatetimeYN"] = "N"
+	}
+	if hFields["CheckRef"] == "" {
+		hFields["CheckRef"] = "false"
+	}
+	if hFields["CheckDoiUng"] == "" {
+		hFields["CheckDoiUng"] = "false"
+	}
 	requestURL, err := c.endpoint(endpoint)
 	if err != nil {
 		return Response{}, err
 	}
 	values := url.Values{}
-	for key, value := range fields {
+	for key, value := range hFields {
 		values.Set(key, value)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), strings.NewReader(values.Encode()))

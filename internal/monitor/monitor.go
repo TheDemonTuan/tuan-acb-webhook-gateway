@@ -161,7 +161,7 @@ func (m *Monitor) pollOnce(ctx context.Context, expected *syncRequest) error {
 	if resp.Kind != acb.HistoryPage {
 		form, formErr := acb.ExtractHistoryForm(resp.Body)
 		if formErr != nil {
-			poll.Status = "PROTOCOL_CHANGED"
+			poll.Status = "FAILED"
 			poll.Error = formErr.Error()
 			_ = m.store.FinishPoll(ctx, poll)
 			return formErr
@@ -177,8 +177,15 @@ func (m *Monitor) pollOnce(ctx context.Context, expected *syncRequest) error {
 		if form.Fields["AccountNbr"] == "" && conn.AccountMasked != "" {
 			form.Fields["AccountNbr"] = conn.AccountMasked
 		}
-		if form.Fields["dse_nextEventName"] == "" {
-			form.Fields["dse_nextEventName"] = "byDate"
+		form.Fields["dse_nextEventName"] = "byDate"
+		if form.Fields["activeDatetimeYN"] == "" {
+			form.Fields["activeDatetimeYN"] = "N"
+		}
+		if form.Fields["CheckRef"] == "" {
+			form.Fields["CheckRef"] = "false"
+		}
+		if form.Fields["CheckDoiUng"] == "" {
+			form.Fields["CheckDoiUng"] = "false"
 		}
 
 		histResp, histErr := m.client.History(ctx, form.Action, form.Fields)
@@ -203,7 +210,7 @@ func (m *Monitor) pollOnce(ctx context.Context, expected *syncRequest) error {
 	// Parse transaction history
 	txns, parseErr := acb.ParseHistory(historyMarkup)
 	if parseErr != nil {
-		poll.Status = "PROTOCOL_CHANGED"
+		poll.Status = "FAILED"
 		poll.Error = parseErr.Error()
 		_ = m.store.FinishPoll(ctx, poll)
 		return parseErr

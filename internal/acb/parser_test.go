@@ -12,6 +12,29 @@ func TestParseHistory(t *testing.T) {
 	}
 }
 
+func TestParseHistoryACBTwoRowLayout(t *testing.T) {
+	html := `<table>
+		<tr><th>Ngày hiệu lực</th><th>Ngày giao dịch</th><th>Số GD</th><th>Ghi nợ</th><th>Ghi có</th><th>Số dư</th></tr>
+		<tr><td>20/08/2026</td><td>20/08/2026 17:09:22</td><td>2612</td><td></td><td>50.000</td><td>50.000</td></tr>
+		<tr><td></td><td colspan="5">RUT TIEN TU VI MOMO 0844343536 CASHOUT</td><td></td></tr>
+		<tr><td>20/08/2026</td><td>20/08/2026 17:15:54</td><td>2614</td><td>100.000</td><td></td><td></td></tr>
+		<tr><td></td><td colspan="5">NAP TIEN VAO VI MOMO</td><td></td></tr>
+	</table>`
+	transactions, err := ParseHistory(html)
+	if err != nil {
+		t.Fatalf("ParseHistory failed: %v", err)
+	}
+	if len(transactions) != 2 {
+		t.Fatalf("expected 2 transactions, got %d", len(transactions))
+	}
+	if transactions[0].Number != "2612" || transactions[0].Credit != 50000 || transactions[0].Description != "RUT TIEN TU VI MOMO 0844343536 CASHOUT" {
+		t.Fatalf("unexpected txn 0: %+v", transactions[0])
+	}
+	if transactions[1].Number != "2614" || transactions[1].Debit != 100000 || transactions[1].Description != "NAP TIEN VAO VI MOMO" {
+		t.Fatalf("unexpected txn 1: %+v", transactions[1])
+	}
+}
+
 func TestParseHistoryRejectsUnknownSchema(t *testing.T) {
 	if _, err := ParseHistory(`<table><tr><th>not history</th></tr></table>`); err == nil {
 		t.Fatal("accepted unknown table")

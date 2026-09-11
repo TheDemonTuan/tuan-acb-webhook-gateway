@@ -43,13 +43,49 @@ func ParseHistory(markup string) ([]Transaction, error) {
 			continue
 		}
 		transactions := make([]Transaction, 0, len(rows)-1)
-		for _, row := range rows[1:] {
+		for i := 1; i < len(rows); i++ {
+			row := rows[i]
 			if len(row) == 0 || allBlank(row) {
 				continue
 			}
 			transaction, err := parseRow(row, columns)
 			if err != nil {
+				if len(transactions) > 0 {
+					var nonBlank []string
+					for _, cell := range row {
+						t := strings.TrimSpace(cell)
+						if t != "" {
+							nonBlank = append(nonBlank, t)
+						}
+					}
+					if len(nonBlank) > 0 && transactions[len(transactions)-1].Description == "" {
+						transactions[len(transactions)-1].Description = strings.Join(nonBlank, " ")
+						continue
+					}
+				}
+				rowText := strings.ToLower(strings.Join(row, " "))
+				if containsAny(rowText, "khong co giao dich", "không có giao dịch", "no transaction", "chua co giao dich", "chưa có giao dịch") {
+					continue
+				}
 				return nil, err
+			}
+			if columns.description < 0 && i+1 < len(rows) {
+				nextRow := rows[i+1]
+				if len(nextRow) > 0 && !allBlank(nextRow) {
+					if _, errNext := parseRow(nextRow, columns); errNext != nil {
+						var nonBlank []string
+						for _, cell := range nextRow {
+							t := strings.TrimSpace(cell)
+							if t != "" {
+								nonBlank = append(nonBlank, t)
+							}
+						}
+						if len(nonBlank) > 0 {
+							transaction.Description = strings.Join(nonBlank, " ")
+							i++
+						}
+					}
+				}
 			}
 			transactions = append(transactions, transaction)
 		}
