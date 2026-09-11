@@ -34,6 +34,43 @@ func TestAuthAttemptFencesConnectionGeneration(t *testing.T) {
 	}
 }
 
+func TestFinishSupersededAuthDoesNotAdvanceCurrentGeneration(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "gateway.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.ConfigureConnection(ctx, "***1234"); err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := store.StartAuthAttempt(ctx, "owner", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `UPDATE connections SET state='AUTH_REQUIRED', generation=generation+3`); err != nil {
+		t.Fatal(err)
+	}
+	before, err := store.Connection(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinishAuthAttempt(ctx, attempt.ID, "FAILED"); err != nil {
+		t.Fatal(err)
+	}
+	after, err := store.Connection(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != before.State || after.Generation != before.Generation {
+		t.Fatalf("stale attempt mutated current connection: before=%+v after=%+v", before, after)
+	}
+	finished, err := store.AuthAttemptStatusForOwner(ctx, attempt.ID, "owner")
+	if err != nil || finished.Status != "FAILED" {
+		t.Fatalf("attempt=%+v err=%v", finished, err)
+	}
+}
+
 func TestAuthAttemptLookupAndOwnership(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, filepath.Join(t.TempDir(), "gateway.db"))

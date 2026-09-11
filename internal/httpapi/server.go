@@ -20,11 +20,17 @@ import (
 	"github.com/thedemontuan/tuan-bank-gateway/internal/authbrowser"
 	"github.com/thedemontuan/tuan-bank-gateway/internal/config"
 	"github.com/thedemontuan/tuan-bank-gateway/internal/httpui"
+	"github.com/thedemontuan/tuan-bank-gateway/internal/monitor"
 	"github.com/thedemontuan/tuan-bank-gateway/internal/security"
 	"github.com/thedemontuan/tuan-bank-gateway/internal/storage"
 )
 
+type SyncRequester interface {
+	RequestSync(context.Context) error
+}
+
 type Server struct {
+	syncRequester SyncRequester
 	cfg           config.Config
 	store         *storage.Store
 	auth          *auth.Middleware
@@ -78,6 +84,11 @@ func New(cfg config.Config, store *storage.Store) *Server {
 	s.handler = r
 	return s
 }
+func (s *Server) WithSyncRequester(requester SyncRequester) *Server {
+	s.syncRequester = requester
+	return s
+}
+
 func (s *Server) Handler() http.Handler { return s.handler }
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -136,6 +147,32 @@ func (s *Server) configure(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, c)
 }
 func (s *Server) connectionAction(w http.ResponseWriter, r *http.Request) {
+	if chi.URLParam(r, "action") == "sync" {
+		c, err := s.store.Connection(r.Context())
+		if err != nil {
+			writeError(w, http.StatusNotFound, "connection_not_found")
+			return
+		}
+		if c.State != "MONITORING" {
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "SYNC_UNAVAILABLE", "error": "Chỉ có thể đồng bộ khi ACB đang theo dõi giao dịch. Phiên hiện tại được giữ nguyên."})
+			return
+		}
+		if s.syncRequester == nil {
+			writeError(w, http.StatusServiceUnavailable, "Bộ đồng bộ ACB chưa sẵn sàng.")
+			return
+		}
+		if err := s.syncRequester.RequestSync(r.Context()); err != nil {
+			if errors.Is(err, monitor.ErrSyncUnavailable) {
+				writeJSON(w, http.StatusConflict, map[string]string{"code": "SYNC_UNAVAILABLE", "error": "Trạng thái ACB đã thay đổi. Vui lòng tải lại trước khi đồng bộ."})
+			} else {
+				writeError(w, http.StatusServiceUnavailable, "Không thể tiếp nhận yêu cầu đồng bộ ACB.")
+			}
+			return
+		}
+		audit(s.store, r, "connection.sync", c.ID)
+		writeJSON(w, http.StatusAccepted, map[string]string{"status": "ACCEPTED"})
+		return
+	}
 	c, err := s.store.TransitionConnection(r.Context(), chi.URLParam(r, "action"))
 	if errors.Is(err, storage.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "connection_not_found")
@@ -160,6 +197,12 @@ func (s *Server) startAuth(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("failed to start ACB browser session", "attempt_id", attempt.ID, "error", err)
 		_ = s.store.FinishAuthAttempt(r.Context(), attempt.ID, "FAILED")
 		writeError(w, http.StatusServiceUnavailable, "Không thể khởi động trình duyệt ACB. Vui lòng thử lại.")
+		return
+	}
+	if err := s.store.MarkAuthAttemptInProgress(r.Context(), attempt.ID); err != nil {
+		_ = s.browser.Cancel(r.Context(), attempt.ID)
+		_ = s.store.FinishAuthAttempt(r.Context(), attempt.ID, "FAILED")
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "AUTH_SESSION_SUPERSEDED", "error": "Phiên đăng nhập ACB đã được thay thế. Vui lòng mở phiên mới."})
 		return
 	}
 	session.ScreenURL = "/api/v1/connection/auth/" + attempt.ID + "/screen/vnc.html?autoconnect=true&resize=remote&path=api/v1/connection/auth/" + attempt.ID + "/screen/websockify"
@@ -209,12 +252,21 @@ func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) {
 	attemptID := chi.URLParam(r, "attemptID")
 	attempt, err := s.store.AuthAttemptStatusForOwner(r.Context(), attemptID, identity.Email)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "ACB browser session not found")
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "AUTH_SESSION_NOT_FOUND", "error": "Không tìm thấy phiên đăng nhập ACB. Vui lòng mở phiên mới."})
 		return
 	}
 
 	switch attempt.Status {
 	case "VERIFIED":
+		conn, err := s.store.Connection(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "storage_error")
+			return
+		}
+		if conn.Generation != attempt.Generation || conn.State != "MONITORING" {
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "AUTH_SESSION_SUPERSEDED", "error": "Phiên đăng nhập ACB đã được thay thế. Vui lòng tải lại trạng thái kết nối."})
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "MONITORING"})
 		return
 	case "CANCELLED":
@@ -254,7 +306,9 @@ func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if conn.Generation != attempt.Generation {
-		writeError(w, http.StatusConflict, "ACB browser session was superseded")
+		_ = s.browser.Cancel(r.Context(), attemptID)
+		_ = s.store.FinishAuthAttempt(r.Context(), attemptID, "FAILED")
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "AUTH_SESSION_SUPERSEDED", "error": "Phiên đăng nhập ACB đã được thay thế. Vui lòng mở phiên mới."})
 		return
 	}
 
@@ -269,7 +323,7 @@ func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		writeError(w, http.StatusBadGateway, "Không thể kết nối dịch vụ trình duyệt ACB. Vui lòng thử lại.")
+		writeJSON(w, http.StatusBadGateway, map[string]string{"code": "AUTH_SESSION_UNAVAILABLE", "error": "Không thể kết nối dịch vụ trình duyệt ACB. Vui lòng thử lại."})
 		return
 	}
 
@@ -279,7 +333,9 @@ func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if latestConn.Generation != attempt.Generation {
-		writeError(w, http.StatusConflict, "ACB browser session was superseded")
+		_ = s.browser.Cancel(r.Context(), attemptID)
+		_ = s.store.FinishAuthAttempt(r.Context(), attemptID, "FAILED")
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "AUTH_SESSION_SUPERSEDED", "error": "Phiên đăng nhập ACB đã được thay thế. Vui lòng mở phiên mới."})
 		return
 	}
 
@@ -321,7 +377,9 @@ func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) {
 		}
 		completedConn, err := s.store.CompleteAuthSession(r.Context(), attemptID, encrypted)
 		if err != nil {
-			writeError(w, http.StatusConflict, "ACB browser session was superseded")
+			_ = s.browser.Cancel(r.Context(), attemptID)
+			_ = s.store.FinishAuthAttempt(r.Context(), attemptID, "FAILED")
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "AUTH_SESSION_SUPERSEDED", "error": "Phiên đăng nhập ACB đã được thay thế. Vui lòng mở phiên mới."})
 			return
 		}
 		audit(s.store, r, "auth.verified", completedConn.ID)
@@ -475,6 +533,7 @@ func requestIDFromContext(ctx context.Context) string {
 	v, _ := ctx.Value(requestIDKey{}).(string)
 	return v
 }
+
 const defaultContentSecurityPolicy = "default-src 'self'; base-uri 'none'; frame-ancestors 'self'; form-action 'self'; object-src 'none'; connect-src 'self'"
 
 func securityHeaders(next http.Handler) http.Handler {

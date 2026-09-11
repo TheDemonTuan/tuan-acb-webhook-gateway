@@ -36,7 +36,12 @@ const (
 	startupLimit       = 10 * time.Second
 )
 
-func acbLoginURL() string { return defaultACBLoginURL }
+func acbLoginURL() string {
+	if value := strings.TrimSpace(os.Getenv("ACB_LOGIN_URL")); value != "" {
+		return value
+	}
+	return defaultACBLoginURL
+}
 
 type browserSession struct {
 	AttemptID string    `json:"attemptId"`
@@ -498,6 +503,11 @@ func (s *server) runObserverCycle(ctx context.Context, id, debugURL string, done
 	}
 	executor := cdp.WithExecutor(browserCtx, browser)
 
+	var (
+		lastReason  string
+		lastLogTime time.Time
+	)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -518,12 +528,17 @@ func (s *server) runObserverCycle(ctx context.Context, id, debugURL string, done
 		s.mu.Unlock()
 
 		checkCtx, cancel := context.WithTimeout(executor, 5*time.Second)
-		currentURL, cookies, err := browserLoginState(checkCtx)
+		currentURL, signals, cookies, reason, err := browserLoginState(checkCtx, browserCtx)
 		cancel()
 		if err != nil {
 			continue
 		}
-		if !authenticatedACB(currentURL, cookies) {
+		if !authenticatedACB(currentURL, signals, cookies) {
+			if reason != "" && (reason != lastReason || time.Since(lastLogTime) >= 10*time.Second) {
+				slog.Info("ACB observer waiting", "attempt_id", id, "reason", reason)
+				lastReason = reason
+				lastLogTime = time.Now()
+			}
 			continue
 		}
 		handoff, err := encodeHandoff(cookies)
@@ -536,34 +551,401 @@ func (s *server) runObserverCycle(ctx context.Context, id, debugURL string, done
 			s.session.handoff = handoff
 			s.session.verified = true
 			s.session.Status = "VERIFIED"
+			slog.Info("ACB login verified via page DOM signals", "attempt_id", id)
 		}
 		s.mu.Unlock()
 		return true, true
 	}
 }
 
-func browserLoginState(ctx context.Context) (string, []*network.Cookie, error) {
-	targets, err := target.GetTargets().Do(ctx)
-	if err != nil {
-		return "", nil, err
+type domSignals struct {
+	HasLogout           bool `json:"hasLogout"`
+	HasAccountOverview  bool `json:"hasAccountOverview"`
+	HasWelcome          bool `json:"hasWelcome"`
+	HasAccountProcessor bool `json:"hasAccountProcessor"`
+	HasProcessorState   bool `json:"hasProcessorState"`
+	VisiblePassword     bool `json:"visiblePassword"`
+	VisibleCaptcha      bool `json:"visibleCaptcha"`
+	VisibleOTP          bool `json:"visibleOTP"`
+	VisibleLogin        bool `json:"visibleLogin"`
+}
+
+func (s domSignals) positiveCount() int {
+	count := 0
+	if s.HasLogout {
+		count++
 	}
-	currentURL := ""
-	for _, info := range targets {
-		if info.Type == "page" && strings.Contains(strings.ToLower(info.URL), "online.acb.com.vn") {
-			currentURL = info.URL
-			break
+	if s.HasAccountOverview {
+		count++
+	}
+	if s.HasWelcome {
+		count++
+	}
+	if s.HasAccountProcessor {
+		count++
+	}
+	if s.HasProcessorState {
+		count++
+	}
+	return count
+}
+
+func (s domSignals) isAuthenticated() bool {
+	if s.VisiblePassword || s.VisibleCaptcha || s.VisibleOTP || s.VisibleLogin {
+		return false
+	}
+	if !s.HasLogout {
+		return false
+	}
+	if !s.HasAccountOverview && !s.HasWelcome && !s.HasAccountProcessor {
+		return false
+	}
+	if s.positiveCount() < 2 {
+		return false
+	}
+	return true
+}
+
+const acbDOMCheckScript = `(() => {
+	function isVisible(el) {
+		if (!el) return false;
+		try {
+			const style = window.getComputedStyle(el);
+			if (!style) return false;
+			if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+			if (el.offsetParent === null && style.position !== 'fixed') return false;
+			const rect = el.getBoundingClientRect();
+			return rect.width > 0 && rect.height > 0;
+		} catch (e) {
+			return false;
 		}
 	}
-	if currentURL == "" {
-		return "", nil, nil
+
+	let hasLogout = false;
+	try {
+		const logoutElements = document.querySelectorAll('a, button, input[type="button"], input[type="submit"], [role="button"], span, div');
+		for (let i = 0; i < logoutElements.length; i++) {
+			const el = logoutElements[i];
+			if (el.children.length > 2) continue;
+			const text = (el.textContent || '').trim().toLowerCase();
+			const href = (el.getAttribute('href') || '').toLowerCase();
+			const onclick = (el.getAttribute('onclick') || '').toLowerCase();
+			const val = (el.value || '').toLowerCase();
+			const id = (el.id || '').toLowerCase();
+			if (text.includes('đăng xuất') || text.includes('dang xuat') ||
+				href.includes('logout') || onclick.includes('logout') ||
+				val.includes('đăng xuất') || val.includes('dang xuat') ||
+				id.includes('logout') || href.includes('ibklogoutop') || onclick.includes('ibklogoutop')) {
+				hasLogout = true;
+				break;
+			}
+		}
+		if (!hasLogout) {
+			hasLogout = document.querySelector('input[value*="ibkLogoutOp" i], [name="dse_operationName"][value*="ibkLogoutOp" i]') !== null;
+		}
+	} catch (e) {}
+
+	let hasAccountOverview = false;
+	try {
+		const overviewElements = document.querySelectorAll('a, button, [role="tab"], h1, h2, h3, h4, span, td, th, div');
+		for (let i = 0; i < overviewElements.length; i++) {
+			const el = overviewElements[i];
+			if (el.children.length > 2) continue;
+			const text = (el.textContent || '').trim().toLowerCase();
+			const href = (el.getAttribute('href') || '').toLowerCase();
+			const id = (el.id || '').toLowerCase();
+			if (text.includes('thông tin tài khoản') || text.includes('thong tin tai khoan') ||
+				text.includes('tổng quan') || text.includes('tong quan') ||
+				text.includes('tài khoản thanh toán') || text.includes('danh sách tài khoản') ||
+				href.includes('accountsummary') || href.includes('accountoverview') ||
+				id.includes('accountsummary') || id.includes('accountoverview')) {
+				hasAccountOverview = true;
+				break;
+			}
+		}
+		if (!hasAccountOverview) {
+			hasAccountOverview = document.querySelector('[name="AccountNbr" i], [id*="AccountNbr" i], select[name*="account" i]') !== null;
+		}
+	} catch (e) {}
+
+	let hasWelcome = false;
+	try {
+		const welcomeElements = document.querySelectorAll('h1, h2, h3, h4, span, p, div, [class*="welcome" i], [id*="welcome" i], [class*="user" i], [id*="user" i]');
+		for (let i = 0; i < welcomeElements.length; i++) {
+			const el = welcomeElements[i];
+			if (el.children.length > 2) continue;
+			const text = (el.textContent || '').trim().toLowerCase();
+			if (text.startsWith('xin chào') || text.startsWith('xin chao') ||
+				text.startsWith('chào mừng') || text.startsWith('chao mung') ||
+				text.startsWith('chào,') || text.startsWith('chao,') ||
+				text.startsWith('welcome') ||
+				(el.className && typeof el.className === 'string' && el.className.toLowerCase().includes('welcome')) ||
+				(el.id && el.id.toLowerCase().includes('welcome'))) {
+				hasWelcome = true;
+				break;
+			}
+		}
+	} catch (e) {}
+
+	let hasAccountProcessor = false;
+	try {
+		const procElements = document.querySelectorAll('input, form, a, [name="dse_operationName"]');
+		for (let i = 0; i < procElements.length; i++) {
+			const el = procElements[i];
+			const val = (el.value || '').toLowerCase();
+			const action = (el.getAttribute('action') || '').toLowerCase();
+			const href = (el.getAttribute('href') || '').toLowerCase();
+			if (val.includes('ibkacctdetailproc') || action.includes('ibkacctdetailproc') || href.includes('ibkacctdetailproc')) {
+				hasAccountProcessor = true;
+				break;
+			}
+		}
+	} catch (e) {}
+
+	let hasProcessorState = false;
+	try {
+		hasProcessorState = document.querySelector('input[name*="processorState" i], [name="dse_processorState"], [name="dse_processorstate"]') !== null;
+	} catch (e) {}
+
+	let visiblePassword = false;
+	try {
+		const pwInputs = document.querySelectorAll('input[type="password"]');
+		for (let i = 0; i < pwInputs.length; i++) {
+			if (isVisible(pwInputs[i])) {
+				visiblePassword = true;
+				break;
+			}
+		}
+	} catch (e) {}
+
+	let visibleCaptcha = false;
+	try {
+		const captchaElements = document.querySelectorAll('input[name*="captcha" i], input[id*="captcha" i], img[src*="captcha" i], [id*="captcha" i], [class*="captcha" i]');
+		for (let i = 0; i < captchaElements.length; i++) {
+			if (isVisible(captchaElements[i])) {
+				visibleCaptcha = true;
+				break;
+			}
+		}
+	} catch (e) {}
+
+	let visibleOTP = false;
+	try {
+		const otpElements = document.querySelectorAll('input[name*="otp" i], input[id*="otp" i], input[name*="safekey" i], input[id*="safekey" i], input[name*="authcode" i], input[id*="authcode" i]');
+		for (let i = 0; i < otpElements.length; i++) {
+			if (isVisible(otpElements[i])) {
+				visibleOTP = true;
+				break;
+			}
+		}
+	} catch (e) {}
+
+	let visibleLogin = false;
+	try {
+		const loginInputs = document.querySelectorAll('input[name="username" i], input[name="user" i], input[id="username" i], input[id="user" i], button[id*="login" i], input[value*="đăng nhập" i], input[value*="dang nhap" i]');
+		for (let i = 0; i < loginInputs.length; i++) {
+			if (isVisible(loginInputs[i])) {
+				visibleLogin = true;
+				break;
+			}
+		}
+		if (!visibleLogin) {
+			visibleLogin = document.querySelector('input[name="dse_operationName"][value*="obkloginop" i]') !== null;
+		}
+	} catch (e) {}
+
+	return {
+		hasLogout: !!hasLogout,
+		hasAccountOverview: !!hasAccountOverview,
+		hasWelcome: !!hasWelcome,
+		hasAccountProcessor: !!hasAccountProcessor,
+		hasProcessorState: !!hasProcessorState,
+		visiblePassword: !!visiblePassword,
+		visibleCaptcha: !!visibleCaptcha,
+		visibleOTP: !!visibleOTP,
+		visibleLogin: !!visibleLogin
+	};
+})()`
+
+const defaultACBHost = "online.acb.com.vn"
+
+func acbExpectedHost() string {
+	if loginURL, err := url.Parse(acbLoginURL()); err == nil && loginURL.Hostname() != "" {
+		return loginURL.Hostname()
 	}
-	cookies, err := storage.GetCookies().Do(ctx)
-	return currentURL, cookies, err
+	return defaultACBHost
+}
+
+func isACBCookieDomain(domain string) bool {
+	d := strings.ToLower(strings.TrimPrefix(domain, "."))
+	if d == "" {
+		return false
+	}
+	expectedHost := acbExpectedHost()
+	if expectedHost != "" && (d == expectedHost || strings.HasSuffix(d, "."+expectedHost)) {
+		return true
+	}
+	if d == "online.acb.com.vn" || d == "acb.com.vn" {
+		return true
+	}
+	if strings.HasSuffix(d, ".acb.com.vn") {
+		return true
+	}
+	return false
+}
+
+func isValidACBCookie(cookie *network.Cookie) bool {
+	if cookie == nil {
+		return false
+	}
+	name := strings.TrimSpace(cookie.Name)
+	val := strings.TrimSpace(cookie.Value)
+	if name == "" || val == "" {
+		return false
+	}
+	return isACBCookieDomain(cookie.Domain)
+}
+
+func filterACBCookies(cookies []*network.Cookie) []*network.Cookie {
+	filtered := make([]*network.Cookie, 0, len(cookies))
+	for _, cookie := range cookies {
+		if isValidACBCookie(cookie) {
+			filtered = append(filtered, cookie)
+		}
+	}
+	return filtered
+}
+
+func isMatchingACBPageURL(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	expectedHost := acbExpectedHost()
+	expectedScheme := "https"
+	expectedPathPrefix := "/acbib"
+	if loginURL, err := url.Parse(acbLoginURL()); err == nil {
+		if loginURL.Scheme != "" {
+			expectedScheme = loginURL.Scheme
+		}
+		if loginURL.Path != "" && loginURL.Path != "/" {
+			expectedPathPrefix = loginURL.Path
+		}
+	}
+	if !strings.EqualFold(parsed.Scheme, expectedScheme) {
+		return false
+	}
+	if !strings.EqualFold(parsed.Hostname(), expectedHost) {
+		return false
+	}
+	lowerPath := strings.ToLower(parsed.Path)
+	if lowerPath == "" || lowerPath == "/" || lowerPath == "/login" {
+		return false
+	}
+	if !strings.HasPrefix(lowerPath, "/acbib") && !strings.HasPrefix(lowerPath, strings.ToLower(expectedPathPrefix)) {
+		return false
+	}
+	lowerQuery := strings.ToLower(parsed.RawQuery)
+	if strings.Contains(lowerQuery, "obkloginop") {
+		return false
+	}
+	return true
+}
+
+func evaluateDOMSignals(ctx context.Context, browserCtx context.Context, targetID target.ID) (domSignals, error) {
+	if err := ctx.Err(); err != nil {
+		return domSignals{}, err
+	}
+	tabCtx, tabCancel := chromedp.NewContext(browserCtx, chromedp.WithTargetID(targetID))
+	defer func() {
+		c := chromedp.FromContext(tabCtx)
+		if c != nil && c.Target != nil {
+			c.Target.TargetID = ""
+		}
+		tabCancel()
+	}()
+
+	var signals domSignals
+	evalCtx, evalCancel := context.WithTimeout(tabCtx, 3*time.Second)
+	defer evalCancel()
+
+	if err := chromedp.Run(evalCtx, chromedp.Evaluate(acbDOMCheckScript, &signals)); err != nil {
+		return domSignals{}, err
+	}
+	return signals, nil
+}
+
+func classifyWaitingReason(signals domSignals, cookies []*network.Cookie) string {
+	if len(cookies) == 0 {
+		return "waiting for valid ACB session cookies"
+	}
+	if signals.VisiblePassword || signals.VisibleLogin {
+		return "login form currently visible"
+	}
+	if signals.VisibleOTP {
+		return "OTP challenge currently visible"
+	}
+	if signals.VisibleCaptcha {
+		return "CAPTCHA challenge currently visible"
+	}
+	if !signals.HasLogout {
+		return "waiting for logout element in page DOM"
+	}
+	if !signals.HasAccountOverview && !signals.HasWelcome && !signals.HasAccountProcessor {
+		return "waiting for authenticated account or welcome DOM signals"
+	}
+	if signals.positiveCount() < 2 {
+		return "waiting for multiple positive post-login DOM signals"
+	}
+	return "waiting for user authentication"
+}
+
+func browserLoginState(ctx context.Context, browserCtx context.Context) (string, domSignals, []*network.Cookie, string, error) {
+	targets, err := target.GetTargets().Do(ctx)
+	if err != nil {
+		return "", domSignals{}, nil, "failed to get browser targets", err
+	}
+	var matchingTargets []*target.Info
+	for _, info := range targets {
+		if info.Type == "page" && isMatchingACBPageURL(info.URL) {
+			matchingTargets = append(matchingTargets, info)
+		}
+	}
+	if len(matchingTargets) == 0 {
+		return "", domSignals{}, nil, "no matching ACB page target found", nil
+	}
+
+	allCookies, err := storage.GetCookies().Do(ctx)
+	if err != nil {
+		return "", domSignals{}, nil, "failed to read browser cookies", err
+	}
+	acbCookies := filterACBCookies(allCookies)
+
+	var lastURL string
+	var lastSignals domSignals
+	for _, info := range matchingTargets {
+		lastURL = info.URL
+		signals, err := evaluateDOMSignals(ctx, browserCtx, info.TargetID)
+		if err != nil {
+			continue
+		}
+		lastSignals = signals
+		if authenticatedACB(info.URL, signals, acbCookies) {
+			return info.URL, signals, acbCookies, "", nil
+		}
+	}
+
+	reason := classifyWaitingReason(lastSignals, acbCookies)
+	return lastURL, lastSignals, acbCookies, reason, nil
 }
 
 func encodeHandoff(cookies []*network.Cookie) (string, error) {
-	serializable := make([]authbrowser.Cookie, 0, len(cookies))
-	for _, cookie := range cookies {
+	filtered := filterACBCookies(cookies)
+	if len(filtered) == 0 {
+		return "", errors.New("no valid ACB cookies to hand off")
+	}
+	serializable := make([]authbrowser.Cookie, 0, len(filtered))
+	for _, cookie := range filtered {
 		serializable = append(serializable, authbrowser.Cookie{Name: cookie.Name, Value: cookie.Value, Domain: cookie.Domain, Path: cookie.Path, Expires: time.Unix(int64(cookie.Expires), 0).UTC(), Secure: cookie.Secure, HTTPOnly: cookie.HTTPOnly})
 	}
 	payload, err := json.Marshal(serializable)
@@ -710,21 +1092,15 @@ func terminalStatus(status string) bool {
 	}
 }
 
-func authenticatedACB(location string, cookies []*network.Cookie) bool {
-	lowerLocation := strings.ToLower(location)
-	if !strings.Contains(lowerLocation, "online.acb.com.vn") ||
-		strings.Contains(lowerLocation, "obkloginop") ||
-		strings.Contains(lowerLocation, "login") ||
-		strings.EqualFold(strings.TrimRight(lowerLocation, "/"), "https://online.acb.com.vn/acbib/request") ||
-		strings.EqualFold(strings.TrimRight(lowerLocation, "/"), "https://online.acb.com.vn") {
+func authenticatedACB(location string, signals domSignals, cookies []*network.Cookie) bool {
+	if !isMatchingACBPageURL(location) {
 		return false
 	}
-	for _, cookie := range cookies {
-		if strings.Contains(strings.ToLower(cookie.Domain), "acb.com.vn") && cookie.Value != "" {
-			return true
-		}
+	if !signals.isAuthenticated() {
+		return false
 	}
-	return false
+	filtered := filterACBCookies(cookies)
+	return len(filtered) > 0
 }
 
 func (s *server) stopCurrent() {

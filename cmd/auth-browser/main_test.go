@@ -10,14 +10,18 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/network"
+	"github.com/chromedp/chromedp"
 	"github.com/thedemontuan/tuan-bank-gateway/internal/authbrowser"
 )
 
@@ -154,21 +158,190 @@ func TestEncodeHandoffKeepsCookiesBeforeNonce(t *testing.T) {
 }
 
 func TestAuthenticatedACBRejectsLoginRoutes(t *testing.T) {
-	cookies := []*network.Cookie{{Domain: ".acb.com.vn", Value: "present"}}
+	cookies := []*network.Cookie{{Name: "JSESSIONID", Domain: ".acb.com.vn", Value: "present"}}
+	signals := domSignals{
+		HasLogout:           true,
+		HasAccountOverview:  true,
+		HasWelcome:          true,
+		HasAccountProcessor: true,
+		HasProcessorState:   true,
+	}
 	rejected := []string{
 		"https://online.acb.com.vn/login",
 		"https://online.acb.com.vn/acbib/Request?op=OBKLoginOp",
-		"https://online.acb.com.vn/acbib/Request",
 		"https://online.acb.com.vn",
 		"https://example.com/home",
 	}
 	for _, location := range rejected {
-		if authenticatedACB(location, cookies) {
-			t.Fatalf("authenticated login URL %q", location)
+		if authenticatedACB(location, signals, cookies) {
+			t.Fatalf("authenticated login or non-app URL %q", location)
 		}
 	}
-	if !authenticatedACB("https://online.acb.com.vn/acbib/AccountSummary", cookies) {
-		t.Fatal("rejected authenticated ACB URL")
+	if !authenticatedACB("https://online.acb.com.vn/acbib/AccountSummary", signals, cookies) {
+		t.Fatal("rejected authenticated ACB URL with valid signals")
+	}
+}
+
+func TestAuthenticatedACB_SameURLLoggedOutAndIn(t *testing.T) {
+	const acbURL = "https://online.acb.com.vn/acbib/Request"
+	validCookies := []*network.Cookie{{Name: "JSESSIONID", Domain: ".online.acb.com.vn", Value: "session-secret"}}
+
+	// Case 1: Verified production DOM signals -> ACCEPTED
+	authSignals := domSignals{
+		HasLogout:           true,
+		HasAccountOverview:  true,
+		HasWelcome:          true,
+		HasAccountProcessor: true,
+		HasProcessorState:   true,
+		VisiblePassword:     false,
+		VisibleCaptcha:      false,
+	}
+	if !authenticatedACB(acbURL, authSignals, validCookies) {
+		t.Fatal("expected production verified DOM signals at /acbib/Request to be authenticated")
+	}
+
+	// Case 2: Same URL but logged out (visible password) -> REJECTED
+	loggedOutSignals := authSignals
+	loggedOutSignals.VisiblePassword = true
+	if authenticatedACB(acbURL, loggedOutSignals, validCookies) {
+		t.Fatal("expected /acbib/Request with visible password to be rejected")
+	}
+
+	// Case 3: Same URL but login form visible -> REJECTED
+	loginVisibleSignals := authSignals
+	loginVisibleSignals.VisibleLogin = true
+	if authenticatedACB(acbURL, loginVisibleSignals, validCookies) {
+		t.Fatal("expected /acbib/Request with visible login to be rejected")
+	}
+
+	// Case 4: Same URL with visible OTP -> REJECTED
+	otpSignals := authSignals
+	otpSignals.VisibleOTP = true
+	if authenticatedACB(acbURL, otpSignals, validCookies) {
+		t.Fatal("expected /acbib/Request with visible OTP to be rejected")
+	}
+
+	// Case 5: Same URL with visible CAPTCHA -> REJECTED
+	captchaSignals := authSignals
+	captchaSignals.VisibleCaptcha = true
+	if authenticatedACB(acbURL, captchaSignals, validCookies) {
+		t.Fatal("expected /acbib/Request with visible CAPTCHA to be rejected")
+	}
+
+	// Case 6: Same URL without logout element -> REJECTED
+	noLogoutSignals := authSignals
+	noLogoutSignals.HasLogout = false
+	if authenticatedACB(acbURL, noLogoutSignals, validCookies) {
+		t.Fatal("expected /acbib/Request without logout to be rejected")
+	}
+
+	// Case 7: Only 1 positive signal (requires multiple positive signals) -> REJECTED
+	singleSignal := domSignals{HasLogout: true}
+	if authenticatedACB(acbURL, singleSignal, validCookies) {
+		t.Fatal("expected /acbib/Request with single positive signal to be rejected")
+	}
+
+	// Case 8: Logout + WebSphere ProcessorState only (no account/welcome signals) -> REJECTED
+	logoutAndProcessorOnly := domSignals{
+		HasLogout:         true,
+		HasProcessorState: true,
+	}
+	if authenticatedACB(acbURL, logoutAndProcessorOnly, validCookies) {
+		t.Fatal("expected /acbib/Request with only logout and processor state (no account/welcome) to be rejected")
+	}
+}
+
+func TestAuthenticatedACB_CookieOnlyRejection(t *testing.T) {
+	validCookies := []*network.Cookie{
+		{Name: "JSESSIONID", Domain: ".online.acb.com.vn", Value: "session-secret"},
+		{Name: "ROUTEID", Domain: ".acb.com.vn", Value: "route-1"},
+	}
+
+	// Cookie present but blank/zero DOM signals -> REJECTED
+	zeroSignals := domSignals{}
+	if authenticatedACB("https://online.acb.com.vn/acbib/Request", zeroSignals, validCookies) {
+		t.Fatal("expected cookie-only state at /acbib/Request to be rejected")
+	}
+	if authenticatedACB("https://online.acb.com.vn/acbib/AccountSummary", zeroSignals, validCookies) {
+		t.Fatal("expected cookie-only state at /acbib/AccountSummary to be rejected")
+	}
+}
+
+func TestAuthenticatedACB_SpoofedHostAndScheme(t *testing.T) {
+	validCookies := []*network.Cookie{{Name: "JSESSIONID", Domain: ".online.acb.com.vn", Value: "secret"}}
+	authSignals := domSignals{
+		HasLogout:          true,
+		HasAccountOverview: true,
+	}
+
+	spoofedURLs := []string{
+		"https://evil.com/acbib/Request",
+		"https://spoofed.host/acbib/Request",
+		"https://online.acb.com.vn.attacker.com/acbib/Request",
+		"https://attacker-online.acb.com.vn/acbib/Request",
+		"https://online.acb.com.vn.evil/acbib/Request",
+		"http://online.acb.com.vn/acbib/Request", // Unencrypted HTTP must be rejected
+	}
+	for _, rawURL := range spoofedURLs {
+		if authenticatedACB(rawURL, authSignals, validCookies) {
+			t.Fatalf("expected spoofed or unencrypted URL %q to be rejected", rawURL)
+		}
+	}
+}
+
+func TestCookieFilteringAndDomainBoundary(t *testing.T) {
+	validScopedCookies := []*network.Cookie{
+		{Name: "session1", Domain: ".online.acb.com.vn", Value: "val1"},
+		{Name: "session2", Domain: "online.acb.com.vn", Value: "val2"},
+		{Name: "session3", Domain: ".acb.com.vn", Value: "val3"},
+		{Name: "session4", Domain: "acb.com.vn", Value: "val4"},
+	}
+	for _, c := range validScopedCookies {
+		if !isValidACBCookie(c) {
+			t.Fatalf("expected cookie with domain %q to be valid", c.Domain)
+		}
+	}
+
+	invalidCookies := []*network.Cookie{
+		{Name: "bad1", Domain: "evil-acb.com.vn", Value: "val"},
+		{Name: "bad2", Domain: "notacb.com.vn", Value: "val"},
+		{Name: "bad3", Domain: "attacker.com", Value: "val"},
+		{Name: "bad4", Domain: "online.acb.com.vn.evil.com", Value: "val"},
+		{Name: "bad5", Domain: ".online.acb.com.vn", Value: ""}, // Empty value
+		{Name: "", Domain: ".online.acb.com.vn", Value: "val"},  // Empty name
+		nil,
+	}
+	for _, c := range invalidCookies {
+		if isValidACBCookie(c) {
+			t.Fatalf("expected cookie %+v to be invalid", c)
+		}
+	}
+
+	// Mixed cookies passed to encodeHandoff: only valid ACB cookies are retained
+	mixed := append(validScopedCookies, invalidCookies...)
+	handoff, err := encodeHandoff(mixed)
+	if err != nil {
+		t.Fatalf("encodeHandoff failed: %v", err)
+	}
+	parts := strings.Split(handoff, ".")
+	if len(parts) != 2 {
+		t.Fatalf("invalid handoff format: %q", handoff)
+	}
+	rawPayload, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		t.Fatalf("decode handoff payload: %v", err)
+	}
+	var decoded []authbrowser.Cookie
+	if err := json.Unmarshal(rawPayload, &decoded); err != nil {
+		t.Fatalf("unmarshal handoff: %v", err)
+	}
+	if len(decoded) != len(validScopedCookies) {
+		t.Fatalf("expected %d filtered cookies, got %d", len(validScopedCookies), len(decoded))
+	}
+
+	// Only invalid cookies: encodeHandoff must error
+	if _, err := encodeHandoff(invalidCookies); err == nil {
+		t.Fatal("expected error when encodeHandoff has no valid ACB cookies")
 	}
 }
 
@@ -577,5 +750,347 @@ func TestRealChromiumIntegration(t *testing.T) {
 	profilePath := filepath.Join(profileDir, "real-browser-test")
 	if _, err := os.Stat(profilePath); !os.IsNotExist(err) {
 		t.Fatalf("profile directory was not cleaned up: %v", err)
+	}
+}
+
+func TestRealisticCDP_PageDOMSignals(t *testing.T) {
+	browserBin := findDefaultBrowser()
+	if browserBin == "" || browserBin == "chromium" {
+		if _, err := exec.LookPath("google-chrome"); err != nil {
+			if _, err := exec.LookPath("chromium"); err != nil {
+				t.Skip("no local Chromium or Chrome installed, skipping realistic CDP test")
+			}
+		}
+	}
+
+	loginHTML := `<!DOCTYPE html><html><body>
+		<form action="/acbib/Request" method="POST">
+			<input type="text" name="username" placeholder="Username">
+			<input type="password" name="password" placeholder="Password">
+			<input type="text" name="captcha" placeholder="Captcha">
+			<button id="loginBtn">Đăng nhập</button>
+		</form>
+	</body></html>`
+
+	authHTML := `<!DOCTYPE html><html><body>
+		<div class="header">
+			<span>Xin chào NGUYEN VAN A</span>
+			<a href="/acbib/Request?op=ibkLogoutOp" id="btnLogout">Đăng xuất</a>
+		</div>
+		<div class="content">
+			<span>Thông tin tài khoản</span>
+			<div id="accountoverview">Tài khoản thanh toán: 123456789</div>
+			<input type="hidden" name="dse_operationName" value="ibkacctDetailProc">
+			<input type="hidden" name="dse_processorState" value="fresh_state_abc">
+			<input type="hidden" name="AccountNbr" value="123456789">
+		</div>
+	</body></html>`
+
+	otpHtml := `<!DOCTYPE html><html><body>
+		<form action="/acbib/Request" method="POST">
+			<input type="text" name="otp" placeholder="Mã OTP Safekey">
+			<button>Xác nhận</button>
+		</form>
+	</body></html>`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		switch r.URL.Path {
+		case "/login":
+			_, _ = w.Write([]byte(loginHTML))
+		case "/auth":
+			_, _ = w.Write([]byte(authHTML))
+		case "/otp":
+			_, _ = w.Write([]byte(otpHtml))
+		case "/exit-dialog":
+			_, _ = w.Write([]byte(`<!DOCTYPE html><html><body>
+				<div><span>Thông báo phiên giao dịch</span><button>Thoát</button>
+				<input type="hidden" name="dse_processorState" value="state_test"></div>
+			</body></html>`))
+		default:
+			_, _ = w.Write([]byte("<!DOCTYPE html><html><body><h1>Other</h1></body></html>"))
+		}
+	}))
+	defer server.Close()
+
+	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.Headless,
+		chromedp.DisableGPU,
+		chromedp.NoSandbox,
+	)
+	allocCtx, cancel := chromedp.NewExecAllocator(context.Background(), opts...)
+	defer cancel()
+
+	bctx, bcancel := chromedp.NewContext(allocCtx)
+	defer bcancel()
+
+	// Tab 1: Other page
+	if err := chromedp.Run(bctx, chromedp.Navigate(server.URL+"/other")); err != nil {
+		t.Fatalf("navigate to other: %v", err)
+	}
+
+	// Tab 2: Login page
+	tab2Ctx, tab2Cancel := chromedp.NewContext(bctx)
+	defer tab2Cancel()
+	if err := chromedp.Run(tab2Ctx, chromedp.Navigate(server.URL+"/login")); err != nil {
+		t.Fatalf("navigate to login: %v", err)
+	}
+
+	// Tab 3: OTP challenge page
+	tab3Ctx, tab3Cancel := chromedp.NewContext(bctx)
+	defer tab3Cancel()
+	if err := chromedp.Run(tab3Ctx, chromedp.Navigate(server.URL+"/otp")); err != nil {
+		t.Fatalf("navigate to otp: %v", err)
+	}
+
+	// Tab 4: Authenticated page
+	tab4Ctx, tab4Cancel := chromedp.NewContext(bctx)
+	defer tab4Cancel()
+	if err := chromedp.Run(tab4Ctx, chromedp.Navigate(server.URL+"/auth")); err != nil {
+		t.Fatalf("navigate to auth: %v", err)
+	}
+
+	// Tab 5: Modal exit dialog with "Thoát" and hidden processorState
+	tab5Ctx, tab5Cancel := chromedp.NewContext(bctx)
+	defer tab5Cancel()
+	if err := chromedp.Run(tab5Ctx, chromedp.Navigate(server.URL+"/exit-dialog")); err != nil {
+		t.Fatalf("navigate to exit-dialog: %v", err)
+	}
+
+	targets, err := chromedp.Targets(bctx)
+	if err != nil {
+		t.Fatalf("get targets: %v", err)
+	}
+	initialCount := len(targets)
+
+	for _, info := range targets {
+		if info.Type != "page" {
+			continue
+		}
+		sig, err := evaluateDOMSignals(context.Background(), bctx, info.TargetID)
+		if err != nil {
+			t.Fatalf("evaluateDOMSignals on %s failed: %v", info.URL, err)
+		}
+		switch {
+		case strings.HasSuffix(info.URL, "/other"):
+			if sig.isAuthenticated() {
+				t.Fatalf("expected /other to be not authenticated, got: %+v", sig)
+			}
+		case strings.HasSuffix(info.URL, "/login"):
+			if !sig.VisiblePassword || !sig.VisibleCaptcha || !sig.VisibleLogin {
+				t.Fatalf("expected /login to have visible password/captcha/login, got: %+v", sig)
+			}
+			if sig.HasLogout {
+				t.Fatalf("expected /login to have HasLogout false, got: %+v", sig)
+			}
+			if sig.isAuthenticated() {
+				t.Fatalf("expected /login to be unauthenticated, got: %+v", sig)
+			}
+		case strings.HasSuffix(info.URL, "/otp"):
+			if !sig.VisibleOTP {
+				t.Fatalf("expected /otp to have VisibleOTP true, got: %+v", sig)
+			}
+			if sig.isAuthenticated() {
+				t.Fatalf("expected /otp to be unauthenticated, got: %+v", sig)
+			}
+		case strings.HasSuffix(info.URL, "/exit-dialog"):
+			if sig.HasLogout {
+				t.Fatalf("expected /exit-dialog to NOT match HasLogout with generic 'Thoát', got: %+v", sig)
+			}
+			if sig.isAuthenticated() {
+				t.Fatalf("expected /exit-dialog to be unauthenticated, got: %+v", sig)
+			}
+		case strings.HasSuffix(info.URL, "/auth"):
+			if !sig.HasLogout || !sig.HasAccountOverview || !sig.HasWelcome || !sig.HasAccountProcessor || !sig.HasProcessorState {
+				t.Fatalf("expected /auth to have all 5 positive signals, got: %+v", sig)
+			}
+			if sig.VisiblePassword || sig.VisibleCaptcha || sig.VisibleOTP || sig.VisibleLogin {
+				t.Fatalf("expected /auth to have no visible challenge fields, got: %+v", sig)
+			}
+			if sig.positiveCount() != 5 {
+				t.Fatalf("expected positiveCount 5, got %d", sig.positiveCount())
+			}
+			if !sig.isAuthenticated() {
+				t.Fatalf("expected /auth to be authenticated, got: %+v", sig)
+			}
+		}
+	}
+
+	// Verify evaluateDOMSignals immediately aborts on cancelled parent context
+	if len(targets) > 0 {
+		cancCtx, doCancel := context.WithCancel(context.Background())
+		doCancel()
+		if _, err := evaluateDOMSignals(cancCtx, bctx, targets[0].TargetID); err == nil {
+			t.Fatal("expected evaluateDOMSignals to return error for cancelled parent context")
+		}
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	targetsAfter, err := chromedp.Targets(bctx)
+	if err != nil {
+		t.Fatalf("get targets after: %v", err)
+	}
+	if len(targetsAfter) != initialCount {
+		t.Fatalf("tabs were closed during evaluation: before %d, after %d", initialCount, len(targetsAfter))
+	}
+}
+
+func TestRealisticCDP_MultiTabTargetSelectionAndTabReplacement(t *testing.T) {
+	browserBin := findDefaultBrowser()
+	if browserBin == "" || browserBin == "chromium" {
+		if _, err := exec.LookPath("google-chrome"); err != nil {
+			if _, err := exec.LookPath("chromium"); err != nil {
+				t.Skip("no local Chromium or Chrome installed, skipping realistic CDP test")
+			}
+		}
+	}
+
+	var stateMu sync.Mutex
+	isLoggedIn := false
+
+	loginHTML := `<!DOCTYPE html><html><body>
+		<form action="/acbib/Request" method="POST">
+			<input type="text" name="username" placeholder="Username">
+			<input type="password" name="password" placeholder="Password">
+			<input type="text" name="captcha" placeholder="Captcha">
+			<button id="loginBtn">Đăng nhập</button>
+		</form>
+	</body></html>`
+
+	authHTML := `<!DOCTYPE html><html><body>
+		<div class="header">
+			<span>Xin chào NGUYEN VAN A</span>
+			<a href="/acbib/Request?op=ibkLogoutOp" id="btnLogout">Đăng xuất</a>
+		</div>
+		<div class="content">
+			<span>Thông tin tài khoản</span>
+			<div id="accountoverview">Tài khoản thanh toán: 123456789</div>
+			<input type="hidden" name="dse_operationName" value="ibkacctDetailProc">
+			<input type="hidden" name="dse_processorState" value="fresh_state_abc">
+			<input type="hidden" name="AccountNbr" value="123456789">
+		</div>
+	</body></html>`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if r.URL.Path == "/acbib/Request" {
+			stateMu.Lock()
+			loggedIn := isLoggedIn
+			stateMu.Unlock()
+			if loggedIn {
+				_, _ = w.Write([]byte(authHTML))
+			} else {
+				_, _ = w.Write([]byte(loginHTML))
+			}
+			return
+		}
+		_, _ = w.Write([]byte("<!DOCTYPE html><html><body><h1>Unrelated</h1></body></html>"))
+	}))
+	defer server.Close()
+
+	t.Setenv("ACB_LOGIN_URL", server.URL+"/acbib/Request")
+
+	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.Headless,
+		chromedp.DisableGPU,
+		chromedp.NoSandbox,
+	)
+	allocCtx, cancel := chromedp.NewExecAllocator(context.Background(), opts...)
+	defer cancel()
+
+	bctx, bcancel := chromedp.NewContext(allocCtx)
+	defer bcancel()
+
+	// Tab 1: Unrelated page (navigating initial context allocates the browser)
+	if err := chromedp.Run(bctx, chromedp.Navigate(server.URL+"/unrelated")); err != nil {
+		t.Fatalf("navigate to unrelated: %v", err)
+	}
+
+	browser := chromedp.FromContext(bctx).Browser
+	if browser == nil {
+		t.Fatal("browser is nil after initial navigation")
+	}
+	executor := cdp.WithExecutor(bctx, browser)
+
+	// Tab 2: ACB Banking page at /acbib/Request (initially logged out)
+	tab2Ctx, tab2Cancel := chromedp.NewContext(bctx)
+	defer tab2Cancel()
+	if err := chromedp.Run(tab2Ctx, chromedp.Navigate(server.URL+"/acbib/Request")); err != nil {
+		t.Fatalf("navigate to /acbib/Request: %v", err)
+	}
+
+	targetsBefore, _ := chromedp.Targets(bctx)
+	countBefore := len(targetsBefore)
+
+	// Evaluate while logged out: should not verify
+	checkCtx, checkCancel := context.WithTimeout(executor, 5*time.Second)
+	currURL, signals, cookies, reason, err := browserLoginState(checkCtx, bctx)
+	checkCancel()
+	if err != nil {
+		t.Fatalf("browserLoginState returned error: %v", err)
+	}
+	if authenticatedACB(currURL, signals, cookies) {
+		t.Fatal("expected unauthenticated state while logged out")
+	}
+	if reason == "" {
+		t.Fatal("expected a non-empty waiting reason")
+	}
+
+	// Verify no tabs were closed
+	targetsAfter1, _ := chromedp.Targets(bctx)
+	if len(targetsAfter1) != countBefore {
+		t.Fatalf("tab count changed during browserLoginState: before %d, after %d", countBefore, len(targetsAfter1))
+	}
+
+	// Now transition to logged in
+	stateMu.Lock()
+	isLoggedIn = true
+	stateMu.Unlock()
+
+	// Set valid session cookie in browser storage for server host
+	u, _ := url.Parse(server.URL)
+	cookieParams := network.SetCookie("JSESSIONID", "secret-session-token").
+		WithDomain(u.Hostname()).
+		WithPath("/").
+		WithHTTPOnly(true)
+	if err := chromedp.Run(tab2Ctx, cookieParams); err != nil {
+		t.Fatalf("set cookie: %v", err)
+	}
+
+	// Reload Tab 2 to get authenticated DOM
+	if err := chromedp.Run(tab2Ctx, chromedp.Reload()); err != nil {
+		t.Fatalf("reload tab 2: %v", err)
+	}
+
+	// Now evaluate again: should verify
+	checkCtx2, checkCancel2 := context.WithTimeout(executor, 5*time.Second)
+	currURL, signals, cookies, _, err = browserLoginState(checkCtx2, bctx)
+	checkCancel2()
+	if err != nil {
+		t.Fatalf("browserLoginState error on authenticated page: %v", err)
+	}
+	if !authenticatedACB(currURL, signals, cookies) {
+		t.Fatalf("expected authenticatedACB to return true, url=%s, signals=%+v, cookies=%+v", currURL, signals, cookies)
+	}
+
+	// Test tab replacement: navigate Tab 2 away to /unrelated, then open Tab 3 with /acbib/Request
+	if err := chromedp.Run(tab2Ctx, chromedp.Navigate(server.URL+"/unrelated")); err != nil {
+		t.Fatalf("navigate tab 2 away: %v", err)
+	}
+	tab3Ctx, tab3Cancel := chromedp.NewContext(bctx)
+	defer tab3Cancel()
+	if err := chromedp.Run(tab3Ctx, chromedp.Navigate(server.URL+"/acbib/Request")); err != nil {
+		t.Fatalf("navigate tab 3: %v", err)
+	}
+
+	// Evaluate again on replaced tab: should seamlessly identify Tab 3 as authenticated
+	checkCtx3, checkCancel3 := context.WithTimeout(executor, 5*time.Second)
+	currURL, signals, cookies, _, err = browserLoginState(checkCtx3, bctx)
+	checkCancel3()
+	if err != nil {
+		t.Fatalf("browserLoginState error on replaced tab: %v", err)
+	}
+	if !authenticatedACB(currURL, signals, cookies) {
+		t.Fatal("expected replaced tab to be authenticated")
 	}
 }

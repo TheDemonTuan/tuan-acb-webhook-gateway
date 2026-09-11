@@ -100,7 +100,7 @@ func main() {
 		addresses = append(addresses, strings.TrimSuffix(primaryAddr, ":8080")+":8090")
 	}
 
-	handler := httpapi.New(cfg, store).Handler()
+	handler := httpapi.New(cfg, store).WithSyncRequester(bankMonitor).Handler()
 	var servers []*http.Server
 	errCh := make(chan error, len(addresses))
 

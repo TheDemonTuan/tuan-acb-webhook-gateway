@@ -17,7 +17,7 @@ import {
   Webhook,
   XCircle,
 } from 'lucide-react';
-import { apiErrorMessage } from './api';
+import { api, isTerminalAuthError } from './api';
 
 type Status = {
   service: string;
@@ -94,23 +94,6 @@ const nav = ['Tổng quan', 'Kết nối ACB', 'Giao dịch', 'Webhooks', 'Phân
 const errorMessage = (error: unknown, fallback = 'Yêu cầu không thành công. Vui lòng thử lại.'): string =>
   error instanceof Error ? error.message : fallback;
 
-const api = async <T,>(path: string, init?: RequestInit): Promise<T> => {
-  let response: Response;
-  try {
-    response = await fetch(`/api/v1${path}`, { credentials: 'same-origin', ...init });
-  } catch {
-    throw new Error('Không thể kết nối máy chủ. Vui lòng kiểm tra kết nối và thử lại.');
-  }
-  if (!response.ok) {
-    throw new Error(await apiErrorMessage(response));
-  }
-  try {
-    return (await response.json()) as T;
-  } catch {
-    throw new Error('Máy chủ trả về dữ liệu không hợp lệ. Vui lòng thử lại.');
-  }
-};
-
 function Card({ title, value, detail, icon: Icon }: { title: string; value: string; detail: string; icon: typeof Database }) {
   return (
     <section className="card">
@@ -144,17 +127,29 @@ export default function App() {
   const authOperation = useRef(0);
   const [newEndpointSecret, setNewEndpointSecret] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
+  const [actionPending, setActionPending] = useState(false);
+  const [syncPending, setSyncPending] = useState(false);
+  const loadSeq = useRef(0);
 
-  const connected = connection?.configured === true;
   const acbState = connection?.connection?.state ?? status?.acb?.state ?? 'UNCONFIGURED';
+  const connected =
+    connection?.configured ??
+    (Boolean(status?.acb?.accountMasked) || (status?.acb?.state !== undefined && status.acb.state !== 'UNCONFIGURED'));
+
+  const isMonitoring = acbState === 'MONITORING';
+  const hasActiveAuth = activeAttempt !== null || authRequestPending;
+  const syncDisabled = !isMonitoring || hasActiveAuth || syncPending || actionPending;
 
   const load = async () => {
+    const seq = ++loadSeq.current;
     const [statusRes, connRes, epsRes, csrfRes] = await Promise.allSettled([
       api<Status>('/status'),
       api<Connection>('/connection'),
       api<{ items: Endpoint[] }>('/webhooks'),
       api<{ token: string }>('/csrf'),
     ]);
+
+    if (seq !== loadSeq.current) return;
 
     if (statusRes.status === 'fulfilled') setStatus(statusRes.value);
     if (connRes.status === 'fulfilled') setConnection(connRes.value);
@@ -165,28 +160,28 @@ export default function App() {
     if (active === 'Giao dịch') {
       try {
         const txRes = await api<{ items: Transaction[] }>('/transactions');
-        setTransactions(txRes.items);
+        if (seq === loadSeq.current) setTransactions(txRes.items);
       } catch {
         // ignore
       }
     } else if (active === 'Phân phối') {
       try {
         const delRes = await api<{ items: Delivery[] }>('/deliveries');
-        setDeliveries(delRes.items);
+        if (seq === loadSeq.current) setDeliveries(delRes.items);
       } catch {
         // ignore
       }
     } else if (active === 'Polling') {
       try {
         const pRes = await api<{ items: PollRun[] }>('/poll-runs');
-        setPollRuns(pRes.items);
+        if (seq === loadSeq.current) setPollRuns(pRes.items);
       } catch {
         // ignore
       }
     } else if (active === 'Audit') {
       try {
         const aRes = await api<{ items: AuditLog[] }>('/audit');
-        setAuditLogs(aRes.items);
+        if (seq === loadSeq.current) setAuditLogs(aRes.items);
       } catch {
         // ignore
       }
@@ -211,9 +206,10 @@ export default function App() {
         const result = await api<{ status: string; error?: string }>(`/connection/auth/${activeAttempt.id}/status`);
         if (cancelled) return;
         setAuthState(result.status);
-        if (result.status === 'MONITORING') {
+        if (result.status === 'MONITORING' || result.status === 'VERIFIED') {
           cancelled = true;
           setActiveAttempt(null);
+          setAuthState('');
           setNotice({ kind: 'ok', text: 'ACB đã xác thực. Hệ thống đang bắt đầu theo dõi giao dịch.' });
           await load();
           return;
@@ -221,6 +217,7 @@ export default function App() {
         if (result.status === 'FAILED' || result.status === 'EXPIRED' || result.status === 'CANCELLED') {
           cancelled = true;
           setActiveAttempt(null);
+          setAuthState('');
           if (result.status === 'CANCELLED') {
             setNotice({ kind: 'ok', text: 'Phiên đăng nhập ACB đã được hủy.' });
           } else {
@@ -230,7 +227,24 @@ export default function App() {
           return;
         }
       } catch (error) {
-        if (!cancelled) setNotice({ kind: 'error', text: errorMessage(error, 'Không thể kiểm tra trạng thái đăng nhập ACB.') });
+        if (cancelled) return;
+        if (isTerminalAuthError(error)) {
+          cancelled = true;
+          setActiveAttempt(null);
+          setAuthState('');
+          setNotice({
+            kind: 'error',
+            text: errorMessage(
+              error,
+              error.code === 'AUTH_SESSION_SUPERSEDED'
+                ? 'Phiên đăng nhập ACB đã được thay thế. Vui lòng mở phiên mới.'
+                : 'Không tìm thấy phiên đăng nhập ACB. Vui lòng mở phiên mới.'
+            ),
+          });
+          await load();
+          return;
+        }
+        setNotice({ kind: 'error', text: errorMessage(error, 'Không thể kiểm tra trạng thái đăng nhập ACB.') });
       } finally {
         checking = false;
         if (!cancelled) timer = window.setTimeout(() => void check(), 3_000);
@@ -277,8 +291,14 @@ export default function App() {
       setNotice({ kind: 'ok', text: 'Trình duyệt ACB đã sẵn sàng. Nhập trực tiếp mật khẩu, OTP và CAPTCHA trong trang bên dưới.' });
     } catch (error) {
       if (authOperation.current !== operation) return;
-      setAuthState('FAILED');
+      if (isTerminalAuthError(error)) {
+        setActiveAttempt(null);
+        setAuthState('');
+      } else {
+        setAuthState('FAILED');
+      }
       setNotice({ kind: 'error', text: errorMessage(error, 'Không thể khởi động trình duyệt ACB.') });
+      await load();
     } finally {
       if (authOperation.current === operation) setAuthRequestPending(false);
     }
@@ -296,7 +316,14 @@ export default function App() {
       setAuthState('CANCELLED');
       setNotice({ kind: 'ok', text: 'Đã hủy phiên đăng nhập ACB.' });
     } catch (error) {
-      if (authOperation.current === operation) setNotice({ kind: 'error', text: errorMessage(error) });
+      if (authOperation.current === operation) {
+        if (isTerminalAuthError(error)) {
+          setActiveAttempt(null);
+          setAuthState('');
+        }
+        setNotice({ kind: 'error', text: errorMessage(error) });
+        await load();
+      }
     } finally {
       if (authOperation.current === operation) setAuthRequestPending(false);
     }
@@ -318,11 +345,32 @@ export default function App() {
   };
 
   const perform = async (path: string) => {
+    if (actionPending) return;
+    setActionPending(true);
     try {
       await mutate(path);
       setNotice({ kind: 'ok', text: 'Đã ghi nhận thao tác.' });
     } catch (error) {
       setNotice({ kind: 'error', text: errorMessage(error) });
+    } finally {
+      setActionPending(false);
+    }
+  };
+
+  const triggerSync = async () => {
+    if (syncDisabled) return;
+    setSyncPending(true);
+    try {
+      const res = (await mutate('/connection/sync')) as { status?: string };
+      if (res?.status === 'ACCEPTED') {
+        setNotice({ kind: 'ok', text: 'Đã tiếp nhận yêu cầu đồng bộ ACB.' });
+      } else {
+        setNotice({ kind: 'ok', text: 'Đã tiếp nhận yêu cầu đồng bộ.' });
+      }
+    } catch (error) {
+      setNotice({ kind: 'error', text: errorMessage(error) });
+    } finally {
+      setSyncPending(false);
     }
   };
 
@@ -434,21 +482,21 @@ export default function App() {
             <>
               <dl>
                 <dt>Tài khoản</dt>
-                <dd>{connection?.connection?.accountMasked}</dd>
+                <dd>{connection?.connection?.accountMasked ?? status?.acb?.accountMasked ?? 'Chưa cấu hình'}</dd>
                 <dt>Trạng thái</dt>
-                <dd>{connection?.connection?.state}</dd>
+                <dd>{connection?.connection?.state ?? acbState}</dd>
                 <dt>Generation</dt>
-                <dd>{connection?.connection?.generation}</dd>
+                <dd>{connection?.connection?.generation ?? status?.acb?.generation ?? 0}</dd>
               </dl>
 
               <div className="actions" style={{ marginTop: 16, display: 'flex', gap: 8 }}>
-                <button onClick={() => void perform('/connection/pause')}>
+                <button onClick={() => void perform('/connection/pause')} disabled={actionPending}>
                   <CirclePause size={17} /> Pause
                 </button>
-                <button onClick={() => void perform('/connection/resume')}>
+                <button onClick={() => void perform('/connection/resume')} disabled={actionPending}>
                   <RefreshCw size={17} /> Resume
                 </button>
-                <button onClick={() => void perform('/connection/sync')}>
+                <button onClick={() => void triggerSync()} disabled={syncDisabled} aria-label="Sync">
                   <ListRestart size={17} /> Sync
                 </button>
               </div>
@@ -873,7 +921,28 @@ export default function App() {
     }
 
     return null;
-  }, [active, connected, connection, acbState, endpoints, transactions, deliveries, pollRuns, auditLogs, newEndpointSecret, activeAttempt, accountMasked, endpointName, endpointURL, status]);
+  }, [
+    active,
+    connected,
+    connection,
+    acbState,
+    endpoints,
+    transactions,
+    deliveries,
+    pollRuns,
+    auditLogs,
+    newEndpointSecret,
+    activeAttempt,
+    authState,
+    authRequestPending,
+    accountMasked,
+    endpointName,
+    endpointURL,
+    status,
+    actionPending,
+    syncPending,
+    syncDisabled,
+  ]);
 
   return (
     <main className="shell">

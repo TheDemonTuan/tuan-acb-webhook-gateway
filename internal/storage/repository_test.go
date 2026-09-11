@@ -38,3 +38,36 @@ func TestConnectionAndEndpointLifecycle(t *testing.T) {
 		t.Fatal(items, err)
 	}
 }
+
+func TestTransitionConnectionRejectsSyncAndPreservesState(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "test_sync.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	if _, err := s.ConfigureConnection(ctx, "***1234"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().ExecContext(ctx, "UPDATE connections SET state='MONITORING'"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.Connection(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.TransitionConnection(ctx, "sync")
+	if err == nil || err.Error() != "unsupported action" {
+		t.Fatalf("expected unsupported action error, got %v", err)
+	}
+
+	after, err := s.Connection(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != before.State || after.Generation != before.Generation {
+		t.Fatalf("sync action mutated connection: before=%+v after=%+v", before, after)
+	}
+}

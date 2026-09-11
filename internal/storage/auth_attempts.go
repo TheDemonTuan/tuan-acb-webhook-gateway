@@ -40,6 +40,25 @@ func (s *Store) StartAuthAttempt(ctx context.Context, owner string, ttl time.Dur
 	return attempt, err
 }
 
+func (s *Store) MarkAuthAttemptInProgress(ctx context.Context, attemptID string) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE auth_attempts SET status='IN_PROGRESS'
+		WHERE id=? AND status='STARTING' AND EXISTS (
+			SELECT 1 FROM connections c WHERE c.id=auth_attempts.connection_id
+			AND c.generation=auth_attempts.generation AND c.state='AUTH_STARTING'
+		)`, attemptID)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 func (s *Store) FinishAuthAttempt(ctx context.Context, attemptID, status string) error {
 	if status != "CANCELLED" && status != "EXPIRED" && status != "FAILED" {
 		return errors.New("invalid auth attempt finish status")
@@ -51,10 +70,14 @@ func (s *Store) FinishAuthAttempt(ctx context.Context, attemptID, status string)
 		if err != nil {
 			return err
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE auth_attempts SET status=?,finished_at=? WHERE id=?`, status, now(), attemptID); err != nil {
+		result, err := tx.ExecContext(ctx, `UPDATE connections SET state='AUTH_REQUIRED',generation=generation+1,updated_at=? WHERE id=? AND generation=?`, now(), connectionID, generation)
+		if err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `UPDATE connections SET state='AUTH_REQUIRED',generation=generation+1,updated_at=? WHERE id=? AND generation=?`, now(), connectionID, generation)
+		if _, err := result.RowsAffected(); err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE auth_attempts SET status=?,finished_at=? WHERE id=?`, status, now(), attemptID)
 		return err
 	})
 }

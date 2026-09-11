@@ -75,8 +75,6 @@ func (s *Store) TransitionConnection(ctx context.Context, action string) (Connec
 		next = "PAUSED"
 	case "resume":
 		next = "AUTH_REQUIRED"
-	case "sync":
-		next = "AUTH_REQUIRED"
 	default:
 		return Connection{}, errors.New("unsupported action")
 	}
