@@ -123,8 +123,10 @@ func (c *Client) Bootstrap(ctx context.Context) (Response, error) {
 	if c.bootstrap == nil || len(c.bootstrapFields) == 0 {
 		return Response{}, errors.New("ACB authenticated form state is unavailable")
 	}
+	fields := cloneFields(c.bootstrapFields)
+	fields["dse_nextEventName"] = "byDate"
 	values := url.Values{}
-	for key, value := range c.bootstrapFields {
+	for key, value := range fields {
 		values.Set(key, value)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.bootstrap.String(), strings.NewReader(values.Encode()))

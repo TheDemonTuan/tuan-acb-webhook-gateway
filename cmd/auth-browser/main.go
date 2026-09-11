@@ -951,6 +951,7 @@ func browserLoginState(ctx context.Context, browserCtx context.Context) (string,
 		if authenticatedACB(info.URL, signals, acbCookies) {
 			form, _ := evaluateHistoryForm(ctx, browserCtx, info.TargetID)
 			if validHistoryForm(form) {
+				slog.Info("ACB authenticated form state captured", "field_count", len(form.Fields), "has_session_id", form.Fields["dse_sessionId"] != "", "has_processor_id", form.Fields["dse_processorId"] != "", "has_processor_state", form.Fields["dse_processorState"] != "", "has_account", form.Fields["AccountNbr"] != "")
 				return info.URL, signals, acbCookies, form, "", nil
 			}
 			lastSignals = signals
