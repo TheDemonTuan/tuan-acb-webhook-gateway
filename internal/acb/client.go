@@ -47,11 +47,16 @@ func NewClient(base string, transport http.RoundTripper) (*Client, error) {
 	}}}, nil
 }
 
+func isAllowedACBCookieDomain(domain string) bool {
+	d := strings.ToLower(strings.TrimPrefix(domain, "."))
+	return d == "" || d == OfficialHost || d == "acb.com.vn"
+}
+
 // RestoreCookies accepts only cookies bound to the official ACB host. The
 // caller supplies encrypted storage; no cookie ever crosses the dashboard API.
 func (c *Client) RestoreCookies(cookies []authbrowser.Cookie) error {
 	for _, cookie := range cookies {
-		if cookie.Name == "" || cookie.Value == "" || !strings.HasSuffix(strings.ToLower(strings.TrimPrefix(cookie.Domain, ".")), OfficialHost) {
+		if cookie.Name == "" || cookie.Value == "" || !isAllowedACBCookieDomain(cookie.Domain) {
 			return errors.New("invalid ACB session cookie")
 		}
 	}

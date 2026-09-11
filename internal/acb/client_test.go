@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/thedemontuan/tuan-bank-gateway/internal/authbrowser"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -61,5 +63,41 @@ func TestClientRejectsEndpointOutsideOfficialHost(t *testing.T) {
 	}
 	if _, err := client.Get(context.Background(), "https://example.test/"); err == nil {
 		t.Fatal("accepted untrusted endpoint")
+	}
+}
+
+func TestRestoreCookiesAllowsACBAndOnlineDomains(t *testing.T) {
+	client, err := NewClient("https://online.acb.com.vn", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	validCases := [][]authbrowser.Cookie{
+		{{Name: "JSESSIONID", Value: "val1", Domain: "online.acb.com.vn"}},
+		{{Name: "TS01", Value: "val2", Domain: ".online.acb.com.vn"}},
+		{{Name: "SSO", Value: "val3", Domain: ".acb.com.vn"}},
+		{{Name: "ROOT", Value: "val4", Domain: "acb.com.vn"}},
+		{{Name: "HOST_ONLY", Value: "val5", Domain: ""}},
+	}
+	for i, tc := range validCases {
+		if err := client.RestoreCookies(tc); err != nil {
+			t.Fatalf("case %d: unexpected error for valid cookies: %v", i, err)
+		}
+	}
+
+	invalidCases := [][]authbrowser.Cookie{
+		{{Name: "bad", Value: "val", Domain: "evil.com"}},
+		{{Name: "bad", Value: "val", Domain: "online.acb.com.vn.evil.com"}},
+		{{Name: "bad", Value: "val", Domain: "acb.com.vn.evil.com"}},
+		{{Name: "bad", Value: "val", Domain: "com.vn"}},
+		{{Name: "bad", Value: "val", Domain: ".com.vn"}},
+		{{Name: "bad", Value: "val", Domain: "sub.online.acb.com.vn"}},
+		{{Name: "", Value: "val", Domain: "online.acb.com.vn"}},
+		{{Name: "name", Value: "", Domain: "online.acb.com.vn"}},
+	}
+	for i, tc := range invalidCases {
+		if err := client.RestoreCookies(tc); err == nil {
+			t.Fatalf("case %d: expected error for invalid cookies, got nil", i)
+		}
 	}
 }
