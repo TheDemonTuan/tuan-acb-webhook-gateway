@@ -107,6 +107,19 @@ function Card({ title, value, detail, icon: Icon }: { title: string; value: stri
   );
 }
 
+function parseTxnDate(dateStr: string): Date | null {
+  if (!dateStr) return null;
+  const match = dateStr.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (match) {
+    const day = parseInt(match[1], 10);
+    const month = parseInt(match[2], 10) - 1;
+    const year = parseInt(match[3], 10);
+    return new Date(year, month, day);
+  }
+  const d = new Date(dateStr);
+  return isNaN(d.getTime()) ? null : d;
+}
+
 export default function App() {
   const [active, setActive] = useState('Tổng quan');
   const [status, setStatus] = useState<Status | null>(null);
@@ -116,6 +129,81 @@ export default function App() {
   const [deliveries, setDeliveries] = useState<Delivery[]>([]);
   const [pollRuns, setPollRuns] = useState<PollRun[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+
+  const [dateFilter, setDateFilter] = useState<'today' | 'yesterday' | '7days' | '30days' | 'all' | 'custom'>('today');
+  const [customStartDate, setCustomStartDate] = useState<string>('');
+  const [customEndDate, setCustomEndDate] = useState<string>('');
+  const [typeFilter, setTypeFilter] = useState<'all' | 'credit' | 'debit'>('all');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+
+  const filteredTransactions = useMemo(() => {
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+    const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+
+    const yesterdayStart = new Date(todayStart);
+    yesterdayStart.setDate(yesterdayStart.getDate() - 1);
+    const yesterdayEnd = new Date(todayEnd);
+    yesterdayEnd.setDate(yesterdayEnd.getDate() - 1);
+
+    const sevenDaysStart = new Date(todayStart);
+    sevenDaysStart.setDate(sevenDaysStart.getDate() - 7);
+
+    const thirtyDaysStart = new Date(todayStart);
+    thirtyDaysStart.setDate(thirtyDaysStart.getDate() - 30);
+
+    return transactions.filter((t) => {
+      const d = parseTxnDate(t.transactionDate);
+      if (d) {
+        if (dateFilter === 'today') {
+          if (d < todayStart || d > todayEnd) return false;
+        } else if (dateFilter === 'yesterday') {
+          if (d < yesterdayStart || d > yesterdayEnd) return false;
+        } else if (dateFilter === '7days') {
+          if (d < sevenDaysStart) return false;
+        } else if (dateFilter === '30days') {
+          if (d < thirtyDaysStart) return false;
+        } else if (dateFilter === 'custom') {
+          if (customStartDate) {
+            const [y, m, day] = customStartDate.split('-').map(Number);
+            const start = new Date(y, m - 1, day, 0, 0, 0);
+            if (d < start) return false;
+          }
+          if (customEndDate) {
+            const [y, m, day] = customEndDate.split('-').map(Number);
+            const end = new Date(y, m - 1, day, 23, 59, 59, 999);
+            if (d > end) return false;
+          }
+        }
+      }
+
+      if (typeFilter === 'credit' && t.credit <= 0) return false;
+      if (typeFilter === 'debit' && t.debit <= 0) return false;
+
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase().trim();
+        const num = t.semanticKey.toLowerCase();
+        const desc = (t.description || '').toLowerCase();
+        const date = t.transactionDate.toLowerCase();
+        const money = `${t.credit} ${t.debit}`;
+        if (!num.includes(q) && !desc.includes(q) && !date.includes(q) && !money.includes(q)) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+  }, [transactions, dateFilter, customStartDate, customEndDate, typeFilter, searchQuery]);
+
+  const { totalCredit, totalDebit } = useMemo(() => {
+    let credit = 0;
+    let debit = 0;
+    for (const t of filteredTransactions) {
+      credit += t.credit || 0;
+      debit += t.debit || 0;
+    }
+    return { totalCredit: credit, totalDebit: debit };
+  }, [filteredTransactions]);
 
   const [csrf, setCsrf] = useState('');
   const [accountMasked, setAccountMasked] = useState('');

@@ -448,7 +448,7 @@ func (s *Server) browserScreen(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) transactions(w http.ResponseWriter, r *http.Request) {
-	items, err := s.store.ListTransactions(r.Context(), 50)
+	items, err := s.store.ListTransactions(r.Context(), 200)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error")
 		return
