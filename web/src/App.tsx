@@ -835,9 +835,15 @@ export default function App() {
                             background: p.status === 'SUCCEEDED' ? '#1b4332' : p.status === 'AUTH_REQUIRED' ? '#4a3b10' : '#5c1d1d',
                             color: p.status === 'SUCCEEDED' ? '#74c69d' : p.status === 'AUTH_REQUIRED' ? '#f9c74f' : '#ffaaaa',
                           }}
+                          title={p.error}
                         >
                           {p.status}
                         </span>
+                        {p.error && (
+                          <div style={{ fontSize: '0.7rem', color: '#ffaaaa', marginTop: 4, maxWidth: 280, wordBreak: 'break-word' }}>
+                            {p.error}
+                          </div>
+                        )}
                       </td>
                       <td style={{ padding: '10px 8px' }}>{p.classifier || '-'}</td>
                       <td style={{ padding: '10px 8px' }}>{p.httpStatus || '-'}</td>

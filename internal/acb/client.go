@@ -13,7 +13,11 @@ import (
 	"github.com/thedemontuan/tuan-bank-gateway/internal/authbrowser"
 )
 
-const OfficialHost = "online.acb.com.vn"
+const (
+	OfficialHost         = "online.acb.com.vn"
+	DefaultClientTimeout = 30 * time.Second
+	DefaultUserAgent     = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+)
 
 type Client struct {
 	baseURL *url.URL
@@ -39,7 +43,7 @@ func NewClient(base string, transport http.RoundTripper) (*Client, error) {
 	if transport == nil {
 		transport = http.DefaultTransport
 	}
-	return &Client{baseURL: parsed, http: &http.Client{Jar: jar, Timeout: 5 * time.Second, Transport: transport, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+	return &Client{baseURL: parsed, http: &http.Client{Jar: jar, Timeout: DefaultClientTimeout, Transport: transport, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if !strings.EqualFold(req.URL.Hostname(), OfficialHost) {
 			return errors.New("ACB redirect leaves official host")
 		}
@@ -112,11 +116,18 @@ func (c *Client) endpoint(endpoint string) (*url.URL, error) {
 	return requestURL, nil
 }
 
-const DefaultUserAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
-
 func (c *Client) do(req *http.Request) (Response, error) {
 	if req.Header.Get("User-Agent") == "" {
 		req.Header.Set("User-Agent", DefaultUserAgent)
+	}
+	if req.Header.Get("Accept") == "" {
+		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
+	}
+	if req.Header.Get("Accept-Language") == "" {
+		req.Header.Set("Accept-Language", "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7")
+	}
+	if req.Header.Get("Referer") == "" {
+		req.Header.Set("Referer", "https://online.acb.com.vn/acbib/Request")
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {

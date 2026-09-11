@@ -167,6 +167,20 @@ func (m *Monitor) pollOnce(ctx context.Context, expected *syncRequest) error {
 			return formErr
 		}
 
+		nowVN := time.Now().UTC().Add(7 * time.Hour)
+		if form.Fields["ToDate"] == "" {
+			form.Fields["ToDate"] = nowVN.Format("02/01/2006")
+		}
+		if form.Fields["FromDate"] == "" {
+			form.Fields["FromDate"] = nowVN.AddDate(0, 0, -30).Format("02/01/2006")
+		}
+		if form.Fields["AccountNbr"] == "" && conn.AccountMasked != "" {
+			form.Fields["AccountNbr"] = conn.AccountMasked
+		}
+		if form.Fields["dse_nextEventName"] == "" {
+			form.Fields["dse_nextEventName"] = "byDate"
+		}
+
 		histResp, histErr := m.client.History(ctx, form.Action, form.Fields)
 		if histErr != nil {
 			poll.Status = "FAILED"
