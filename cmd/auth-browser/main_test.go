@@ -21,7 +21,7 @@ import (
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/chromedp"
-	"github.com/thedemontuan/tuan-bank-gateway/internal/authbrowser"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/authbrowser"
 )
 
 func TestValidHistoryForm(t *testing.T) {

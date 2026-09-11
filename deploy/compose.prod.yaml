@@ -1,9 +1,9 @@
-name: bank-event-gateway
+name: acb-transaction-webhook
 
 services:
   gateway:
-    image: ${IMAGE_REF:-ghcr.io/thedemontuan/tuan-acb-webhook-gateway:latest}
-    container_name: bank-event-gateway
+    image: ${IMAGE_REF:-ghcr.io/thedemontuan/acb-transaction-webhook:latest}
+    container_name: acb-transaction-gateway
     restart: unless-stopped
     init: true
     read_only: true
@@ -14,7 +14,7 @@ services:
       APP_ENV: production
       PORT: ${PORT:-8090}
       LISTEN_ADDR: 0.0.0.0:8090
-      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-https://bank.tuannguyenviet.site}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-https://bank.example.com}
       DATA_DIR: /data
       DATABASE_PATH: /data/gateway.db
       TZ: Asia/Ho_Chi_Minh
@@ -22,12 +22,12 @@ services:
       APP_MASTER_KEY_FILE: ${APP_MASTER_KEY_FILE:-/run/secrets/app_master_key}
       POLL_MIN_INTERVAL_SEC: ${POLL_MIN_INTERVAL_SEC:-10}
       POLL_MAX_INTERVAL_SEC: ${POLL_MAX_INTERVAL_SEC:-30}
-      CLOUDFLARE_ACCESS_TEAM_NAME: ${CLOUDFLARE_ACCESS_TEAM_NAME:-thedemontuan}
+      CLOUDFLARE_ACCESS_TEAM_NAME: ${CLOUDFLARE_ACCESS_TEAM_NAME:-}
       CLOUDFLARE_ACCESS_AUD: ${CLOUDFLARE_ACCESS_AUD:-}
-      CF_ACCESS_ISSUER: ${CF_ACCESS_ISSUER:-https://${CLOUDFLARE_ACCESS_TEAM_NAME:-thedemontuan}.cloudflareaccess.com}
+      CF_ACCESS_ISSUER: ${CF_ACCESS_ISSUER:-https://${CLOUDFLARE_ACCESS_TEAM_NAME:-your-team}.cloudflareaccess.com}
       CF_ACCESS_AUDIENCE: ${CF_ACCESS_AUDIENCE:-${CLOUDFLARE_ACCESS_AUD:-}}
-      CF_ACCESS_JWKS_URL: ${CF_ACCESS_JWKS_URL:-https://${CLOUDFLARE_ACCESS_TEAM_NAME:-thedemontuan}.cloudflareaccess.com/cdn-cgi/access/certs}
-      OWNER_SUBJECTS: ${OWNER_SUBJECTS:-${CLOUDFLARE_ACCESS_OWNER_EMAIL:-nguyenviettuanbp@gmail.com}}
+      CF_ACCESS_JWKS_URL: ${CF_ACCESS_JWKS_URL:-https://${CLOUDFLARE_ACCESS_TEAM_NAME:-your-team}.cloudflareaccess.com/cdn-cgi/access/certs}
+      OWNER_SUBJECTS: ${OWNER_SUBJECTS:-${CLOUDFLARE_ACCESS_OWNER_EMAIL:-}}
       AUTH_BROWSER_URL: http://auth-browser:8181
       AUTH_BROWSER_VNC_URL: http://auth-browser:6080
     ports:
@@ -51,8 +51,8 @@ services:
           pids: 100
 
   auth-browser:
-    image: ${AUTH_BROWSER_IMAGE_REF:-ghcr.io/thedemontuan/tuan-acb-webhook-gateway-auth-browser:latest}
-    container_name: bank-gateway-auth-browser
+    image: ${AUTH_BROWSER_IMAGE_REF:-ghcr.io/thedemontuan/acb-transaction-webhook-auth-browser:latest}
+    container_name: acb-auth-browser
     restart: unless-stopped
     init: true
     user: "1000:1000"
@@ -80,7 +80,7 @@ services:
 
   cloudflared:
     image: cloudflare/cloudflared:2026.9.0
-    container_name: bank-gateway-cloudflared
+    container_name: acb-cloudflared
     restart: unless-stopped
     init: true
     read_only: true

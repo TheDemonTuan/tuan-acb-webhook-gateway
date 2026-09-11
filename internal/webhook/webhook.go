@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/thedemontuan/tuan-bank-gateway/internal/security"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/security"
 )
 
 const SignatureVersion = "v1"

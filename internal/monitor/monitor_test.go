@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/thedemontuan/tuan-bank-gateway/internal/acb"
-	"github.com/thedemontuan/tuan-bank-gateway/internal/storage"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/acb"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/storage"
 )
 
 type mockBankClient struct {

@@ -16,7 +16,7 @@ permissions:
   packages: write
 
 concurrency:
-  group: tuan-bank-gateway-production
+  group: acb-transaction-webhook-production
   cancel-in-progress: false
 
 jobs:
@@ -48,17 +48,9 @@ jobs:
         run: bash -n deploy/*.sh
       - name: Check generated source and whitespace
         run: git diff --check
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: Dockerfile.auth-browser
-          push: false
-          tags: tuan-bank-gateway-auth-browser:deploy-smoke
-          load: true
 
-  image:
-    name: Build GHCR image
+  build-gateway-image:
+    name: Build gateway GHCR image
     needs: verify
     runs-on: ${{ vars.BUILD_RUNNER || 'ubuntu-24.04-arm' }}
     permissions:
@@ -67,8 +59,6 @@ jobs:
     outputs:
       image: ${{ steps.meta.outputs.image }}
       digest: ${{ steps.build.outputs.digest }}
-      browser_image: ${{ steps.meta.outputs.browser_image }}
-      browser_digest: ${{ steps.build_browser.outputs.digest }}
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
@@ -85,7 +75,6 @@ jobs:
           set -euo pipefail
           repo_lc="$(printf '%s' "$REPO" | tr '[:upper:]' '[:lower:]')"
           echo "image=ghcr.io/${repo_lc}" >> "$GITHUB_OUTPUT"
-          echo "browser_image=ghcr.io/${repo_lc}-auth-browser" >> "$GITHUB_OUTPUT"
       - id: build
         uses: docker/build-push-action@v7
         with:
@@ -98,7 +87,34 @@ jobs:
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-      - id: build_browser
+
+  build-auth-browser-image:
+    name: Build auth-browser GHCR image
+    needs: verify
+    runs-on: ${{ vars.BUILD_RUNNER || 'ubuntu-24.04-arm' }}
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Resolve image name
+        id: meta
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          repo_lc="$(printf '%s' "$REPO" | tr '[:upper:]' '[:lower:]')"
+          echo "image=ghcr.io/${repo_lc}-auth-browser" >> "$GITHUB_OUTPUT"
+      - id: build
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -106,19 +122,19 @@ jobs:
           push: true
           platforms: ${{ vars.DEPLOY_PLATFORM || 'linux/arm64' }}
           tags: |
-            ${{ steps.meta.outputs.browser_image }}:sha-${{ github.sha }}
-            ${{ steps.meta.outputs.browser_image }}:latest
+            ${{ steps.meta.outputs.image }}:sha-${{ github.sha }}
+            ${{ steps.meta.outputs.image }}:latest
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
       - name: Smoke test published auth-browser image
         env:
-          AUTH_BROWSER_IMAGE: ${{ steps.meta.outputs.browser_image }}@${{ steps.build_browser.outputs.digest }}
+          AUTH_BROWSER_IMAGE: ${{ steps.meta.outputs.image }}@${{ steps.build.outputs.digest }}
         run: bash deploy/smoke-test-auth-browser.sh "$AUTH_BROWSER_IMAGE"
 
   deploy:
     name: Deploy to VPS
-    needs: [verify, image]
+    needs: [verify, build-gateway-image, build-auth-browser-image]
     if: github.event_name == 'push' || inputs.deploy
     runs-on: ubuntu-latest
     environment: production
@@ -139,7 +155,7 @@ jobs:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
           VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || vars.DEPLOY_PATH || '/opt/tuan-bank-gateway' }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || vars.DEPLOY_PATH || '/opt/acb-transaction-webhook' }}
         run: |
           set -euo pipefail
           ssh -i ~/.ssh/id_ed25519 -p "$VPS_PORT" -o BatchMode=yes \
@@ -155,13 +171,13 @@ jobs:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
           VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || vars.DEPLOY_PATH || '/opt/tuan-bank-gateway' }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || vars.DEPLOY_PATH || '/opt/acb-transaction-webhook' }}
           DASHBOARD_OWNER_EMAIL: ${{ vars.DASHBOARD_OWNER_EMAIL }}
         run: |
           set -euo pipefail
           [[ -n "$DASHBOARD_OWNER_EMAIL" ]] || { printf 'DASHBOARD_OWNER_EMAIL is required.\n' >&2; exit 1; }
-          image="${{ needs.image.outputs.image }}@${{ needs.image.outputs.digest }}"
-          browser_image="${{ needs.image.outputs.browser_image }}@${{ needs.image.outputs.browser_digest }}"
+          image="${{ needs.build-gateway-image.outputs.image }}@${{ needs.build-gateway-image.outputs.digest }}"
+          browser_image="${{ needs.build-auth-browser-image.outputs.image }}@${{ needs.build-auth-browser-image.outputs.digest }}"
           owner="$(printf '%s' "$DASHBOARD_OWNER_EMAIL" | tr '[:upper:]' '[:lower:]')"
           ssh -i ~/.ssh/id_ed25519 -p "$VPS_PORT" -o BatchMode=yes \
             "$VPS_USER@$VPS_HOST" "DEPLOY_PATH='$DEPLOY_PATH' OWNER='$owner' IMAGE='$image' BROWSER_IMAGE='$browser_image' bash -s" <<'REMOTE'

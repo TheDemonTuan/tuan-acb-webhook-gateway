@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/thedemontuan/tuan-bank-gateway/internal/storage"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/storage"
 )
 
 var defaultBackoffs = []time.Duration{

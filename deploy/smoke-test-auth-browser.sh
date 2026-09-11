@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-image_ref="${1:-${AUTH_BROWSER_IMAGE:-ghcr.io/thedemontuan/tuan-acb-webhook-gateway-auth-browser:latest}}"
+image_ref="${1:-${AUTH_BROWSER_IMAGE:-ghcr.io/thedemontuan/acb-transaction-webhook-auth-browser:latest}}"
 container_name="${CONTAINER_NAME:-auth-browser-smoke-$$-${RANDOM}}"
 
 # Ports exposed on localhost for testing (configurable)

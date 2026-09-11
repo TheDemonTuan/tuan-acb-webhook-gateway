@@ -6,9 +6,9 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/thedemontuan/tuan-bank-gateway/internal/authbrowser"
-	"github.com/thedemontuan/tuan-bank-gateway/internal/security"
-	"github.com/thedemontuan/tuan-bank-gateway/internal/storage"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/authbrowser"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/security"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/storage"
 )
 
 type SessionRestorer interface {

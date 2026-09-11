@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/thedemontuan/tuan-bank-gateway/internal/authbrowser"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/authbrowser"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

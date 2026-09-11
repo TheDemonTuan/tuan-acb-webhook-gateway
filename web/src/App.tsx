@@ -1273,7 +1273,7 @@ export default function App() {
       <header>
         <div>
           <span className="eyebrow">NGÂN HÀNG Á CHÂU · ACB ONE WEB</span>
-          <h1>TuanBankGateway</h1>
+          <h1>ACB Transaction Webhook</h1>
           <p className="muted">Cổng theo dõi giao dịch ACB độc lập và phân phối webhook bảo mật.</p>
         </div>
         <div className="badge">{status?.service ?? 'UNREACHABLE'}</div>

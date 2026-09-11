@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/thedemontuan/tuan-bank-gateway/internal/authbrowser"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/authbrowser"
 )
 
 const (

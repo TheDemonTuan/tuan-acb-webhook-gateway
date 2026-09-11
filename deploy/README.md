@@ -15,7 +15,7 @@ This directory contains the Go/Bun v2 deployment baseline. The ACB browser sidec
 
 ```bash
 cd deploy
-./deploy.sh ghcr.io/owner/tuan-bank-gateway@sha256:<64-hex-digest>
+./deploy.sh ghcr.io/owner/acb-transaction-webhook@sha256:<64-hex-digest>
 ```
 
 The image workflow publishes a tag; resolve its immutable digest before deploying. Do not deploy `latest`.

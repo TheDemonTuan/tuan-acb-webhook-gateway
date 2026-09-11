@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/thedemontuan/tuan-bank-gateway/internal/config"
-	"github.com/thedemontuan/tuan-bank-gateway/internal/storage"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/config"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/storage"
 )
 
 func TestAdminLifecycle(t *testing.T) {

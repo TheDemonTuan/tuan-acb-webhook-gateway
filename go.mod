@@ -1,4 +1,4 @@
-module github.com/thedemontuan/tuan-bank-gateway
+module github.com/thedemontuan/acb-transaction-webhook
 
 go 1.27.1
 

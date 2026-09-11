@@ -14,7 +14,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/thedemontuan/tuan-bank-gateway/internal/config"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/config"
 )
 
 type Role string

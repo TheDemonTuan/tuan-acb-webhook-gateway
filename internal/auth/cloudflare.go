@@ -14,7 +14,7 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
-	"github.com/thedemontuan/tuan-bank-gateway/internal/config"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/config"
 )
 
 type CloudflareVerifier struct {

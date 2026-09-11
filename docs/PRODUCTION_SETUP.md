@@ -6,7 +6,7 @@ GitHub Actions can build and deploy the gateway after these one-time steps. It c
 
 - Linux VPS with local SSD, Docker Engine + Compose v2, a non-root deploy user, and no public Docker API.
 - Install GitHub Container Registry access for the deploy user if the package is private.
-- Create `${DEPLOY_PATH:-/opt/tuan-bank-gateway}/deploy`, `${DEPLOY_PATH}/secrets`, owned by the deploy user.
+- Create `${DEPLOY_PATH:-/opt/acb-transaction-webhook}/deploy`, `${DEPLOY_PATH}/secrets`, owned by the deploy user.
 - Copy `.env.example` into `${DEPLOY_PATH}/deploy/.env.production`, replace all placeholders, and restrict it to `0600`.
 - Generate one key: `openssl rand -base64 32 > ${DEPLOY_PATH}/deploy/secrets/app_master_key`; `chmod 600` it. Confirm it decodes to exactly 32 bytes.
 - Set backup destination and perform a restore drill before activation. The current backup script deliberately refuses a live SQLite copy; online backup is a later implementation gate.
@@ -29,7 +29,7 @@ Create a protected `production` environment and configure these secrets:
 | `VPS_SSH_KEY` | deploy user's restricted Ed25519 private key |
 | `VPS_KNOWN_HOSTS` | pinned `ssh-keyscan` output verified by operator |
 
-Create repository variable `DEPLOY_PATH` if not using `/opt/tuan-bank-gateway`. Require environment approval for production deployments. Actions uploads deployment manifests and deploys the image digest emitted by Buildx; it never deploys a mutable `latest` tag.
+Create repository variable `DEPLOY_PATH` if not using `/opt/acb-transaction-webhook`. Require environment approval for production deployments. Actions uploads deployment manifests and deploys the image digest emitted by Buildx; it never deploys a mutable `latest` tag.
 
 ## 4. Current safety boundary
 

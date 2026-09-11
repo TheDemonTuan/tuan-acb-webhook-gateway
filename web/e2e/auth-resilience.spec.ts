@@ -62,12 +62,12 @@ test.describe('ACB Auth & Error Resilience', () => {
       await route.fulfill({
         status: 502,
         contentType: 'text/html',
-        body: '<!DOCTYPE html><title>tuannguyenviet.site | 502: Bad gateway</title><body>Bad gateway</body>',
+        body: '<!DOCTYPE html><title>example.com | 502: Bad gateway</title><body>Bad gateway</body>',
       });
     });
 
     await page.goto('/');
-    await expect(page.getByText('TuanBankGateway')).toBeVisible();
+    await expect(page.getByText('ACB Transaction Webhook')).toBeVisible();
 
     await page.getByRole('button', { name: 'Kết nối ACB' }).click();
     await expect(page.getByRole('heading', { name: /Đăng nhập & Xác thực ACB/ })).toBeVisible();

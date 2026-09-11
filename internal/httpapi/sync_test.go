@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/thedemontuan/tuan-bank-gateway/internal/config"
-	"github.com/thedemontuan/tuan-bank-gateway/internal/monitor"
-	"github.com/thedemontuan/tuan-bank-gateway/internal/storage"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/config"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/monitor"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/storage"
 )
 
 type syncRecorder struct {

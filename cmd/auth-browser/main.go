@@ -26,7 +26,7 @@ import (
 	"github.com/chromedp/cdproto/storage"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
-	"github.com/thedemontuan/tuan-bank-gateway/internal/authbrowser"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/authbrowser"
 )
 
 const (

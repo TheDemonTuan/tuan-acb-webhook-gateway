@@ -17,13 +17,13 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/thedemontuan/tuan-bank-gateway/internal/auth"
-	"github.com/thedemontuan/tuan-bank-gateway/internal/authbrowser"
-	"github.com/thedemontuan/tuan-bank-gateway/internal/config"
-	"github.com/thedemontuan/tuan-bank-gateway/internal/httpui"
-	"github.com/thedemontuan/tuan-bank-gateway/internal/monitor"
-	"github.com/thedemontuan/tuan-bank-gateway/internal/security"
-	"github.com/thedemontuan/tuan-bank-gateway/internal/storage"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/auth"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/authbrowser"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/config"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/httpui"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/monitor"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/security"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/storage"
 )
 
 type SyncRequester interface {

@@ -1,41 +1,255 @@
-# TuanBankGateway v2
+# ACB Transaction Webhook
 
-ACB ONE Web monitor and signed bank-event webhook gateway.
+[![CI](https://github.com/TheDemonTuan/acb-transaction-webhook/actions/workflows/ci.yml/badge.svg)](https://github.com/TheDemonTuan/acb-transaction-webhook/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![Go Version](https://img.shields.io/badge/Go-1.27.1-00ADD8?logo=go)](https://golang.org)
+[![Bun Version](https://img.shields.io/badge/Bun-1.4.2-FBF0DF?logo=bun)](https://bun.sh)
 
-> **Status:** PR 0 foundation. The legacy Gmail/email implementation is being replaced. This repository does not yet poll ACB or accept production authentication. Do not deploy it for financial monitoring until the protocol and browser handoff gates described in `PLAN_ACB_WEB_MONITOR_SERVICE_PRODUCTION.md` have passed.
+A secure, high-performance service that monitors transaction history from Asia Commercial Bank (ACB ONE Web) and automatically dispatches signed webhooks to your applications in real-time.
+
+---
+
+## Highlights & Features
+
+- **Automated Bank Transaction Monitoring**: Continuously monitors ACB bank accounts for incoming and outgoing transactions with adaptive polling.
+- **Reliable Webhook Delivery**:
+  - Signed webhooks with HMAC-SHA256 (`X-Signature-SHA256`) for tamper-proof validation.
+  - Automatic retry policy with exponential backoff on delivery failures.
+  - Webhook delivery history log with response status codes and replay capabilities.
+  - Built-in **SSRF protection** preventing webhooks from targeting internal/private network IP ranges.
+- **Zero-Trust Security**:
+  - Sandboxed Chromium browser container (`auth-browser`) for interactive login and session capture without exposing raw credentials.
+  - Cloudflare Access (Zero Trust) JWT authentication with role-based access control (`OWNER`, `OPERATOR`, `VIEWER`).
+  - Stored credentials and tokens encrypted with **AES-256-GCM** using a master key.
+  - Single-instance SQLite database running in WAL mode with strict process file locks.
+- **Embedded Web Management Dashboard**:
+  - Fast single-page application (SPA) built with React 19, TypeScript, and Tailwind CSS.
+  - Compiled directly into the standalone Go binary — zero external static file dependencies.
+  - Manage webhook endpoints, inspect transactions, monitor sync status, and launch authenticated bank sessions.
+- **Container-First CI/CD**:
+  - Independent, parallel image build jobs for the Gateway and Auth Browser in GitHub Actions.
+  - Ready-to-use Docker Compose configurations for production deployment with Cloudflare Tunnel.
+
+---
 
 ## Architecture
 
-- **Go 1.27.1:** gateway HTTP API, SQLite WAL foundation, crypto, migrations, and future monitor/webhook/browser-controller logic.
-- **Bun 1.4.2:** frontend package manager, build and tests only.
-- **React + Vite:** dashboard static bundle embedded in the Go gateway binary.
-- **SQLite WAL:** one local gateway process protected by a file lock.
-
-## Local foundation check
-
-```bash
-export PATH="$HOME/.local/go-1.27.1/bin:$PATH"
-cd web && bun install && bun run build && bun run test && cd ..
-go test ./...
-DATA_DIR=/tmp/tuan-bank-gateway LISTEN_ADDR=127.0.0.1:8080 go run ./cmd/gateway
+```
+                                  +-----------------------------+
+                                  |    Cloudflare Zero Trust    |
+                                  |    (Access + Tunnel)        |
+                                  +--------------+--------------+
+                                                 |
+                                                 v
++------------------+              +-----------------------------+              +----------------------+
+|     ACB ONE      | <----------> |     acb-transaction-gateway | -----------> |   Webhook Endpoint   |
+|   Online Bank    |  (Session)   |  (Go API + Embedded React)  |  (HMAC-SHA)  |  (Your Application)  |
++--------^---------+              +--------------+--------------+              +----------------------+
+         |                                       |
+         | (Auth handoff)                        | (Local RPC / VNC)
++--------+---------+                             |
+|   auth-browser   | <---------------------------+
+| (Isolated Chrome)|
++------------------+
 ```
 
-Then check:
+---
+
+## Quick Start with Docker Compose
+
+### 1. Clone the repository
 
 ```bash
-curl http://127.0.0.1:8080/healthz
-curl http://127.0.0.1:8080/api/v1/status
+git clone https://github.com/TheDemonTuan/acb-transaction-webhook.git
+cd acb-transaction-webhook
 ```
 
-## Safety
+### 2. Configure Environment
 
-- Do not put ACB password, OTP, CAPTCHA, cookies, session fields or raw bank pages into source control, logs, screenshots, or test fixtures.
-- The default server binding is loopback. Production administration must be protected by Cloudflare Access before public routing is enabled.
-- One local SQLite volume supports one gateway process only. Backups and restoration drills are required before production.
+Copy `.env.example` to `deploy/.env.production` and generate an encryption master key:
 
-## Next gates
+```bash
+cp .env.example deploy/.env.production
 
-1. Verify the pinned Bun/Go toolchains and browser sandbox on the target VPS.
-2. Perform an authorized, manual ACB login proof of concept.
-3. Prove browser-to-Go session handoff, dynamic request state, pagination and reconciliation before enabling polling.
-4. Add the remaining authenticated API, monitor, webhook and browser-controller phases with their security tests.
+# Generate a 32-byte base64 master key
+mkdir -p deploy/secrets
+openssl rand -base64 32 > deploy/secrets/app_master_key
+chmod 600 deploy/secrets/app_master_key
+```
+
+Edit `deploy/.env.production` with your preferred configuration (domains, Cloudflare Access audience/team, etc.).
+
+### 3. Start the services
+
+```bash
+cd deploy
+docker compose -f compose.prod.yaml up -d
+```
+
+The gateway will be accessible on `http://127.0.0.1:8090` (or through your configured Cloudflare Tunnel hostname).
+
+---
+
+## Local Development Setup
+
+### Prerequisites
+
+- **Go 1.27+**
+- **Bun 1.4+**
+- **Docker** (optional, for auth-browser testing)
+
+### Build and Run
+
+1. **Build the web frontend:**
+
+```bash
+cd web
+bun install --frozen-lockfile
+bun run build
+cd ..
+```
+
+2. **Run backend unit and integration tests:**
+
+```bash
+go test -race ./...
+```
+
+3. **Start the gateway locally:**
+
+```bash
+export APP_ENV=development
+export LISTEN_ADDR=127.0.0.1:8080
+export DATA_DIR=/tmp/acb-transaction-webhook
+go run ./cmd/gateway
+```
+
+Visit `http://127.0.0.1:8080` in your browser.
+
+---
+
+## Webhook Payload Specification
+
+When a new transaction is detected, the gateway sends an HTTP POST request to all active webhook endpoints.
+
+### Headers
+
+| Header | Description |
+|---|---|
+| `Content-Type` | `application/json` |
+| `X-Signature-SHA256` | Hex-encoded HMAC-SHA256 signature calculated over the raw request body with your webhook secret |
+| `X-Event-ID` | Unique UUID representing the transaction delivery event |
+| `User-Agent` | `ACB-Transaction-Webhook/2.0` |
+
+### JSON Payload Example
+
+```json
+{
+  "event_id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+  "event_type": "transaction.created",
+  "timestamp": "2026-09-11T08:30:00Z",
+  "data": {
+    "account_number": "12345678",
+    "transaction_id": "ACB1234567890",
+    "amount": 500000.0,
+    "currency": "VND",
+    "transaction_type": "IN",
+    "balance_after": 15500000.0,
+    "description": "CHUYEN TIEN THANH TOAN DON HANG 9876",
+    "transaction_time": "2026-09-11T08:28:15Z"
+  }
+}
+```
+
+### Verifying Signatures in Your Webhook Receiver
+
+#### Node.js / Express Example
+
+```javascript
+import crypto from 'crypto';
+
+function verifyWebhookSignature(req, secret) {
+  const signature = req.headers['x-signature-sha256'];
+  if (!signature) return false;
+
+  const expectedSignature = crypto
+    .createHmac('sha256', secret)
+    .update(req.rawBody)
+    .digest('hex');
+
+  return crypto.timingSafeEqual(
+    Buffer.from(signature, 'hex'),
+    Buffer.from(expectedSignature, 'hex')
+  );
+}
+```
+
+#### Go Example
+
+```go
+package main
+
+import (
+    "crypto/hmac"
+    "crypto/sha256"
+    "encoding/hex"
+)
+
+func VerifySignature(payload []byte, secret, expectedSig string) bool {
+    mac := hmac.New(sha256.New, []byte(secret))
+    mac.Write(payload)
+    actualSig := hex.EncodeToString(mac.Sum(nil))
+    return hmac.Equal([]byte(actualSig), []byte(expectedSig))
+}
+```
+
+---
+
+## CI/CD Pipeline
+
+The project includes GitHub Actions workflows configured with parallelization:
+
+- **`.github/workflows/ci.yml`**:
+  - Frontend typecheck & Vite build.
+  - Go unit tests with race detection (`go test -race ./...`).
+  - Parallel Docker smoke test jobs:
+    - `docker-smoke-gateway`: verifies `/gateway --healthcheck`.
+    - `docker-smoke-auth-browser`: verifies `/auth-browser --healthcheck` and container isolation.
+- **`.github/workflows/deploy.yml`**:
+  - Independent parallel GHCR image builds for Gateway and Auth-Browser (`build-gateway-image` & `build-auth-browser-image`).
+  - Automated deployment over SSH to production VPS with verification and atomic rollback scripts.
+
+---
+
+## Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `APP_ENV` | `production` | Environment mode (`development` or `production`) |
+| `LISTEN_ADDR` | `0.0.0.0:8080` | Bind address for the HTTP gateway |
+| `PORT` | `8090` | Container exposed port |
+| `PUBLIC_ORIGIN` | `https://bank.example.com` | Public base URL used for CORS and CSRF validation |
+| `DATA_DIR` | `/data` | Directory for SQLite database and state files |
+| `DATABASE_PATH` | `/data/gateway.db` | Path to SQLite database file |
+| `APP_MASTER_KEY_FILE` | `/run/secrets/app_master_key` | Path to 32-byte encryption key |
+| `DEFAULT_POLL_INTERVAL_SEC` | `15` | Default transaction sync interval in seconds |
+| `FAST_POLL_INTERVAL_SEC` | `5` | Polling interval during active transaction bursts |
+| `CLOUDFLARE_ACCESS_AUD` | - | Cloudflare Access Application Audience tag |
+| `CF_ACCESS_ISSUER` | - | Cloudflare Access team issuer URL |
+| `CF_ACCESS_JWKS_URL` | - | Cloudflare Access JWKS certificate URL |
+| `OWNER_SUBJECTS` | - | Comma-separated list of admin email subjects |
+
+---
+
+## Security Best Practices
+
+1. **Never commit secrets**: Master keys, Cloudflare tokens, and banking session data should never be committed into git.
+2. **Use Cloudflare Access**: Always restrict gateway access behind Cloudflare Access or a VPN in production environments.
+3. **SSRF Guard**: The gateway automatically blocks internal RFC1918 subnets, link-local, and loopback IPs when sending webhooks.
+4. **Isolated Chromium Container**: The browser runs inside an unprivileged Docker sandbox with a custom seccomp profile (`deploy/seccomp-auth-browser.json`).
+
+---
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

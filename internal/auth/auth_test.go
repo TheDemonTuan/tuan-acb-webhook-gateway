@@ -3,7 +3,7 @@ package auth
 import (
 	"context"
 
-	"github.com/thedemontuan/tuan-bank-gateway/internal/config"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/config"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -88,7 +88,7 @@ func TestProductionDoesNotGrantRoleFromJWTSubject(t *testing.T) {
 }
 
 func TestCSRFBehindHTTPSProxyUsesPublicOrigin(t *testing.T) {
-	t.Setenv("PUBLIC_ORIGIN", "https://bank.tuannguyenviet.site")
+	t.Setenv("PUBLIC_ORIGIN", "https://bank.example.com")
 	m := New(config.Config{DevelopmentSubject: "alice"}, nil)
 	h := m.Require(Owner)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
 
@@ -101,7 +101,7 @@ func TestCSRFBehindHTTPSProxyUsesPublicOrigin(t *testing.T) {
 	}
 
 	post := httptest.NewRequest(http.MethodPost, "http://gateway:8090/api/v1/connection/configure", nil)
-	post.Header.Set("Origin", "https://bank.tuannguyenviet.site")
+	post.Header.Set("Origin", "https://bank.example.com")
 	post.Header.Set("X-CSRF-Token", cookie.Value)
 	post.AddCookie(cookie)
 	rec := httptest.NewRecorder()

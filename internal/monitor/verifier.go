@@ -5,7 +5,7 @@ import (
 	"errors"
 	"log/slog"
 
-	"github.com/thedemontuan/tuan-bank-gateway/internal/acb"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/acb"
 )
 
 type SessionVerifier struct {

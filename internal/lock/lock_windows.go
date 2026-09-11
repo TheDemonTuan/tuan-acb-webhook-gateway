@@ -1,9 +1,12 @@
+//go:build windows
+
 package lock
 
 import (
 	"fmt"
 	"os"
-	"syscall"
+
+	"golang.org/x/sys/windows"
 )
 
 type FileLock struct{ file *os.File }
@@ -13,16 +16,20 @@ func Acquire(path string) (*FileLock, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	var overlapped windows.Overlapped
+	err = windows.LockFileEx(windows.Handle(f.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &overlapped)
+	if err != nil {
 		_ = f.Close()
 		return nil, fmt.Errorf("another gateway instance holds %s: %w", path, err)
 	}
 	return &FileLock{file: f}, nil
 }
+
 func (l *FileLock) Close() error {
 	if l == nil || l.file == nil {
 		return nil
 	}
-	_ = syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN)
+	var overlapped windows.Overlapped
+	_ = windows.UnlockFileEx(windows.Handle(l.file.Fd()), 0, 1, 0, &overlapped)
 	return l.file.Close()
 }

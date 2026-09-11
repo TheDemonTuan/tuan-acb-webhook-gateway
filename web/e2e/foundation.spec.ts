@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 
 test('configures a connection and reflects the state across routes', async ({ page }) => {
   await page.goto('/');
-  await expect(page).toHaveTitle('TuanBankGateway — ACB Web Monitor');
+  await expect(page).toHaveTitle('ACB Transaction Webhook — Monitor & Gateway');
   await page.getByRole('button', { name: 'Kết nối ACB' }).click();
   const accountInput = page.getByLabel('Số tài khoản đã che');
   if (await accountInput.count()) {
@@ -31,7 +31,7 @@ test('creates and enables a guarded HTTPS webhook endpoint', async ({ page }, te
 
 test('serves the dashboard on a future SPA route', async ({ page }) => {
   await page.goto('/transactions');
-  await expect(page.getByRole('heading', { name: 'TuanBankGateway' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'ACB Transaction Webhook' })).toBeVisible();
   await page.getByRole('button', { name: 'Giao dịch' }).click();
   await expect(page.getByRole('heading', { name: 'Giao dịch' })).toBeVisible();
 });

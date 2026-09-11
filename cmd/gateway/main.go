@@ -15,14 +15,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/thedemontuan/tuan-bank-gateway/internal/acb"
-	"github.com/thedemontuan/tuan-bank-gateway/internal/config"
-	"github.com/thedemontuan/tuan-bank-gateway/internal/httpapi"
-	"github.com/thedemontuan/tuan-bank-gateway/internal/lock"
-	"github.com/thedemontuan/tuan-bank-gateway/internal/monitor"
-	"github.com/thedemontuan/tuan-bank-gateway/internal/security"
-	"github.com/thedemontuan/tuan-bank-gateway/internal/storage"
-	"github.com/thedemontuan/tuan-bank-gateway/internal/webhook"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/acb"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/config"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/httpapi"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/lock"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/monitor"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/security"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/storage"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/webhook"
 )
 
 func main() {
