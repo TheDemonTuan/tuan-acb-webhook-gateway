@@ -552,3 +552,106 @@ func TestAuthBrowserCurrentAndResumeIdempotent(t *testing.T) {
 	}
 }
 
+func TestStartAuthTransientFailurePreservesAttempt(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.Open(ctx, filepath.Join(t.TempDir(), "gateway.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err = store.ConfigureConnection(ctx, "***1234"); err != nil {
+		t.Fatal(err)
+	}
+
+	upstreamStatus := http.StatusServiceUnavailable
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"attemptId": "auth_test_transient",
+				"status":    "AWAITING_USER_LOGIN",
+				"screenUrl": "/",
+				"expiresAt": time.Now().Add(15 * time.Minute).Format(time.RFC3339),
+			})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(upstreamStatus)
+		if upstreamStatus == http.StatusOK {
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"attemptId": "auth_test_transient",
+				"status":    "AWAITING_USER_LOGIN",
+				"screenUrl": "/",
+				"expiresAt": time.Now().Add(15 * time.Minute).Format(time.RFC3339),
+			})
+		}
+	}))
+	defer upstream.Close()
+
+	server := New(config.Config{
+		Timezone:           time.UTC,
+		DevelopmentSubject: "owner",
+		AuthBrowserURL:     upstream.URL,
+	}, store)
+	h := server.Handler()
+
+	csrfReq := httptest.NewRequest(http.MethodGet, "http://example.test/api/v1/csrf", nil)
+	csrfRec := httptest.NewRecorder()
+	h.ServeHTTP(csrfRec, csrfReq)
+	cookie := csrfRec.Result().Cookies()[0]
+	var token struct{ Token string }
+	_ = json.NewDecoder(csrfRec.Result().Body).Decode(&token)
+
+	post := func(path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, "http://example.test"+path, strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Origin", "http://example.test")
+		r.Header.Set("X-CSRF-Token", token.Token)
+		r.AddCookie(cookie)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+
+	// 1. First start -> 201 Created
+	wStart1 := post("/api/v1/connection/auth/start", `{}`)
+	if wStart1.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created, got %d: %s", wStart1.Code, wStart1.Body.String())
+	}
+
+	active1, found1, err := store.ActiveAuthAttemptForOwner(ctx, "")
+	if err != nil || !found1 {
+		t.Fatalf("expected active attempt in DB, err=%v", err)
+	}
+
+	// 2. Upstream status experiences transient 503 error
+	upstreamStatus = http.StatusServiceUnavailable
+	wStartTransient := post("/api/v1/connection/auth/start", `{}`)
+	if wStartTransient.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 for transient browser failure, got %d: %s", wStartTransient.Code, wStartTransient.Body.String())
+	}
+
+	// Active attempt must NOT be marked FAILED
+	active2, found2, err := store.ActiveAuthAttemptForOwner(ctx, "")
+	if err != nil || !found2 {
+		t.Fatalf("active attempt must be preserved across transient errors, err=%v", err)
+	}
+	if active2.ID != active1.ID || active2.Status != "IN_PROGRESS" {
+		t.Fatalf("attempt state corrupted: %+v", active2)
+	}
+
+	// 3. Upstream recovers -> resume succeeds with 200 OK
+	upstreamStatus = http.StatusOK
+	wStartRecovered := post("/api/v1/connection/auth/start", `{}`)
+	if wStartRecovered.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK after recovery, got %d: %s", wStartRecovered.Code, wStartRecovered.Body.String())
+	}
+
+	// 4. Upstream 404 (session genuinely gone) -> marks FAILED and starts new attempt (201 Created)
+	upstreamStatus = http.StatusNotFound
+	wStart404 := post("/api/v1/connection/auth/start", `{}`)
+	if wStart404.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created after 404 cleanup, got %d: %s", wStart404.Code, wStart404.Body.String())
+	}
+}
+

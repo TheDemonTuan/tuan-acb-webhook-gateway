@@ -11,14 +11,17 @@ This directory contains the Go/Bun v2 deployment baseline. The ACB browser sidec
 5. Apply host egress firewall controls before enabling future ACB browser automation. Docker bridge alone is not an egress allowlist.
 6. Use a local SSD-backed volume and configure encrypted off-VPS backups plus a restore drill.
 
-## Deploy an immutable image
+## Deploy immutable images
 
 ```bash
 cd deploy
-./deploy.sh ghcr.io/owner/acb-transaction-webhook@sha256:<64-hex-digest>
+./deploy.sh \
+  ghcr.io/owner/acb-transaction-webhook@sha256:<gateway-digest> \
+  ghcr.io/owner/acb-transaction-webhook-auth-browser@sha256:<browser-digest> \
+  ghcr.io/owner/acb-transaction-webhook-tts-gateway@sha256:<tts-digest>
 ```
 
-The image workflow publishes a tag; resolve its immutable digest before deploying. Do not deploy `latest`.
+The image workflow publishes tags; resolve immutable digests before deploying. Do not deploy `latest`. `deploy.sh` automatically provisions `secrets/app_master_key` and `secrets/tts_internal_token` with UID 1000 compatibility if they do not already exist.
 
 ## Health
 

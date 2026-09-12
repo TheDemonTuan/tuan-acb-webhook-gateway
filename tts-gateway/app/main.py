@@ -1,5 +1,6 @@
 """FastAPI Application for TTS Gateway."""
 import asyncio
+from contextlib import asynccontextmanager
 import logging
 import secrets
 from typing import List, Optional
@@ -22,7 +23,17 @@ from app.providers.gtts import GTTSProvider
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("tts-gateway")
 
-app = FastAPI(title="TTS Gateway", version="1.0.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    if config.require_auth:
+        token = config.get_token()
+        if not token:
+            raise RuntimeError(
+                "TTS_REQUIRE_AUTH is enabled but internal token is missing, unreadable, or empty"
+            )
+    yield
+
+app = FastAPI(title="TTS Gateway", version="1.0.0", lifespan=lifespan)
 
 edge_provider = EdgeTTSProvider()
 gtts_provider = GTTSProvider()
@@ -32,6 +43,7 @@ edge_circuit = CircuitBreaker(
 )
 cache = TTSCache(
     max_items=config.cache_max_items,
+    max_bytes=config.cache_max_bytes,
     ttl_seconds=config.cache_ttl_seconds,
 )
 

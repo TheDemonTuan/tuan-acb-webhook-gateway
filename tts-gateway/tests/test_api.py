@@ -68,3 +68,42 @@ async def test_synthesize_fallback_to_gtts(monkeypatch):
         assert resp.headers["x-tts-provider"] == "gtts"
         assert resp.headers["x-tts-fallback"] == "true"
         assert resp.content == b"fake_gtts_audio"
+
+@pytest.mark.asyncio
+async def test_cache_max_bytes_configured():
+    from app.main import cache
+    from app.config import config
+    assert cache.max_bytes == config.cache_max_bytes
+
+@pytest.mark.asyncio
+async def test_auth_enforcement(monkeypatch):
+    from app.config import config
+    monkeypatch.setattr(config, "internal_token", "secret-test-token")
+    monkeypatch.setattr(config, "token_file", "")
+    monkeypatch.setattr(config, "require_auth", True)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        # 1. No token -> 401
+        resp = await ac.get("/voices")
+        assert resp.status_code == 401
+
+        # 2. Invalid token -> 401
+        resp = await ac.get("/voices", headers={"X-Internal-TTS-Token": "wrong-token"})
+        assert resp.status_code == 401
+
+        # 3. Valid token -> 200
+        resp = await ac.get("/voices", headers={"X-Internal-TTS-Token": "secret-test-token"})
+        assert resp.status_code == 200
+
+@pytest.mark.asyncio
+async def test_lifespan_fail_when_auth_required_without_token(monkeypatch):
+    from app.main import lifespan
+    from app.config import config
+    monkeypatch.setattr(config, "internal_token", "")
+    monkeypatch.setattr(config, "token_file", "")
+    monkeypatch.setattr(config, "require_auth", True)
+
+    with pytest.raises(RuntimeError, match="TTS_REQUIRE_AUTH is enabled but internal token is missing"):
+        async with lifespan(app):
+            pass

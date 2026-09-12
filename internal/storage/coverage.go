@@ -82,14 +82,14 @@ func (s *Store) CheckRangeCoverage(ctx context.Context, connectionID string, fro
 	return true, nil
 }
 
-// RecordCoverage records successful sync coverage for a list of days.
-func (s *Store) RecordCoverage(ctx context.Context, connectionID string, days []string, rowsSeen int) error {
-	if connectionID == "" || len(days) == 0 {
+// RecordCoveragePerDay records successful sync coverage for a map of day -> rowsSeen.
+func (s *Store) RecordCoveragePerDay(ctx context.Context, connectionID string, dayRows map[string]int) error {
+	if connectionID == "" || len(dayRows) == 0 {
 		return nil
 	}
 	nowStr := time.Now().UTC().Format(time.RFC3339Nano)
 	return s.withTx(ctx, func(tx *sql.Tx) error {
-		for _, day := range days {
+		for day, rows := range dayRows {
 			recID := id("cov")
 			_, err := tx.ExecContext(ctx, `
 				INSERT INTO history_coverage(id, connection_id, day, status, last_sync_at, rows_seen)
@@ -98,11 +98,23 @@ func (s *Store) RecordCoverage(ctx context.Context, connectionID string, days []
 					status = 'COMPLETE',
 					last_sync_at = excluded.last_sync_at,
 					rows_seen = excluded.rows_seen
-			`, recID, connectionID, day, nowStr, rowsSeen)
+			`, recID, connectionID, day, nowStr, rows)
 			if err != nil {
 				return err
 			}
 		}
 		return nil
 	})
+}
+
+// RecordCoverage records successful sync coverage for a list of days.
+func (s *Store) RecordCoverage(ctx context.Context, connectionID string, days []string, rowsSeen int) error {
+	if len(days) == 0 {
+		return nil
+	}
+	dayRows := make(map[string]int, len(days))
+	for _, day := range days {
+		dayRows[day] = rowsSeen
+	}
+	return s.RecordCoveragePerDay(ctx, connectionID, dayRows)
 }

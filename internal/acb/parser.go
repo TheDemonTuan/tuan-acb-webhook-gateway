@@ -20,12 +20,20 @@ type Transaction struct {
 	Description   string
 }
 
-// ParseHistory requires a recognizable table header and rejects malformed rows;
-// callers must quarantine rejected pages rather than treating them as empty.
-func ParseHistory(markup string) ([]Transaction, error) {
+type HistoryPageResult struct {
+	Transactions []Transaction
+	HasNext      bool
+	NextAction   string
+	NextFields   map[string]string
+	TotalRows    int
+	Truncated    bool
+}
+
+// ParseHistoryPage parses an ACB history page, returning transactions and pagination signals.
+func ParseHistoryPage(markup string) (HistoryPageResult, error) {
 	doc, err := html.Parse(strings.NewReader(markup))
 	if err != nil {
-		return nil, err
+		return HistoryPageResult{}, err
 	}
 	var tables []*html.Node
 	walk(doc, func(node *html.Node) {
@@ -35,6 +43,8 @@ func ParseHistory(markup string) ([]Transaction, error) {
 	})
 	var recognized bool
 	var emptyHistory bool
+	var parsedTransactions []Transaction
+
 	for _, table := range tables {
 		rows := tableRows(table)
 		headerIndex, columns := historyHeader(rows)
@@ -71,7 +81,7 @@ func ParseHistory(markup string) ([]Transaction, error) {
 				if isTableFooter(rowText) {
 					continue
 				}
-				return nil, err
+				return HistoryPageResult{}, err
 			}
 			if columns.description < 0 && i+1 < len(rows) {
 				nextRow := rows[i+1]
@@ -94,16 +104,37 @@ func ParseHistory(markup string) ([]Transaction, error) {
 			transactions = append(transactions, transaction)
 		}
 		if len(transactions) > 0 {
-			return transactions, nil
+			parsedTransactions = transactions
+			break
 		}
 	}
-	if recognized && emptyHistory {
-		return []Transaction{}, nil
+
+	if len(parsedTransactions) == 0 {
+		if recognized && emptyHistory {
+			parsedTransactions = []Transaction{}
+		} else if recognized {
+			return HistoryPageResult{}, errors.New("ACB history table has no transactions and no recognized empty-state marker")
+		} else {
+			return HistoryPageResult{}, errors.New("ACB history table schema not recognized")
+		}
 	}
-	if recognized {
-		return nil, errors.New("ACB history table has no transactions and no recognized empty-state marker")
-	}
-	return nil, errors.New("ACB history table schema not recognized")
+
+	hasNext, nextAction, nextFields, totalRows, truncated := detectPagination(doc, markup, len(parsedTransactions))
+	return HistoryPageResult{
+		Transactions: parsedTransactions,
+		HasNext:      hasNext,
+		NextAction:   nextAction,
+		NextFields:   nextFields,
+		TotalRows:    totalRows,
+		Truncated:    truncated,
+	}, nil
+}
+
+// ParseHistory requires a recognizable table header and rejects malformed rows;
+// callers must quarantine rejected pages rather than treating them as empty.
+func ParseHistory(markup string) ([]Transaction, error) {
+	page, err := ParseHistoryPage(markup)
+	return page.Transactions, err
 }
 
 func historyHeader(rows [][]string) (int, columns) {
@@ -279,4 +310,163 @@ func normalized(value string) string {
 		}
 	}
 	return strings.ReplaceAll(out.String(), " ", "")
+}
+
+func detectPagination(doc *html.Node, markup string, rowCount int) (hasNext bool, nextAction string, nextFields map[string]string, totalRows int, truncated bool) {
+	var docTextBuilder strings.Builder
+	var nextCandidates []*html.Node
+
+	var visit func(*html.Node)
+	visit = func(n *html.Node) {
+		if n.Type == html.TextNode {
+			docTextBuilder.WriteString(n.Data)
+			docTextBuilder.WriteString(" ")
+		}
+		if n.Type == html.ElementNode {
+			tag := strings.ToLower(n.Data)
+			if tag == "a" || tag == "button" || tag == "input" {
+				t := strings.ToLower(strings.TrimSpace(nodeText(n)))
+				v := strings.ToLower(strings.TrimSpace(attrVal(n, "value")))
+				class := strings.ToLower(strings.TrimSpace(attrVal(n, "class")))
+				rel := strings.ToLower(strings.TrimSpace(attrVal(n, "rel")))
+
+				isNext := rel == "next" ||
+					containsAny(t, "trang sau", "trang tiep", "trang tiếp", "trang kế", "kế tiếp") ||
+					containsAny(v, "trang sau", "trang tiep", "trang tiếp", "trang kế", "kế tiếp") ||
+					(t == "next" || v == "next" || t == ">" || t == ">>") ||
+					strings.Contains(class, "pagination-next") || strings.Contains(class, "next-page")
+
+				if isNext {
+					nextCandidates = append(nextCandidates, n)
+				}
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			visit(c)
+		}
+	}
+	visit(doc)
+
+	for _, n := range nextCandidates {
+		class := strings.ToLower(strings.TrimSpace(attrVal(n, "class")))
+		href := strings.TrimSpace(attrVal(n, "href"))
+		onclick := strings.TrimSpace(attrVal(n, "onclick"))
+		disabled := hasAttr(n, "disabled") || containsAny(class, "disabled", "inactive", "hidden")
+
+		if disabled {
+			continue
+		}
+		if n.Data == "a" && (href == "" || href == "#") && onclick == "" {
+			continue
+		}
+
+		hasNext = true
+		if href != "" && !strings.HasPrefix(strings.ToLower(href), "javascript:") && href != "#" {
+			nextAction = href
+		}
+		if form, err := ExtractHistoryForm(markup); err == nil && form.Action != "" {
+			if nextAction == "" {
+				nextAction = form.Action
+			}
+			nextFields = cloneFields(form.Fields)
+			nextFields["_raw"] = "true"
+			if ev := extractEventName(onclick); ev != "" {
+				nextFields["dse_nextEventName"] = ev
+			} else if ev := extractEventName(href); ev != "" {
+				nextFields["dse_nextEventName"] = ev
+			} else {
+				nextFields["dse_nextEventName"] = "nextPage"
+			}
+		}
+		break
+	}
+
+	fullText := docTextBuilder.String()
+	totalRows = extractTotalRows(fullText)
+	if totalRows > 0 && rowCount > 0 && rowCount < totalRows && !hasNext {
+		truncated = true
+	}
+
+	return
+}
+
+func nodeText(n *html.Node) string {
+	var b strings.Builder
+	var walkText func(*html.Node)
+	walkText = func(curr *html.Node) {
+		if curr.Type == html.TextNode {
+			b.WriteString(curr.Data)
+			b.WriteString(" ")
+		}
+		for c := curr.FirstChild; c != nil; c = c.NextSibling {
+			walkText(c)
+		}
+	}
+	walkText(n)
+	return strings.TrimSpace(b.String())
+}
+
+func attrVal(n *html.Node, key string) string {
+	for _, a := range n.Attr {
+		if strings.EqualFold(a.Key, key) {
+			return a.Val
+		}
+	}
+	return ""
+}
+
+func hasAttr(n *html.Node, key string) bool {
+	for _, a := range n.Attr {
+		if strings.EqualFold(a.Key, key) {
+			return true
+		}
+	}
+	return false
+}
+
+func extractEventName(s string) string {
+	patterns := []string{
+		"dse_nextEventName='",
+		`dse_nextEventName="`,
+		"submitEvent('",
+		`submitEvent("`,
+		"doPage('",
+		`doPage("`,
+		"doSubmit('",
+		`doSubmit("`,
+	}
+	for _, p := range patterns {
+		idx := strings.Index(s, p)
+		if idx >= 0 {
+			rem := s[idx+len(p):]
+			end := strings.IndexAny(rem, `'"`)
+			if end > 0 {
+				return rem[:end]
+			}
+		}
+	}
+	return ""
+}
+
+func extractTotalRows(text string) int {
+	normalized := strings.ToLower(text)
+	indicators := []string{"tổng số dòng:", "tổng số bản ghi:", "tổng số giao dịch:", "total rows:", "total records:"}
+	for _, ind := range indicators {
+		idx := strings.Index(normalized, ind)
+		if idx >= 0 {
+			rem := strings.TrimSpace(text[idx+len(ind):])
+			var numStr string
+			for _, r := range rem {
+				if unicode.IsDigit(r) {
+					numStr += string(r)
+				} else if len(numStr) > 0 {
+					break
+				}
+			}
+			if num, err := strconv.Atoi(numStr); err == nil && num > 0 {
+				return num
+			}
+		}
+	}
+	return 0
 }

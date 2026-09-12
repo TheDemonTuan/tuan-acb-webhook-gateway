@@ -144,6 +144,125 @@ func (m *Monitor) RequestSync(ctx context.Context) error {
 	return nil
 }
 
+type fetchHistoryResult struct {
+	Transactions []storage.BatchTransactionItem
+	PagesFetched int
+	Complete     bool
+	Truncated    bool
+	LastResponse acb.Response
+}
+
+func (m *Monitor) fetchHistoryRange(ctx context.Context, conn *storage.Connection, bootstrapResp acb.Response, fromDateStr, toDateStr string, maxPages int) (fetchHistoryResult, error) {
+	if maxPages <= 0 {
+		maxPages = 10
+	}
+
+	form, formErr := acb.ExtractHistoryForm(bootstrapResp.Body)
+	if formErr != nil {
+		return fetchHistoryResult{}, fmt.Errorf("extract history form: %w", formErr)
+	}
+	if form.Fields["AccountNbr"] == "" && conn.AccountMasked != "" {
+		form.Fields["AccountNbr"] = conn.AccountMasked
+	}
+
+	action := form.Action
+	fields := form.Fields
+	if fromDateStr != "" && toDateStr != "" {
+		fromT, err := time.Parse("2006-01-02", fromDateStr)
+		if err != nil {
+			return fetchHistoryResult{}, fmt.Errorf("invalid from date: %w", err)
+		}
+		toT, err := time.Parse("2006-01-02", toDateStr)
+		if err != nil {
+			return fetchHistoryResult{}, fmt.Errorf("invalid to date: %w", err)
+		}
+		fields["FromDate"] = fromT.Format("02/01/2006")
+		fields["ToDate"] = toT.Format("02/01/2006")
+		fields["_explicitRange"] = "true"
+	}
+
+	seenTxnNumbers := make(map[string]struct{})
+	var allBatchItems []storage.BatchTransactionItem
+	pagesFetched := 0
+	complete := false
+	truncated := false
+	var lastResp acb.Response
+
+	for pagesFetched < maxPages {
+		if err := ctx.Err(); err != nil {
+			return fetchHistoryResult{Transactions: allBatchItems, PagesFetched: pagesFetched, Complete: false}, err
+		}
+
+		histResp, histErr := m.client.History(ctx, action, fields)
+		if histErr != nil {
+			return fetchHistoryResult{Transactions: allBatchItems, PagesFetched: pagesFetched, Complete: false}, fmt.Errorf("query ACB history: %w", histErr)
+		}
+		lastResp = histResp
+		pagesFetched++
+
+		if histResp.Kind == acb.LoginPage || histResp.Kind == acb.OTPChallenge || histResp.Kind == acb.CaptchaPage {
+			return fetchHistoryResult{Transactions: allBatchItems, PagesFetched: pagesFetched, Complete: false}, errors.New("ACB session expired or challenge required during query")
+		}
+		if histResp.Kind == acb.MaintenancePage {
+			m.backoffUntil = time.Now().Add(60 * time.Second)
+			return fetchHistoryResult{Transactions: allBatchItems, PagesFetched: pagesFetched, Complete: false}, errors.New("ACB maintenance")
+		}
+
+		pageResult, parseErr := acb.ParseHistoryPage(histResp.Body)
+		if parseErr != nil {
+			return fetchHistoryResult{Transactions: allBatchItems, PagesFetched: pagesFetched, Complete: false}, fmt.Errorf("parse ACB history page %d: %w", pagesFetched, parseErr)
+		}
+
+		for _, txn := range pageResult.Transactions {
+			if _, seen := seenTxnNumbers[txn.Number]; !seen {
+				seenTxnNumbers[txn.Number] = struct{}{}
+				allBatchItems = append(allBatchItems, storage.BatchTransactionItem{
+					Number:        txn.Number,
+					Credit:        txn.Credit,
+					Debit:         txn.Debit,
+					Balance:       txn.Balance,
+					TransactionAt: txn.TransactionAt,
+					EffectiveAt:   txn.EffectiveDate,
+					Description:   txn.Description,
+				})
+			}
+		}
+
+		if pageResult.Truncated {
+			truncated = true
+			complete = false
+			slog.Warn("ACB history indicates truncated rows without next navigation", "page", pagesFetched, "rows_seen", len(allBatchItems), "total_expected", pageResult.TotalRows)
+			break
+		}
+
+		if !pageResult.HasNext {
+			complete = true
+			break
+		}
+
+		if pageResult.NextAction == "" && len(pageResult.NextFields) == 0 {
+			slog.Warn("ACB history page indicates more records exist but no navigation available", "page", pagesFetched, "rows_so_far", len(allBatchItems))
+			complete = false
+			break
+		}
+
+		action = pageResult.NextAction
+		fields = pageResult.NextFields
+		if fields == nil {
+			fields = make(map[string]string)
+		}
+		fields["_raw"] = "true"
+	}
+
+	return fetchHistoryResult{
+		Transactions: allBatchItems,
+		PagesFetched: pagesFetched,
+		Complete:     complete,
+		Truncated:    truncated,
+		LastResponse: lastResp,
+	}, nil
+}
+
 // EnsureHistory ensures ACB transaction history for the requested [fromDay, toDay] date range is synchronized.
 // It coalesces concurrent requests, checks cached coverage with TTLs, pushes date filters to ACB, and ingests with FILTER_SYNC source.
 func (m *Monitor) EnsureHistory(ctx context.Context, fromDay, toDay string) (int, error) {
@@ -212,60 +331,41 @@ func (m *Monitor) EnsureHistory(ctx context.Context, fromDay, toDay string) (int
 			return 0, errors.New("ACB maintenance")
 		}
 
-		form, formErr := acb.ExtractHistoryForm(resp.Body)
-		if formErr != nil {
-			return 0, fmt.Errorf("extract history form: %w", formErr)
-		}
-
-		if form.Fields["AccountNbr"] == "" && conn.AccountMasked != "" {
-			form.Fields["AccountNbr"] = conn.AccountMasked
-		}
-
-		fromACB := fromT.Format("02/01/2006")
-		toACB := toT.Format("02/01/2006")
-		form.Fields["FromDate"] = fromACB
-		form.Fields["ToDate"] = toACB
-		form.Fields["_explicitRange"] = "true"
-
-		histResp, histErr := m.client.History(ctx, form.Action, form.Fields)
-		if histErr != nil {
-			return 0, fmt.Errorf("query ACB history range: %w", histErr)
-		}
-		if histResp.Kind == acb.LoginPage || histResp.Kind == acb.OTPChallenge {
-			return 0, errors.New("ACB session expired during history query")
-		}
-
-		txns, parseErr := acb.ParseHistory(histResp.Body)
-		if parseErr != nil {
-			return 0, fmt.Errorf("parse ACB history: %w", parseErr)
-		}
-
-		batchItems := make([]storage.BatchTransactionItem, len(txns))
-		for i, txn := range txns {
-			batchItems[i] = storage.BatchTransactionItem{
-				Number:        txn.Number,
-				Credit:        txn.Credit,
-				Debit:         txn.Debit,
-				Balance:       txn.Balance,
-				TransactionAt: txn.TransactionAt,
-				EffectiveAt:   txn.EffectiveDate,
-				Description:   txn.Description,
-			}
+		fetchRes, fetchErr := m.fetchHistoryRange(ctx, &conn, resp, fromDay, toDay, 10)
+		if fetchErr != nil {
+			return 0, fetchErr
 		}
 
 		// Ingest with FILTER_SYNC source (suppressing webhooks and voice)
-		_, ingestErr := m.store.IngestTransactionsBatchWithSource(ctx, conn.ID, conn.Generation, conn.AccountMasked, batchItems, false, "FILTER_SYNC")
+		_, ingestErr := m.store.IngestTransactionsBatchWithSource(ctx, conn.ID, conn.Generation, conn.AccountMasked, fetchRes.Transactions, false, "FILTER_SYNC")
 		if ingestErr != nil {
 			return 0, fmt.Errorf("ingest history transactions: %w", ingestErr)
 		}
 
-		var days []string
-		for cur := fromT; !cur.After(toT); cur = cur.AddDate(0, 0, 1) {
-			days = append(days, cur.Format("2006-01-02"))
+		if !fetchRes.Complete {
+			return len(fetchRes.Transactions), fmt.Errorf("ACB history range incomplete: fetched %d pages (%d rows) but more rows remain", fetchRes.PagesFetched, len(fetchRes.Transactions))
 		}
-		_ = m.store.RecordCoverage(ctx, conn.ID, days, len(txns))
 
-		return len(txns), nil
+		dayCounts := make(map[string]int)
+		for cur := fromT; !cur.After(toT); cur = cur.AddDate(0, 0, 1) {
+			dayCounts[cur.Format("2006-01-02")] = 0
+		}
+		for _, item := range fetchRes.Transactions {
+			day := item.TransactionAt
+			if len(day) >= 10 {
+				if t, err := time.Parse("02/01/2006", day[:10]); err == nil {
+					day = t.Format("2006-01-02")
+				}
+			}
+			if _, exists := dayCounts[day]; exists {
+				dayCounts[day]++
+			}
+		}
+		if err := m.store.RecordCoveragePerDay(ctx, conn.ID, dayCounts); err != nil {
+			return len(fetchRes.Transactions), fmt.Errorf("record coverage: %w", err)
+		}
+
+		return len(fetchRes.Transactions), nil
 	})
 
 	if err != nil {
@@ -412,7 +512,7 @@ func (m *Monitor) pollOnce(ctx context.Context, expected *syncRequest) error {
 	}
 
 	// Parse transaction history
-	txns, parseErr := acb.ParseHistory(historyMarkup)
+	pageResult, parseErr := acb.ParseHistoryPage(historyMarkup)
 	if parseErr != nil {
 		poll.Status = "FAILED"
 		poll.Error = parseErr.Error()
@@ -420,13 +520,43 @@ func (m *Monitor) pollOnce(ctx context.Context, expected *syncRequest) error {
 		return parseErr
 	}
 
-	poll.RowsSeen = len(txns)
-	poll.Pages = 1
+	allTxns := pageResult.Transactions
+	pagesCount := 1
+
+	// If page has next, fetch up to 3 pages for realtime poll
+	if pageResult.HasNext && (pageResult.NextAction != "" || len(pageResult.NextFields) > 0) {
+		curAction := pageResult.NextAction
+		curFields := pageResult.NextFields
+		for pagesCount < 3 {
+			if curFields == nil {
+				curFields = make(map[string]string)
+			}
+			curFields["_raw"] = "true"
+			nextResp, nextErr := m.client.History(ctx, curAction, curFields)
+			if nextErr != nil {
+				break
+			}
+			pagesCount++
+			nextPage, err := acb.ParseHistoryPage(nextResp.Body)
+			if err != nil {
+				break
+			}
+			allTxns = append(allTxns, nextPage.Transactions...)
+			if !nextPage.HasNext || (nextPage.NextAction == "" && len(nextPage.NextFields) == 0) {
+				break
+			}
+			curAction = nextPage.NextAction
+			curFields = nextPage.NextFields
+		}
+	}
+
+	poll.RowsSeen = len(allTxns)
+	poll.Pages = pagesCount
 	slog.Info("ACB history parsed", "rows_seen", poll.RowsSeen, "pages", poll.Pages)
 
 	// Ingest transactions and emit credit events atomically in a single batch transaction
-	batchItems := make([]storage.BatchTransactionItem, len(txns))
-	for i, txn := range txns {
+	batchItems := make([]storage.BatchTransactionItem, len(allTxns))
+	for i, txn := range allTxns {
 		batchItems[i] = storage.BatchTransactionItem{
 			Number:        txn.Number,
 			Credit:        txn.Credit,
@@ -608,60 +738,56 @@ func (m *Monitor) catchUp(ctx context.Context) error {
 		return errors.New("session expired")
 	}
 
-	form, formErr := acb.ExtractHistoryForm(resp.Body)
-	if formErr != nil {
-		return fmt.Errorf("extract history form: %w", formErr)
-	}
-	if form.Fields["AccountNbr"] == "" && conn.AccountMasked != "" {
-		form.Fields["AccountNbr"] = conn.AccountMasked
-	}
-
 	fromT, _ := time.Parse("2006-01-02", fromDate)
 	toT, _ := time.Parse("2006-01-02", today)
-	form.Fields["FromDate"] = fromT.Format("02/01/2006")
-	form.Fields["ToDate"] = toT.Format("02/01/2006")
-	form.Fields["_explicitRange"] = "true"
 
-	histResp, histErr := m.client.History(ctx, form.Action, form.Fields)
-	if histErr != nil {
-		return fmt.Errorf("catch-up history query: %w", histErr)
-	}
-	txns, parseErr := acb.ParseHistory(histResp.Body)
-	if parseErr != nil {
-		return fmt.Errorf("catch-up parse: %w", parseErr)
-	}
-
-	batchItems := make([]storage.BatchTransactionItem, len(txns))
-	for i, txn := range txns {
-		batchItems[i] = storage.BatchTransactionItem{
-			Number:        txn.Number,
-			Credit:        txn.Credit,
-			Debit:         txn.Debit,
-			Balance:       txn.Balance,
-			TransactionAt: txn.TransactionAt,
-			EffectiveAt:   txn.EffectiveDate,
-			Description:   txn.Description,
-		}
+	fetchRes, fetchErr := m.fetchHistoryRange(ctx, &conn, resp, fromDate, today, 10)
+	if fetchErr != nil {
+		m.catchUpPending = true
+		return fmt.Errorf("catch-up fetch: %w", fetchErr)
 	}
 
 	// Ingest with CATCH_UP source:
 	// New credit transactions enqueue webhooks (no missed payments!), but voice is suppressed!
-	res, err := m.store.IngestTransactionsBatchWithSource(ctx, conn.ID, conn.Generation, conn.AccountMasked, batchItems, false, "CATCH_UP")
+	res, err := m.store.IngestTransactionsBatchWithSource(ctx, conn.ID, conn.Generation, conn.AccountMasked, fetchRes.Transactions, false, "CATCH_UP")
 	if err != nil {
 		return fmt.Errorf("catch-up ingest: %w", err)
 	}
 
-	var days []string
-	for cur := fromT; !cur.After(toT); cur = cur.AddDate(0, 0, 1) {
-		days = append(days, cur.Format("2006-01-02"))
+	if !fetchRes.Complete {
+		slog.Warn("catch-up range incomplete; withholding coverage checkpoint to force resync on next cycle", "pages", fetchRes.PagesFetched, "rows", len(fetchRes.Transactions))
+		m.catchUpPending = true
+		if m.onNewEvents != nil && len(res.NewEvents) > 0 {
+			m.onNewEvents(res.NewEvents)
+		}
+		return nil
 	}
-	_ = m.store.RecordCoverage(ctx, conn.ID, days, len(txns))
-	_ = m.store.SaveCheckpoint(ctx, storage.Checkpoint{
+
+	dayCounts := make(map[string]int)
+	for cur := fromT; !cur.After(toT); cur = cur.AddDate(0, 0, 1) {
+		dayCounts[cur.Format("2006-01-02")] = 0
+	}
+	for _, item := range fetchRes.Transactions {
+		day := item.TransactionAt
+		if len(day) >= 10 {
+			if t, err := time.Parse("02/01/2006", day[:10]); err == nil {
+				day = t.Format("2006-01-02")
+			}
+		}
+		if _, exists := dayCounts[day]; exists {
+			dayCounts[day]++
+		}
+	}
+	_ = m.store.RecordCoveragePerDay(ctx, conn.ID, dayCounts)
+	if err := m.store.SaveCheckpoint(ctx, storage.Checkpoint{
 		ConnectionID: conn.ID,
 		ScanID:       "scan_" + strconv.FormatInt(time.Now().Unix(), 10),
 		CoverageFrom: fromDate,
 		CoverageTo:   today,
-	})
+	}); err != nil {
+		slog.Warn("failed to save catch-up checkpoint", "error", err)
+	}
+	m.catchUpPending = false
 	if m.sessions != nil {
 		_ = m.sessions.Persist(ctx, conn.ID, conn.Generation)
 	}
@@ -669,7 +795,7 @@ func (m *Monitor) catchUp(ctx context.Context) error {
 		m.onNewEvents(res.NewEvents)
 	}
 
-	slog.Info("catch-up completed", "inserted", res.InsertedCount, "skipped", res.SkippedCount)
+	slog.Info("catch-up completed", "inserted", res.InsertedCount, "skipped", res.SkippedCount, "pages", fetchRes.PagesFetched)
 	return nil
 }
 

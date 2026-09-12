@@ -39,6 +39,11 @@ func PrepareHistoryFieldsWithRange(fields map[string]string, fromDate, toDate st
 // explicit by-date query for yesterday through today in the configured zone,
 // or uses explicit FromDate/ToDate if _explicitRange is set.
 func PrepareHistoryFields(fields map[string]string, now time.Time, location *time.Location) (map[string]string, error) {
+	if fields != nil && fields["_raw"] == "true" {
+		res := cloneFields(fields)
+		delete(res, "_raw")
+		return res, nil
+	}
 	if location == nil {
 		return nil, errors.New("ACB history timezone is required")
 	}

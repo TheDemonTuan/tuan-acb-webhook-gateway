@@ -8,25 +8,27 @@ image_ref="${1:-${IMAGE_REF:-}}"
 browser_image_ref="${2:-${AUTH_BROWSER_IMAGE_REF:-}}"
 image_pattern='^[^[:space:]]+@sha256:[a-f0-9]{64}$'
 
+# Determine arguments: $1=gateway, $2=auth-browser, $3=tts-gateway, $4=staged_compose
 if [[ "${3:-}" =~ $image_pattern ]]; then
   tts_image_ref="$3"
   staged_compose="${4:-}"
-else
+elif [[ -n "${TTS_GATEWAY_IMAGE_REF:-}" && "${TTS_GATEWAY_IMAGE_REF}" =~ $image_pattern ]]; then
+  tts_image_ref="${TTS_GATEWAY_IMAGE_REF}"
   staged_compose="${3:-}"
-  tts_image_ref="${4:-${TTS_GATEWAY_IMAGE_REF:-}}"
+else
+  tts_image_ref="${3:-}"
+  staged_compose="${4:-}"
 fi
 
 [[ -f "$env_file" ]] || { printf 'Missing production env file: %s\n' "$env_file" >&2; exit 1; }
 [[ "$image_ref" =~ $image_pattern ]] || { printf 'Pass an immutable gateway image digest as first argument.\n' >&2; exit 1; }
 [[ "$browser_image_ref" =~ $image_pattern ]] || { printf 'Pass an immutable auth-browser image digest as second argument.\n' >&2; exit 1; }
-[[ -z "$tts_image_ref" || "$tts_image_ref" =~ $image_pattern ]] || { printf 'Pass an immutable tts-gateway image digest.\n' >&2; exit 1; }
+[[ "$tts_image_ref" =~ $image_pattern ]] || { printf 'Pass an immutable tts-gateway image digest as third argument (or via TTS_GATEWAY_IMAGE_REF).\n' >&2; exit 1; }
 [[ -z "$staged_compose" || -f "$staged_compose" ]] || { printf 'Staged compose file not found: %s\n' "$staged_compose" >&2; exit 1; }
 
 export IMAGE_REF="$image_ref"
 export AUTH_BROWSER_IMAGE_REF="$browser_image_ref"
-if [[ -n "$tts_image_ref" ]]; then
-  export TTS_GATEWAY_IMAGE_REF="$tts_image_ref"
-fi
+export TTS_GATEWAY_IMAGE_REF="$tts_image_ref"
 
 lock="$script_dir/.deploy.lock"
 # A cancelled SSH job can leave a Compose one-off container attached to an old deploy.
@@ -71,7 +73,37 @@ if [[ ! -f "$script_dir/secrets/app_master_key" ]]; then
     openssl rand -hex 32 > "$script_dir/secrets/app_master_key"
   fi
 fi
-chmod 600 "$script_dir/secrets/app_master_key"
+if chown 1000:1000 "$script_dir/secrets/app_master_key" 2>/dev/null; then
+  chmod 600 "$script_dir/secrets/app_master_key"
+else
+  chmod 644 "$script_dir/secrets/app_master_key" 2>/dev/null || chmod 600 "$script_dir/secrets/app_master_key"
+fi
+
+# Ensure secrets/tts_internal_token file exists and is provisioned for UID 1000 containers
+tts_token_file="$script_dir/secrets/tts_internal_token"
+if [[ ! -f "$tts_token_file" ]]; then
+  token_val=""
+  if [[ -n "${TTS_INTERNAL_TOKEN:-}" ]]; then
+    token_val="$TTS_INTERNAL_TOKEN"
+  elif grep -q '^TTS_INTERNAL_TOKEN=' "$env_file" 2>/dev/null; then
+    val="$(grep '^TTS_INTERNAL_TOKEN=' "$env_file" | head -n1 | cut -d= -f2- | tr -d ' "[:space:]' | tr -d "'")"
+    if [[ -n "$val" ]]; then
+      token_val="$val"
+    fi
+  fi
+  if [[ -z "$token_val" ]]; then
+    token_val="$(openssl rand -hex 32)"
+  fi
+  tmp_token="$(mktemp "$script_dir/secrets/tts_internal_token.XXXXXX")"
+  printf '%s\n' "$token_val" > "$tmp_token"
+  mv -f "$tmp_token" "$tts_token_file"
+fi
+if chown 1000:1000 "$tts_token_file" 2>/dev/null; then
+  chmod 600 "$tts_token_file"
+else
+  chmod 644 "$tts_token_file" 2>/dev/null || chmod 600 "$tts_token_file"
+fi
+[[ -s "$tts_token_file" ]] || { printf 'TTS internal token file is empty: %s\n' "$tts_token_file" >&2; exit 1; }
 
 # 1. Execute pre-deployment offline backup
 if [[ -f "$script_dir/data/gateway.db" ]]; then
@@ -88,10 +120,7 @@ browser_current="$(cat "$browser_current_file" 2>/dev/null || true)"
 tts_current="$(cat "$tts_current_file" 2>/dev/null || true)"
 
 # 2. Pull images and execute migration-only gate
-pull_targets=(gateway auth-browser)
-if [[ -n "${TTS_GATEWAY_IMAGE_REF:-}" ]]; then
-  pull_targets+=(tts-gateway)
-fi
+pull_targets=(gateway auth-browser tts-gateway)
 if ! docker compose --env-file "$env_file" -f "$compose_file" pull "${pull_targets[@]}"; then
   echo "Failed to pull deployment images." >&2
   exit 1
@@ -113,7 +142,7 @@ fi
 if ! timeout "${READY_TIMEOUT:-120}" docker compose --env-file "$env_file" -f "$compose_file" up -d --remove-orphans --wait --wait-timeout "${READY_TIMEOUT:-120}"; then
   echo "Docker compose deployment failed. Dumping container status and logs:" >&2
   docker compose --env-file "$env_file" -f "$compose_file" ps -a || true
-  docker compose --env-file "$env_file" -f "$compose_file" logs --tail 50 gateway auth-browser || true
+  docker compose --env-file "$env_file" -f "$compose_file" logs --tail 50 gateway auth-browser tts-gateway || true
   exit 1
 fi
 
@@ -124,12 +153,10 @@ fi
 if [[ -n "$browser_current" && "$browser_current" != "$browser_image_ref" ]]; then
   printf '%s\n' "$browser_current" > "$script_dir/.previous-browser-image"
 fi
-if [[ -n "$tts_current" && -n "${tts_image_ref:-}" && "$tts_current" != "$tts_image_ref" ]]; then
+if [[ -n "$tts_current" && "$tts_current" != "$tts_image_ref" ]]; then
   printf '%s\n' "$tts_current" > "$script_dir/.previous-tts-image"
 fi
 printf '%s\n' "$image_ref" > "$gateway_current_file"
 printf '%s\n' "$browser_image_ref" > "$browser_current_file"
-if [[ -n "${tts_image_ref:-}" ]]; then
-  printf '%s\n' "$tts_image_ref" > "$tts_current_file"
-fi
+printf '%s\n' "$tts_image_ref" > "$tts_current_file"
 printf 'Deployment successful: gateway=%s auth-browser=%s tts=%s\n' "$image_ref" "$browser_image_ref" "${tts_image_ref:-none}"

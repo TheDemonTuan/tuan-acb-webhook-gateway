@@ -352,16 +352,28 @@ func (s *Server) startAuth(w http.ResponseWriter, r *http.Request) {
 
 	// If there is already an active attempt for this owner, resume it if browser is still alive
 	activeAttempt, found, err := s.store.ActiveAuthAttemptForOwner(r.Context(), identity.Email)
-	if err == nil && found {
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Lỗi kiểm tra phiên đăng nhập ACB: "+err.Error())
+		return
+	}
+	if found {
 		session, err := s.browser.Status(r.Context(), activeAttempt.ID)
-		if err == nil && !isTerminalAuthStatus(session.Status) {
-			session.ScreenURL = "/api/v1/connection/auth/" + activeAttempt.ID + "/screen/vnc.html?autoconnect=true&resize=remote&path=api/v1/connection/auth/" + activeAttempt.ID + "/screen/websockify"
-			audit(s.store, r, "auth.resume", activeAttempt.ID)
-			s.publishStateEvent("auth.changed", activeAttempt.ID, map[string]any{"attemptId": activeAttempt.ID, "status": activeAttempt.Status})
-			writeJSON(w, http.StatusOK, session)
+		if err == nil {
+			if !isTerminalAuthStatus(session.Status) {
+				session.ScreenURL = "/api/v1/connection/auth/" + activeAttempt.ID + "/screen/vnc.html?autoconnect=true&resize=remote&path=api/v1/connection/auth/" + activeAttempt.ID + "/screen/websockify"
+				audit(s.store, r, "auth.resume", activeAttempt.ID)
+				s.publishStateEvent("auth.changed", activeAttempt.ID, map[string]any{"attemptId": activeAttempt.ID, "status": activeAttempt.Status})
+				writeJSON(w, http.StatusOK, session)
+				return
+			}
+			_ = s.store.FinishAuthAttempt(r.Context(), activeAttempt.ID, session.Status)
+		} else if authbrowser.IsHTTPStatus(err, http.StatusNotFound) {
+			_ = s.store.FinishAuthAttempt(r.Context(), activeAttempt.ID, "FAILED")
+		} else {
+			slog.Warn("transient error querying auth browser status for active attempt", "attempt_id", activeAttempt.ID, "error", err)
+			writeError(w, http.StatusServiceUnavailable, "Không thể kết nối đến trình duyệt ACB. Vui lòng thử lại sau giây lát.")
 			return
 		}
-		_ = s.store.FinishAuthAttempt(r.Context(), activeAttempt.ID, "FAILED")
 	}
 
 	attempt, err := s.store.StartAuthAttempt(r.Context(), identity.Email, 15*time.Minute)

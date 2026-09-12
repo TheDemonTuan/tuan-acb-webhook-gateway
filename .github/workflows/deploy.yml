@@ -44,6 +44,14 @@ jobs:
         run: |
           go test -race ./...
           go vet ./...
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test TTS Gateway
+        working-directory: tts-gateway
+        run: |
+          pip install -r requirements.txt
+          pytest -v
       - name: Verify deployment scripts
         run: bash -n deploy/*.sh
       - name: Check generated source and whitespace
@@ -171,6 +179,10 @@ jobs:
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+      - name: Smoke test published tts-gateway image
+        env:
+          TTS_GATEWAY_IMAGE: ${{ steps.meta.outputs.image }}@${{ steps.build.outputs.digest }}
+        run: bash deploy/smoke-test-tts-gateway.sh "$TTS_GATEWAY_IMAGE"
 
   deploy:
     name: Deploy to VPS
@@ -238,5 +250,6 @@ jobs:
           cd "$DEPLOY_PATH"
           export IMAGE_REF="$IMAGE"
           export AUTH_BROWSER_IMAGE_REF="$BROWSER_IMAGE"
-          timeout 300 ./deploy.sh "$IMAGE" "$BROWSER_IMAGE" "$staged_compose"
+          export TTS_GATEWAY_IMAGE_REF="$TTS_IMAGE"
+          timeout 300 ./deploy.sh "$IMAGE" "$BROWSER_IMAGE" "$TTS_IMAGE" "$staged_compose"
           REMOTE

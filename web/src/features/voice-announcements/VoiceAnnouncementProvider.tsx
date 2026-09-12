@@ -154,7 +154,12 @@ export const VoiceAnnouncementProvider: React.FC<VoiceAnnouncementProviderProps>
     burstBufferRef.current = [];
     burstTimerRef.current = null;
 
-    if (!currentSettings.enabled || items.length === 0) return;
+    if (!currentSettings.enabled || items.length === 0) {
+      for (const item of items) {
+        dedupe.release(item.dedupeOpts);
+      }
+      return;
+    }
 
     if (items.length === 1 || (items.length <= 3 && currentSettings.burstMode === 'individual')) {
       for (const item of items) {
@@ -318,12 +323,28 @@ export const VoiceAnnouncementProvider: React.FC<VoiceAnnouncementProviderProps>
 
   const cancelVoice = () => {
     queue.cancel();
-    burstBufferRef.current = [];
     if (burstTimerRef.current) {
       clearTimeout(burstTimerRef.current);
       burstTimerRef.current = null;
     }
+    for (const item of burstBufferRef.current) {
+      dedupe.release(item.dedupeOpts);
+    }
+    burstBufferRef.current = [];
   };
+
+  useEffect(() => {
+    return () => {
+      if (burstTimerRef.current) {
+        clearTimeout(burstTimerRef.current);
+        burstTimerRef.current = null;
+      }
+      for (const item of burstBufferRef.current) {
+        dedupe.release(item.dedupeOpts);
+      }
+      burstBufferRef.current = [];
+    };
+  }, [dedupe]);
 
   const value: VoiceAnnouncementContextValue = useMemo(() => {
     return {

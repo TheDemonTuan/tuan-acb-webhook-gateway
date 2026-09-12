@@ -92,9 +92,14 @@ func Load() (Config, error) {
 	}
 
 	ttsToken := value("TTS_INTERNAL_TOKEN", "")
-	if ttsTokenFile := os.Getenv("TTS_INTERNAL_TOKEN_FILE"); ttsTokenFile != "" {
-		if data, err := os.ReadFile(ttsTokenFile); err == nil {
-			ttsToken = strings.TrimSpace(string(data))
+	if ttsTokenFile := strings.TrimSpace(os.Getenv("TTS_INTERNAL_TOKEN_FILE")); ttsTokenFile != "" {
+		data, err := os.ReadFile(ttsTokenFile)
+		if err != nil {
+			return Config{}, fmt.Errorf("read TTS_INTERNAL_TOKEN_FILE (%s): %w", ttsTokenFile, err)
+		}
+		ttsToken = strings.TrimSpace(string(data))
+		if ttsToken == "" {
+			return Config{}, fmt.Errorf("TTS_INTERNAL_TOKEN_FILE (%s) is empty", ttsTokenFile)
 		}
 	}
 
@@ -130,6 +135,9 @@ func Load() (Config, error) {
 		}
 		if cfg.CloudflareIssuer == "" || cfg.CloudflareAudience == "" || cfg.CloudflareJWKSURL == "" || cfg.CloudflareAudience == "*" || strings.EqualFold(cfg.CloudflareAudience, "any") {
 			return Config{}, fmt.Errorf("specific Cloudflare Access issuer, audience, and JWKS URL are required in production")
+		}
+		if cfg.TTSGatewayURL != "" && cfg.TTSInternalToken == "" {
+			return Config{}, fmt.Errorf("TTS_INTERNAL_TOKEN or TTS_INTERNAL_TOKEN_FILE is required in production when TTS_GATEWAY_URL is configured")
 		}
 	}
 	if cfg.MasterKeyFile != "" && !filepath.IsAbs(cfg.MasterKeyFile) {
