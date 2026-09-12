@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import type { RealtimeStatus } from './realtime-types';
+import type { RealtimeEnvelope } from './realtime/realtime.types';
 
 export type RealtimeHandlers = {
-  onEvent?: (type: string, data: unknown) => void;
+  onEvent?: (type: string, data: unknown, envelope?: RealtimeEnvelope) => void;
   onInitialState?: (watermark: number) => void;
   onResetState?: (reason: string) => void;
 };
@@ -60,7 +61,14 @@ export const useRealtime = (handlers: RealtimeHandlers) => {
         if (cancelled) return;
         setLastEventAt(new Date());
         try {
-          handlersRef.current.onEvent?.(type, JSON.parse(event.data));
+          const parsed = JSON.parse(event.data);
+          const envelope: RealtimeEnvelope = {
+            id: event.lastEventId || null,
+            type,
+            data: parsed,
+            receivedAt: Date.now(),
+          };
+          handlersRef.current.onEvent?.(type, parsed, envelope);
         } catch {}
       });
     }
@@ -68,7 +76,6 @@ export const useRealtime = (handlers: RealtimeHandlers) => {
     return () => {
       cancelled = true;
       source.close();
-      setStatus('DISCONNECTED');
     };
   }, []);
 
