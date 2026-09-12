@@ -18,8 +18,14 @@ export IMAGE_REF="$image_ref"
 export AUTH_BROWSER_IMAGE_REF="$browser_image_ref"
 
 lock="$script_dir/.deploy.lock"
+# A cancelled SSH job can leave a Compose one-off container attached to an old deploy.
+stale_oneoffs="$(docker ps -q --filter label=com.docker.compose.project=acb-transaction-webhook --filter label=com.docker.compose.oneoff=True)"
+if [[ -n "$stale_oneoffs" ]]; then
+  printf 'Stopping stale deployment one-off containers: %s\n' "$stale_oneoffs"
+  docker stop --time 10 $stale_oneoffs >/dev/null
+fi
 exec 9>"$lock"
-flock -n 9 || { printf 'Another deployment is active.\n' >&2; exit 1; }
+flock -w "${DEPLOY_LOCK_TIMEOUT:-30}" 9 || { printf 'Another deployment is active after waiting %ss.\n' "${DEPLOY_LOCK_TIMEOUT:-30}" >&2; exit 1; }
 
 # Ensure data and secrets directories exist with proper permissions for container user (UID 1000)
 mkdir -p "$script_dir/data" "$script_dir/secrets"
