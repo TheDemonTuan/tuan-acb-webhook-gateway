@@ -161,7 +161,9 @@ jobs:
           ssh -i ~/.ssh/id_ed25519 -p "$VPS_PORT" -o BatchMode=yes \
             "$VPS_USER@$VPS_HOST" "mkdir -p '$DEPLOY_PATH/data' '$DEPLOY_PATH/secrets'"
           scp -i ~/.ssh/id_ed25519 -P "$VPS_PORT" -o BatchMode=yes \
-            deploy/compose.prod.yaml deploy/seccomp-auth-browser.json deploy/deploy.sh deploy/rollback.sh \
+            deploy/compose.prod.yaml "$VPS_USER@$VPS_HOST:$DEPLOY_PATH/compose.prod.yaml.next"
+          scp -i ~/.ssh/id_ed25519 -P "$VPS_PORT" -o BatchMode=yes \
+            deploy/seccomp-auth-browser.json deploy/deploy.sh deploy/rollback.sh \
             deploy/verify-deployment.sh deploy/backup.sh deploy/README.md \
             "$VPS_USER@$VPS_HOST:$DEPLOY_PATH/"
           ssh -i ~/.ssh/id_ed25519 -p "$VPS_PORT" -o BatchMode=yes \
@@ -185,6 +187,8 @@ jobs:
           env_file="$DEPLOY_PATH/.env.production"
           [[ -f "$env_file" ]] || { printf 'Missing production env file: %s\n' "$env_file" >&2; exit 1; }
           tmp="$(mktemp "${env_file}.XXXXXX")"
+          staged_compose="$DEPLOY_PATH/compose.prod.yaml.next"
+          [[ -f "$staged_compose" ]] || { printf 'Missing staged compose file: %s\n' "$staged_compose" >&2; exit 1; }
           trap 'rm -f "$tmp"' EXIT
           grep -v -E '^(OWNER_SUBJECTS|CLOUDFLARE_ACCESS_OWNER_EMAIL)=' "$env_file" > "$tmp" || true
           printf 'OWNER_SUBJECTS=%s\n' "$OWNER" >> "$tmp"
@@ -193,5 +197,5 @@ jobs:
           cd "$DEPLOY_PATH"
           export IMAGE_REF="$IMAGE"
           export AUTH_BROWSER_IMAGE_REF="$BROWSER_IMAGE"
-          ./deploy.sh "$IMAGE" "$BROWSER_IMAGE"
+          timeout 300 ./deploy.sh "$IMAGE" "$BROWSER_IMAGE" "$staged_compose"
           REMOTE

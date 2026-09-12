@@ -6,11 +6,13 @@ env_file="${ENV_FILE:-$script_dir/.env.production}"
 compose_file="${COMPOSE_FILE:-$script_dir/compose.prod.yaml}"
 image_ref="${1:-${IMAGE_REF:-}}"
 browser_image_ref="${2:-${AUTH_BROWSER_IMAGE_REF:-}}"
+staged_compose="${3:-}"
 image_pattern='^[^[:space:]]+@sha256:[a-f0-9]{64}$'
 
 [[ -f "$env_file" ]] || { printf 'Missing production env file: %s\n' "$env_file" >&2; exit 1; }
 [[ "$image_ref" =~ $image_pattern ]] || { printf 'Pass an immutable gateway image digest as first argument.\n' >&2; exit 1; }
 [[ "$browser_image_ref" =~ $image_pattern ]] || { printf 'Pass an immutable auth-browser image digest as second argument.\n' >&2; exit 1; }
+[[ -z "$staged_compose" || -f "$staged_compose" ]] || { printf 'Staged compose file not found: %s\n' "$staged_compose" >&2; exit 1; }
 
 export IMAGE_REF="$image_ref"
 export AUTH_BROWSER_IMAGE_REF="$browser_image_ref"
@@ -23,8 +25,19 @@ flock -n 9 || { printf 'Another deployment is active.\n' >&2; exit 1; }
 mkdir -p "$script_dir/data" "$script_dir/secrets"
 chmod 775 "$script_dir/data" || true
 
+# Validate the shared edge network before changing compose or containers.
+docker network inspect edge-acb >/dev/null 2>&1 || { printf 'Required network edge-acb is missing.\n' >&2; exit 1; }
+[[ "$(docker network inspect edge-acb --format '{{.Internal}}')" == "true" ]] || { printf 'edge-acb must be internal.\n' >&2; exit 1; }
+[[ "$(docker network inspect edge-acb --format '{{index .Labels "io.tuan.edge.managed"}}')" == "true" ]] || { printf 'edge-acb is not managed by the shared edge stack.\n' >&2; exit 1; }
+
+if [[ -n "$staged_compose" ]]; then
+  docker compose --env-file "$env_file" -f "$staged_compose" config --quiet
+  [[ -f "$compose_file" ]] && cp "$compose_file" "$script_dir/.previous-compose.yaml"
+  mv "$staged_compose" "$compose_file"
+fi
+
 # Stop writers before checkpointing and backing up SQLite.
-docker stop acb-transaction-gateway bank-gateway-auth-browser 2>/dev/null || true
+docker stop acb-transaction-gateway acb-auth-browser 2>/dev/null || true
 
 # Ensure secrets/app_master_key file exists before Docker mounts it
 if [[ ! -f "$script_dir/secrets/app_master_key" ]]; then
@@ -49,7 +62,7 @@ if [[ -f "$script_dir/data/gateway.db" ]]; then
   DATABASE_PATH="$script_dir/data/gateway.db" BACKUP_DIR="$script_dir/data/backups" "$script_dir/backup.sh"
 fi
 
-docker compose --env-file "$env_file" -f "$compose_file" config --quiet
+[[ -f "$compose_file" ]] || { printf 'Missing compose file: %s\n' "$compose_file" >&2; exit 1; }
 gateway_current_file="$script_dir/.deployed-image"
 browser_current_file="$script_dir/.deployed-browser-image"
 gateway_current="$(cat "$gateway_current_file" 2>/dev/null || true)"
@@ -62,19 +75,19 @@ if ! docker compose --env-file "$env_file" -f "$compose_file" pull gateway auth-
 fi
 
 printf 'Executing database migration gate (--migrate-only)...\n'
-if ! docker compose --env-file "$env_file" -f "$compose_file" run --rm --no-deps gateway /gateway --migrate-only; then
+if ! timeout "${MIGRATION_TIMEOUT:-90}" docker compose --env-file "$env_file" -f "$compose_file" run --rm --no-deps --entrypoint /gateway gateway --migrate-only; then
   echo "Database migration gate failed. Aborting deployment." >&2
   exit 1
 fi
 
 printf 'Verifying database integrity before startup (--check)...\n'
-if ! docker compose --env-file "$env_file" -f "$compose_file" run --rm --no-deps gateway /gateway --check; then
+if ! timeout "${CHECK_TIMEOUT:-90}" docker compose --env-file "$env_file" -f "$compose_file" run --rm --no-deps --entrypoint /gateway gateway --check; then
   echo "Database integrity check failed. Aborting deployment." >&2
   exit 1
 fi
 
 # 3. Start services with health wait
-if ! docker compose --env-file "$env_file" -f "$compose_file" up -d --remove-orphans --wait; then
+if ! timeout "${READY_TIMEOUT:-120}" docker compose --env-file "$env_file" -f "$compose_file" up -d --remove-orphans --wait --wait-timeout "${READY_TIMEOUT:-120}"; then
   echo "Docker compose deployment failed. Dumping container status and logs:" >&2
   docker compose --env-file "$env_file" -f "$compose_file" ps -a || true
   docker compose --env-file "$env_file" -f "$compose_file" logs --tail 50 gateway auth-browser || true

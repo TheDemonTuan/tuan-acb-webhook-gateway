@@ -62,7 +62,7 @@ if command -v docker >/dev/null 2>&1 && [[ -f "$compose_file" ]]; then
     echo "Verifying auth-browser container health..."
     container_name="${AUTH_BROWSER_CONTAINER:-acb-auth-browser}"
     verify_image "$container_name" "$expected_browser_image" "auth-browser"
-    ab_timeout="${AUTH_BROWSER_READY_TIMEOUT:-30}"
+    ab_timeout="${AUTH_BROWSER_READY_TIMEOUT:-60}"
     ab_start="$(date +%s)"
     ab_healthy=0
 

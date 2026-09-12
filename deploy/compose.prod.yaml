@@ -47,13 +47,15 @@ services:
       interval: 5s
       timeout: 3s
       retries: 6
-      start_period: 2s
-    deploy:
-      resources:
-        limits:
-          cpus: "0.75"
-          memory: 512M
-          pids: 100
+      start_period: 10s
+    pids_limit: 100
+    mem_limit: 512m
+    cpus: 0.75
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   auth-browser:
     image: ${AUTH_BROWSER_IMAGE_REF:-ghcr.io/thedemontuan/acb-transaction-webhook-auth-browser:latest}
@@ -78,15 +80,18 @@ services:
       start_period: 10s
     tmpfs:
       - /tmp:rw,nosuid,nodev,size=1g,mode=1777
-    deploy:
-      resources:
-        limits:
-          cpus: "1.5"
-          memory: 1536M
-          pids: 300
+    pids_limit: 300
+    mem_limit: 1536m
+    cpus: 1.5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 networks:
   default:
+    internal: false
   edge:
     external: true
     name: edge-acb
