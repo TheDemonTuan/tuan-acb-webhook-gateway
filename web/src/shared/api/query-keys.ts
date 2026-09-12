@@ -4,6 +4,8 @@ export const queryKeys = {
   transactions: (params?: Record<string, unknown>) => ['transactions', params] as const,
   transactionDetail: (id: string) => ['transaction', id] as const,
   webhooks: ['webhooks'] as const,
+  notificationProviders: ['notification-providers'] as const,
+  notificationChannels: ['notification-channels'] as const,
   deliveries: (params?: Record<string, unknown>) => ['deliveries', params] as const,
   pollRuns: (params?: Record<string, unknown>) => ['pollRuns', params] as const,
   auditLogs: (params?: Record<string, unknown>) => ['auditLogs', params] as const,

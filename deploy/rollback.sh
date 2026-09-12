@@ -25,6 +25,17 @@ if [[ -z "$previous_tts" && -f "$script_dir/.deployed-tts-image" ]]; then
 fi
 [[ "$previous_tts" =~ $image_pattern ]] || { printf 'No valid previous tts-gateway image digest is recorded (checked %s and .deployed-tts-image).\n' "$previous_tts_file" >&2; exit 1; }
 
+previous_bark_file="$script_dir/.previous-bark-image"
+previous_bark=""
+if [[ -f "$previous_bark_file" ]]; then
+  previous_bark="$(<"$previous_bark_file")"
+elif [[ -f "$script_dir/.deployed-bark-image" ]]; then
+  previous_bark="$(<"$script_dir/.deployed-bark-image")"
+fi
+if [[ -n "$previous_bark" ]]; then
+  export BARK_IMAGE_REF="$previous_bark"
+fi
+
 staged_compose=""
 if [[ -f "$previous_compose_file" ]]; then
   cp "$previous_compose_file" "$script_dir/compose.prod.yaml.rollback"

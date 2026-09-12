@@ -14,10 +14,24 @@ services:
       DATA_DIR: /data
       DATABASE_PATH: /data/gateway.db
       TTS_GATEWAY_URL: http://tts-gateway:8081
+      BARK_SERVER_URL: http://bark:8080
     volumes:
       - ./data:/data
     depends_on:
       - tts-gateway
+      - bark
+
+  bark:
+    image: ghcr.io/finb/bark-server:latest
+    container_name: acb-bark-dev
+    ports:
+      - "8080:8080"
+    environment:
+      TZ: Asia/Ho_Chi_Minh
+      BARK_SERVER_ADDRESS: 0.0.0.0:8080
+      BARK_SERVER_DATA_DIR: /data
+    volumes:
+      - ./data/bark:/data
 
   tts-gateway:
     build:

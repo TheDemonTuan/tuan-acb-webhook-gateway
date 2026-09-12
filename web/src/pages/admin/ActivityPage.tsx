@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import {
   RotateCcw,
@@ -7,17 +7,24 @@ import {
   ShieldAlert,
   RefreshCw,
   Clock,
+  Smartphone,
+  Globe,
+  Play,
 } from 'lucide-react';
 import {
   fetchAuditLogs,
   fetchDeliveries,
   fetchPollRuns,
+  replayDelivery,
 } from '../../shared/api/queries';
 import { queryKeys } from '../../shared/api/query-keys';
 import { getDeliveryStatus, getPollStatus } from '../../content/status-copy';
 
 export const ActivityPage: React.FC = () => {
+  const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
+  const [replayingId, setReplayingId] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
   const tabParam = searchParams.get('tab');
   const activeTab: 'polling' | 'deliveries' | 'audit' =
     tabParam === 'deliveries' ? 'deliveries' : tabParam === 'audit' ? 'audit' : 'polling';
@@ -40,6 +47,21 @@ export const ActivityPage: React.FC = () => {
     queryKey: queryKeys.auditLogs(),
     queryFn: () => fetchAuditLogs({ limit: 50 }),
   });
+
+  const handleReplay = async (deliveryId: string) => {
+    setReplayingId(deliveryId);
+    setActionNotice(null);
+    try {
+      await replayDelivery(deliveryId);
+      setActionNotice('Đã đưa lượt phân phối trở lại hàng đợi gửi (PENDING).');
+      queryClient.invalidateQueries({ queryKey: queryKeys.deliveries() });
+      queryClient.invalidateQueries({ queryKey: queryKeys.status });
+    } catch (err) {
+      setActionNotice(`Lỗi: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setReplayingId(null);
+    }
+  };
 
   const polls = pollData?.items || [];
   const deliveries = deliveryData?.items || [];
@@ -171,25 +193,34 @@ export const ActivityPage: React.FC = () => {
       {activeTab === 'deliveries' && (
         <div className="bg-white rounded-2xl border border-stone-200 shadow-2xs overflow-hidden">
           <div className="px-6 py-4 border-b border-stone-100 flex items-center justify-between">
-            <h3 className="font-bold text-stone-900 text-base">Phân phối Webhook</h3>
+            <h3 className="font-bold text-stone-900 text-base">Phân phối thông báo</h3>
             <span className="text-xs text-stone-500">{deliveries.length} lượt gửi</span>
           </div>
 
+          {actionNotice && (
+            <div className="mx-6 mt-4 p-3 rounded-xl bg-stone-100 border border-stone-200 text-xs text-stone-800 flex items-center gap-2">
+              <span>{actionNotice}</span>
+            </div>
+          )}
+
           {deliveries.length === 0 ? (
             <div className="p-12 text-center text-xs text-stone-500">
-              {loadingDeliveries ? 'Đang tải dữ liệu...' : 'Chưa có bản ghi phân phối webhook nào.'}
+              {loadingDeliveries ? 'Đang tải dữ liệu...' : 'Chưa có bản ghi phân phối thông báo nào.'}
             </div>
           ) : (
             <div className="divide-y divide-stone-100">
               {deliveries.map((d) => {
                 const deliveryStatus = getDeliveryStatus(d.status);
+                const isBark = d.provider === 'BARK';
+
                 return (
                   <div
                     key={d.id}
                     className="p-4 sm:px-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-stone-50/50 transition"
                   >
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
+                    <div className="space-y-1.5">
+                      <div className="flex flex-wrap items-center gap-2">
+                        {/* Status badge */}
                         <span
                           className={`text-xs font-semibold px-2 py-0.5 rounded-md border ${
                             deliveryStatus.tone === 'success'
@@ -201,17 +232,50 @@ export const ActivityPage: React.FC = () => {
                         >
                           {deliveryStatus.label}
                         </span>
+
+                        {/* Provider badge */}
+                        <span
+                          className={`text-2xs font-semibold px-2 py-0.5 rounded-md border flex items-center gap-1 ${
+                            isBark
+                              ? 'bg-purple-50 text-purple-700 border-purple-200'
+                              : 'bg-blue-50 text-blue-700 border-blue-200'
+                          }`}
+                        >
+                          {isBark ? <Smartphone className="w-3 h-3" /> : <Globe className="w-3 h-3" />}
+                          <span>{isBark ? 'Bark • iPhone' : 'Webhook'}</span>
+                        </span>
+
                         <span className="text-xs text-stone-500 font-mono">
-                          Số lần gửi: {d.attempts}
+                          Lần gửi: {d.attempts}
                         </span>
                       </div>
-                      <span className="text-xs text-stone-500 block">
-                        Kênh nhận: <span className="font-mono">{d.endpointId}</span> &middot; Mã sự kiện: <span className="font-mono">{d.eventId}</span>
-                      </span>
+
+                      <div className="text-xs text-stone-500">
+                        Kênh nhận:{' '}
+                        <span className="font-semibold text-stone-700">
+                          {d.endpointName || d.endpointId}
+                        </span>{' '}
+                        &middot; Mã sự kiện: <span className="font-mono text-stone-600">{d.eventId}</span>
+                      </div>
                     </div>
 
-                    <div className="text-xs text-stone-500 font-mono">
-                      {new Date(d.createdAt).toLocaleString('vi-VN')}
+                    <div className="flex items-center gap-3">
+                      <div className="text-xs text-stone-400 font-mono text-right">
+                        {new Date(d.createdAt).toLocaleString('vi-VN')}
+                      </div>
+
+                      {d.status === 'DEAD_LETTER' && (
+                        <button
+                          type="button"
+                          onClick={() => handleReplay(d.id)}
+                          disabled={replayingId === d.id}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-stone-900 text-white hover:bg-stone-800 disabled:opacity-50 transition shadow-2xs cursor-pointer"
+                          title="Đưa lại vào hàng đợi gửi"
+                        >
+                          <Play className={`w-3 h-3 ${replayingId === d.id ? 'animate-spin' : ''}`} />
+                          <span>{replayingId === d.id ? 'Đang gửi...' : 'Gửi lại'}</span>
+                        </button>
+                      )}
                     </div>
                   </div>
                 );

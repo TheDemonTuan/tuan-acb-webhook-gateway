@@ -17,16 +17,22 @@ test('configures a connection and reflects the state across routes', async ({ pa
 
 test('creates and enables a guarded HTTPS webhook endpoint', async ({ page }, testInfo) => {
   await page.goto('/');
-  await page.getByRole('button', { name: 'Webhooks' }).click();
-  await expect(page.getByRole('heading', { name: 'Webhook endpoints' })).toBeVisible();
+  await page.getByRole('button', { name: /Webhooks|Kênh thông báo/ }).click();
+  await expect(page.getByRole('heading', { name: /Webhook endpoints|Kênh thông báo/ })).toBeVisible();
+
+  const webhookTab = page.getByRole('button', { name: 'Webhook', exact: true });
+  if (await webhookTab.isVisible()) {
+    await webhookTab.click();
+  }
+
   const name = `Receiver ${testInfo.project.name}`;
-  await page.getByLabel('Tên endpoint').fill(name);
-  await page.getByLabel('HTTPS URL').fill(`https://events-${testInfo.project.name}.example.com/bank`);
-  await page.getByRole('button', { name: 'Tạo endpoint' }).click();
-  await expect(page.getByText('Đã tạo endpoint ở trạng thái DISABLED.')).toBeVisible();
+  await page.getByLabel(/Tên endpoint|Tên kênh Webhook/).fill(name);
+  await page.getByLabel(/HTTPS URL|URL Webhook/).fill(`https://events-${testInfo.project.name}.example.com/bank`);
+  await page.getByRole('button', { name: /Tạo endpoint|Tạo kênh Webhook/ }).click();
+  await expect(page.getByText(/Đã tạo (endpoint|kênh Webhook) ở trạng thái DISABLED\./)).toBeVisible();
   await expect(page.getByText(name)).toBeVisible();
-  await page.getByRole('button', { name: 'Enable' }).last().click();
-  await expect(page.getByText('ACTIVE', { exact: true }).last()).toBeVisible();
+  await page.getByRole('button', { name: /Enable|Kích hoạt/ }).last().click();
+  await expect(page.getByText(/ACTIVE|Hoạt động/, { exact: true }).last()).toBeVisible();
 });
 
 test('serves the dashboard on a future SPA route', async ({ page }) => {
@@ -55,7 +61,7 @@ test('activates ACB session to MONITORING and navigates all tabs', async ({ page
   await expect(page.getByRole('heading', { name: 'Giao dịch' })).toBeVisible();
 
   await page.getByRole('button', { name: 'Phân phối' }).click();
-  await expect(page.getByRole('heading', { name: 'Phân phối Webhook' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: /Phân phối/ })).toBeVisible();
 
   await page.getByRole('button', { name: 'Polling' }).click();
   await expect(page.getByRole('heading', { name: 'Chu kỳ Polling' })).toBeVisible();

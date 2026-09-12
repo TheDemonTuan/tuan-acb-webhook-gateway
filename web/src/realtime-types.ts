@@ -7,6 +7,7 @@ export type Status = {
   acb: { state: string; coverage: string; accountMasked?: string; generation?: number };
   storage: { status: string };
   webhooks: { pending: number; deadLetter: number };
+  notifications?: { pending: number; deadLetter: number };
 };
 
 export type Connection = {
@@ -14,15 +15,38 @@ export type Connection = {
   connection?: { id: string; state: string; accountMasked: string; generation: number; updatedAt: string };
 };
 
-export type Endpoint = {
+export type BarkConfig = {
+  group?: string;
+  level?: 'passive' | 'active' | 'timeSensitive';
+  sound?: string;
+  includeBalance: boolean;
+  includeDescription: boolean;
+  dashboardLink: boolean;
+};
+
+export type NotificationProvider = {
+  id: 'WEBHOOK' | 'BARK';
+  name: string;
+  description: string;
+  configured: boolean;
+  publicUrl?: string;
+};
+
+export type NotificationChannel = {
   id: string;
   name: string;
-  url: string;
+  provider: 'WEBHOOK' | 'BARK';
   status: string;
   revision: number;
-  createdAt: string;
+  url?: string;
+  barkConfig?: BarkConfig;
+  hasDeviceKey?: boolean;
   secret?: string;
+  createdAt: string;
+  updatedAt: string;
 };
+
+export type Endpoint = NotificationChannel;
 
 export type Transaction = {
   id: string;
@@ -80,6 +104,8 @@ export type Delivery = {
   id: string;
   eventId: string;
   endpointId: string;
+  endpointName?: string;
+  provider?: string;
   status: string;
   attempts: number;
   nextAttemptAt: string;

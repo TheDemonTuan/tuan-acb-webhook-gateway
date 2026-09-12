@@ -57,14 +57,16 @@ func escapeLike(s string) string {
 }
 
 type DeliveryView struct {
-	ID          string `json:"id"`
-	EventID     string `json:"eventId"`
-	EndpointID  string `json:"endpointId"`
-	Status      string `json:"status"`
-	Attempts    int    `json:"attempts"`
-	NextAttempt string `json:"nextAttemptAt"`
-	CreatedAt   string `json:"createdAt"`
-	UpdatedAt   string `json:"updatedAt"`
+	ID           string `json:"id"`
+	EventID      string `json:"eventId"`
+	EndpointID   string `json:"endpointId"`
+	EndpointName string `json:"endpointName,omitempty"`
+	Provider     string `json:"provider,omitempty"`
+	Status       string `json:"status"`
+	Attempts     int    `json:"attempts"`
+	NextAttempt  string `json:"nextAttemptAt"`
+	CreatedAt    string `json:"createdAt"`
+	UpdatedAt    string `json:"updatedAt"`
 }
 
 type AuditLogView struct {
@@ -296,13 +298,15 @@ func (s *Store) ListDeliveriesPage(ctx context.Context, limit int, cursor string
 	if err != nil {
 		return Page[DeliveryView]{}, err
 	}
-	query := `SELECT id,event_id,endpoint_id,status,attempts,next_attempt_at,created_at,updated_at FROM deliveries`
+	query := `SELECT d.id, d.event_id, d.endpoint_id, COALESCE(e.name, ''), COALESCE(e.provider, 'WEBHOOK'), d.status, d.attempts, d.next_attempt_at, d.created_at, d.updated_at
+	          FROM deliveries d
+	          LEFT JOIN webhook_endpoints e ON e.id = d.endpoint_id`
 	args := []any{}
 	if sortValue != "" {
-		query += ` WHERE created_at < ? OR (created_at = ? AND id < ?)`
+		query += ` WHERE d.created_at < ? OR (d.created_at = ? AND d.id < ?)`
 		args = append(args, sortValue, sortValue, cursorID)
 	}
-	query += ` ORDER BY created_at DESC, id DESC LIMIT ?`
+	query += ` ORDER BY d.created_at DESC, d.id DESC LIMIT ?`
 	args = append(args, limit+1)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -312,7 +316,7 @@ func (s *Store) ListDeliveriesPage(ctx context.Context, limit int, cursor string
 	items := make([]DeliveryView, 0, limit)
 	for rows.Next() {
 		var item DeliveryView
-		if err := rows.Scan(&item.ID, &item.EventID, &item.EndpointID, &item.Status, &item.Attempts, &item.NextAttempt, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.EventID, &item.EndpointID, &item.EndpointName, &item.Provider, &item.Status, &item.Attempts, &item.NextAttempt, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			return Page[DeliveryView]{}, err
 		}
 		items = append(items, item)

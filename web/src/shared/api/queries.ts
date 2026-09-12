@@ -1,9 +1,12 @@
 import { api, getCsrfToken } from '../../api';
 import type {
   AuditLog,
+  BarkConfig,
   Connection,
   Delivery,
   Endpoint,
+  NotificationChannel,
+  NotificationProvider,
   PageResponse,
   PollRun,
   Status,
@@ -208,6 +211,89 @@ export const toggleWebhookEndpoint = async (
 ): Promise<Endpoint> => {
   const csrf = await getCsrfToken();
   return api<Endpoint>(`/webhooks/${id}/${action}`, {
+    method: 'POST',
+    headers: { 'x-csrf-token': csrf },
+  });
+};
+
+export const fetchNotificationProviders = async (): Promise<{ providers: NotificationProvider[] }> => {
+  return api<{ providers: NotificationProvider[] }>('/notification-providers');
+};
+
+export const fetchNotificationChannels = async (): Promise<{ items: NotificationChannel[] }> => {
+  return api<{ items: NotificationChannel[] }>('/notification-channels');
+};
+
+export const createNotificationChannel = async (payload: {
+  provider: 'WEBHOOK' | 'BARK';
+  name: string;
+  url?: string;
+  deviceKey?: string;
+  barkConfig?: BarkConfig;
+}): Promise<NotificationChannel> => {
+  const csrf = await getCsrfToken();
+  return api<NotificationChannel>('/notification-channels', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrf },
+    body: JSON.stringify(payload),
+  });
+};
+
+export const updateNotificationChannel = async (
+  id: string,
+  payload: {
+    expectedRevision: number;
+    name: string;
+    url?: string;
+    barkConfig?: BarkConfig;
+  }
+): Promise<NotificationChannel> => {
+  const csrf = await getCsrfToken();
+  return api<NotificationChannel>(`/notification-channels/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrf },
+    body: JSON.stringify(payload),
+  });
+};
+
+export const toggleNotificationChannel = async (
+  id: string,
+  action: 'enable' | 'disable'
+): Promise<{ status: string }> => {
+  const csrf = await getCsrfToken();
+  return api<{ status: string }>(`/notification-channels/${id}/${action}`, {
+    method: 'POST',
+    headers: { 'x-csrf-token': csrf },
+  });
+};
+
+export const rotateChannelSecret = async (
+  id: string,
+  deviceKey?: string
+): Promise<{ secret?: string; status: string }> => {
+  const csrf = await getCsrfToken();
+  return api<{ secret?: string; status: string }>(`/notification-channels/${id}/rotate-secret`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrf },
+    body: JSON.stringify({ deviceKey }),
+  });
+};
+
+export const testNotificationChannel = async (
+  id: string
+): Promise<{ status: string; latencyMs?: number; message?: string }> => {
+  const csrf = await getCsrfToken();
+  return api<{ status: string; latencyMs?: number; message?: string }>(`/notification-channels/${id}/test`, {
+    method: 'POST',
+    headers: { 'x-csrf-token': csrf },
+  });
+};
+
+export const replayDelivery = async (
+  id: string
+): Promise<{ status: string }> => {
+  const csrf = await getCsrfToken();
+  return api<{ status: string }>(`/deliveries/${id}/replay`, {
     method: 'POST',
     headers: { 'x-csrf-token': csrf },
   });

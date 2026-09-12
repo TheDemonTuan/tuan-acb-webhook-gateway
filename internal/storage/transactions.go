@@ -139,15 +139,22 @@ func (s *Store) IngestTransactionsBatchWithSource(ctx context.Context, connectio
 		type endpointRef struct {
 			id       string
 			revision int
+			provider string
+			keyID    string
 		}
 		var activeEndpoints []endpointRef
-		rows, err := tx.QueryContext(ctx, `SELECT id, current_revision FROM webhook_endpoints WHERE status = 'ACTIVE'`)
+		rows, err := tx.QueryContext(ctx, `
+			SELECT e.id, e.current_revision, COALESCE(e.provider, 'WEBHOOK'), COALESCE(s.key_id, 'k1')
+			FROM webhook_endpoints e
+			LEFT JOIN endpoint_secrets s ON s.endpoint_id = e.id AND s.status = 'ACTIVE'
+			WHERE e.status = 'ACTIVE'
+		`)
 		if err != nil {
 			return fmt.Errorf("query active endpoints: %w", err)
 		}
 		for rows.Next() {
 			var ep endpointRef
-			if err := rows.Scan(&ep.id, &ep.revision); err == nil {
+			if err := rows.Scan(&ep.id, &ep.revision, &ep.provider, &ep.keyID); err == nil {
 				activeEndpoints = append(activeEndpoints, ep)
 			}
 		}
@@ -247,9 +254,9 @@ func (s *Store) IngestTransactionsBatchWithSource(ctx context.Context, connectio
 						deliveryID := id("deliv")
 						_, err = tx.ExecContext(ctx, `
 							INSERT INTO deliveries(id, event_id, endpoint_id, endpoint_revision, key_id, status, attempts, next_attempt_at, created_at, updated_at)
-							VALUES(?, ?, ?, ?, 'k1', 'PENDING', 0, ?, ?, ?)
+							VALUES(?, ?, ?, ?, ?, 'PENDING', 0, ?, ?, ?)
 							ON CONFLICT(event_id, endpoint_id) DO NOTHING
-						`, deliveryID, eventID, ep.id, ep.revision, nowTime, nowTime, nowTime)
+						`, deliveryID, eventID, ep.id, ep.revision, ep.keyID, nowTime, nowTime, nowTime)
 						if err != nil {
 							return fmt.Errorf("insert delivery: %w", err)
 						}

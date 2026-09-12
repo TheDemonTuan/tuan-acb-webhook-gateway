@@ -34,6 +34,14 @@ type Config struct {
 	AuthBrowserVNCURL  string
 	TTSGatewayURL      string
 	TTSInternalToken   string
+	BarkServerURL         string
+	BarkPublicURL         string
+	BarkBasicAuthUser     string
+	BarkBasicAuthPassword string
+	BarkTimeout           time.Duration
+	BarkDefaultGroup      string
+	BarkDefaultLevel      string
+	BarkDefaultSound      string
 }
 
 func Load() (Config, error) {
@@ -71,9 +79,18 @@ func Load() (Config, error) {
 
 	masterKeyFile := os.Getenv("APP_MASTER_KEY_FILE")
 	if masterKeyFile == "" && os.Getenv("APP_MASTER_KEY") != "" {
-		autoKey := filepath.Join(dataDir, "app_master_key")
-		_ = os.MkdirAll(dataDir, 0o700)
+		absDataDir, _ := filepath.Abs(dataDir)
+		autoKey := filepath.Join(absDataDir, "app_master_key")
+		_ = os.MkdirAll(absDataDir, 0o700)
 		_ = os.WriteFile(autoKey, []byte(os.Getenv("APP_MASTER_KEY")), 0o600)
+		masterKeyFile = autoKey
+	} else if masterKeyFile == "" && !production {
+		absDataDir, _ := filepath.Abs(dataDir)
+		autoKey := filepath.Join(absDataDir, "dev_master.key")
+		if _, err := os.Stat(autoKey); os.IsNotExist(err) {
+			_ = os.MkdirAll(absDataDir, 0o700)
+			_ = os.WriteFile(autoKey, []byte("0123456789012345678901234567890123456789012345678901234567890123"), 0o600)
+		}
 		masterKeyFile = autoKey
 	}
 
@@ -103,6 +120,45 @@ func Load() (Config, error) {
 		}
 	}
 
+	barkServerURL := strings.TrimSpace(os.Getenv("BARK_SERVER_URL"))
+	barkPublicURL := strings.TrimSpace(os.Getenv("BARK_PUBLIC_URL"))
+	barkAuthUser := strings.TrimSpace(os.Getenv("BARK_BASIC_AUTH_USER"))
+	if file := strings.TrimSpace(os.Getenv("BARK_BASIC_AUTH_USER_FILE")); file != "" {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			return Config{}, fmt.Errorf("read BARK_BASIC_AUTH_USER_FILE (%s): %w", file, err)
+		}
+		barkAuthUser = strings.TrimSpace(string(data))
+	}
+	barkAuthPassword := strings.TrimSpace(os.Getenv("BARK_BASIC_AUTH_PASSWORD"))
+	if file := strings.TrimSpace(os.Getenv("BARK_BASIC_AUTH_PASSWORD_FILE")); file != "" {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			return Config{}, fmt.Errorf("read BARK_BASIC_AUTH_PASSWORD_FILE (%s): %w", file, err)
+		}
+		barkAuthPassword = strings.TrimSpace(string(data))
+	}
+
+	barkTimeoutMs := 5000
+	if raw := os.Getenv("BARK_TIMEOUT_MS"); raw != "" {
+		if ms, err := strconv.Atoi(raw); err == nil && ms >= 500 && ms <= 15000 {
+			barkTimeoutMs = ms
+		}
+	}
+	barkGroup := value("BARK_DEFAULT_GROUP", "ACB")
+	barkLevel := value("BARK_DEFAULT_LEVEL", "timeSensitive")
+	barkSound := value("BARK_DEFAULT_SOUND", "shake")
+
+	if barkServerURL != "" {
+		u, err := url.Parse(barkServerURL)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return Config{}, fmt.Errorf("invalid BARK_SERVER_URL: must be absolute URL")
+		}
+		if u.Fragment != "" || u.RawQuery != "" || u.User != nil {
+			return Config{}, fmt.Errorf("BARK_SERVER_URL must not contain userinfo, query, or fragment")
+		}
+	}
+
 	cfg := Config{
 		Address:            value("LISTEN_ADDR", "0.0.0.0:"+value("PORT", "8090")),
 		DatabasePath:       value("DATABASE_PATH", filepath.Join(dataDir, "gateway.db")),
@@ -125,6 +181,14 @@ func Load() (Config, error) {
 		AuthBrowserVNCURL:  value("AUTH_BROWSER_VNC_URL", "http://auth-browser:6080"),
 		TTSGatewayURL:      value("TTS_GATEWAY_URL", "http://tts-gateway:8081"),
 		TTSInternalToken:   ttsToken,
+		BarkServerURL:         barkServerURL,
+		BarkPublicURL:         barkPublicURL,
+		BarkBasicAuthUser:     barkAuthUser,
+		BarkBasicAuthPassword: barkAuthPassword,
+		BarkTimeout:           time.Duration(barkTimeoutMs) * time.Millisecond,
+		BarkDefaultGroup:      barkGroup,
+		BarkDefaultLevel:      barkLevel,
+		BarkDefaultSound:      barkSound,
 	}
 	if production {
 		if cfg.MasterKeyFile == "" {

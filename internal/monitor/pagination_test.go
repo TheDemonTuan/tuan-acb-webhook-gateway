@@ -334,38 +334,43 @@ func TestProgressiveCatchUpAdvancesCheckpointPerDay(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Initial checkpoint: CoverageTo = 2026-09-10
+	loc, _ := time.LoadLocation("Asia/Ho_Chi_Minh")
+	nowInTz := time.Now().In(loc)
+	yesterday := nowInTz.AddDate(0, 0, -1).Format("2006-01-02")
+	beforeYesterday := nowInTz.AddDate(0, 0, -2).Format("2006-01-02")
+
+	// Initial checkpoint: CoverageTo = beforeYesterday
 	if err := store.SaveCheckpoint(ctx, storage.Checkpoint{
 		ConnectionID: connID,
 		ScanID:       "init",
-		CoverageFrom: "2026-09-08",
-		CoverageTo:   "2026-09-10",
+		CoverageFrom: nowInTz.AddDate(0, 0, -4).Format("2006-01-02"),
+		CoverageTo:   beforeYesterday,
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	// 12/09/2026 fails (today), but 11/09/2026 succeeds!
-	client := &multiDayFailMockClient{failOnDate: "12/09/2026"}
+	todayDate := nowInTz.Format("02/01/2006")
+	client := &multiDayFailMockClient{failOnDate: todayDate}
 	mon := New(store, client, 5*time.Second, 15*time.Second)
 
 	err = mon.catchUp(ctx)
 	if err == nil {
-		t.Fatal("expected catchUp to fail on 12/09/2026")
+		t.Fatalf("expected catchUp to fail on %s", todayDate)
 	}
 
-	// Verify that 2026-09-11 WAS completed and checkpoint was progressively advanced to 2026-09-11!
+	// Verify that yesterday WAS completed and checkpoint was progressively advanced to yesterday!
 	cp, err := store.GetCheckpoint(ctx, connID)
 	if err != nil || cp == nil {
 		t.Fatalf("expected checkpoint to exist, err=%v", err)
 	}
-	if cp.CoverageTo != "2026-09-11" {
-		t.Fatalf("expected checkpoint to progressively advance to 2026-09-11, got: %s", cp.CoverageTo)
+	if cp.CoverageTo != yesterday {
+		t.Fatalf("expected checkpoint to progressively advance to %s, got: %s", yesterday, cp.CoverageTo)
 	}
 
-	// Verify coverage was recorded for 2026-09-11
-	covered, err := store.CheckRangeCoverage(ctx, connID, "2026-09-11", "2026-09-11")
+	// Verify coverage was recorded for yesterday
+	covered, err := store.CheckRangeCoverage(ctx, connID, yesterday, yesterday)
 	if err != nil || !covered {
-		t.Fatalf("expected 2026-09-11 to be covered, got covered=%v, err=%v", covered, err)
+		t.Fatalf("expected %s to be covered, got covered=%v, err=%v", yesterday, covered, err)
 	}
 
 	// Now fix 12/09/2026 and run catchUp again
@@ -375,13 +380,14 @@ func TestProgressiveCatchUpAdvancesCheckpointPerDay(t *testing.T) {
 		t.Fatalf("expected second catchUp to succeed, got: %v", err)
 	}
 
-	// Verify checkpoint advanced to 2026-09-12 (today) and catchUpPending is false
+	// Verify checkpoint advanced to today and catchUpPending is false
+	todayISO := nowInTz.Format("2006-01-02")
 	cpAfter, err := store.GetCheckpoint(ctx, connID)
 	if err != nil || cpAfter == nil {
 		t.Fatalf("expected checkpoint to exist, err=%v", err)
 	}
-	if cpAfter.CoverageTo != "2026-09-12" {
-		t.Fatalf("expected checkpoint to reach 2026-09-12, got: %s", cpAfter.CoverageTo)
+	if cpAfter.CoverageTo != todayISO {
+		t.Fatalf("expected checkpoint to reach %s, got: %s", todayISO, cpAfter.CoverageTo)
 	}
 	if mon.catchUpPending {
 		t.Fatal("expected catchUpPending to be false after complete catchUp")

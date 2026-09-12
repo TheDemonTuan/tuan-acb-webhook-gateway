@@ -3,6 +3,7 @@ export const REALTIME_EVENT_TYPES = [
   'connection.changed',
   'auth.changed',
   'webhook.changed',
+  'notification.changed',
   'delivery.changed',
   'poll.completed',
   'audit.created',

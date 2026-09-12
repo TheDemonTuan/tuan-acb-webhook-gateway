@@ -76,6 +76,14 @@ func TestDispatcherHappyPath(t *testing.T) {
 	if err != nil || summary.Pending != 0 {
 		t.Fatalf("summary unexpected: %+v", summary)
 	}
+
+	var attemptCount int
+	var outcome string
+	var statusCode int
+	err = store.DB().QueryRowContext(ctx, `SELECT count(*), max(outcome), max(status_code) FROM delivery_attempts`).Scan(&attemptCount, &outcome, &statusCode)
+	if err != nil || attemptCount != 1 || outcome != "SUCCESS" || statusCode != 200 {
+		t.Fatalf("unexpected attempt record: count=%d outcome=%s status=%d err=%v", attemptCount, outcome, statusCode, err)
+	}
 }
 
 func TestDispatcherRetryAndDeadLetter(t *testing.T) {
@@ -134,6 +142,28 @@ func TestDispatcherRetryAndDeadLetter(t *testing.T) {
 	summary, err := store.DeliverySummary(ctx)
 	if err != nil || summary.DeadLetter != 1 || summary.Pending != 0 {
 		t.Fatalf("expected 1 dead letter, got: %+v", summary)
+	}
+
+	rows, err := store.DB().QueryContext(ctx, `SELECT attempt_number, status_code, outcome FROM delivery_attempts ORDER BY attempt_number ASC`)
+	if err != nil {
+		t.Fatalf("query attempts failed: %v", err)
+	}
+	defer rows.Close()
+	type attRec struct {
+		num    int
+		code   int
+		outcome string
+	}
+	var recorded []attRec
+	for rows.Next() {
+		var a attRec
+		if err := rows.Scan(&a.num, &a.code, &a.outcome); err != nil {
+			t.Fatal(err)
+		}
+		recorded = append(recorded, a)
+	}
+	if len(recorded) != 2 || recorded[0].outcome != "RETRY" || recorded[1].outcome != "TERMINAL_FAILURE" {
+		t.Fatalf("unexpected recorded attempts: %+v", recorded)
 	}
 }
 

@@ -18,11 +18,13 @@ import (
 	"time"
 
 	"github.com/thedemontuan/acb-transaction-webhook/internal/acb"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/bark"
 	"github.com/thedemontuan/acb-transaction-webhook/internal/config"
 	"github.com/thedemontuan/acb-transaction-webhook/internal/eventhub"
 	"github.com/thedemontuan/acb-transaction-webhook/internal/httpapi"
 	"github.com/thedemontuan/acb-transaction-webhook/internal/lock"
 	"github.com/thedemontuan/acb-transaction-webhook/internal/monitor"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/notification"
 	"github.com/thedemontuan/acb-transaction-webhook/internal/security"
 	"github.com/thedemontuan/acb-transaction-webhook/internal/storage"
 	"github.com/thedemontuan/acb-transaction-webhook/internal/webhook"
@@ -131,8 +133,22 @@ func main() {
 
 	hub := eventhub.New()
 
-	dispatcher := webhook.NewDispatcher(store, nil)
-	go dispatcher.Run(ctx)
+	notificationRegistry := notification.NewRegistry()
+	notificationRegistry.Register("WEBHOOK", webhook.NewSender(nil, false))
+
+	barkCfg, err := bark.LoadConfigFromEnv()
+	if err != nil {
+		logger.Warn("invalid Bark configuration", "error", err)
+	}
+	var barkSender *bark.Sender
+	if barkCfg.Configured() {
+		barkSender = bark.NewSender(barkCfg, nil, cfg.PublicOrigin)
+		notificationRegistry.Register("BARK", barkSender)
+		logger.Info("Bark notification provider registered", "server_url", barkCfg.ServerURL)
+	}
+
+	dispatcher := notification.NewDispatcher(store, notificationRegistry)
+	go dispatcher.Start(ctx)
 
 	acbClient, err := acb.NewClient("https://online.acb.com.vn", nil)
 	if err != nil {
@@ -210,7 +226,14 @@ func main() {
 		addresses = append(addresses, strings.TrimSuffix(primaryAddr, ":8080")+":8090")
 	}
 
-	server := httpapi.New(cfg, store).WithSyncRequester(bankMonitor).WithHistoryEnsurer(bankMonitor).WithMonitorNotifier(bankMonitor).WithEventHub(hub)
+	server := httpapi.New(cfg, store).
+		WithSyncRequester(bankMonitor).
+		WithHistoryEnsurer(bankMonitor).
+		WithMonitorNotifier(bankMonitor).
+		WithEventHub(hub).
+		WithBarkSender(barkSender).
+		WithNotificationRegistry(notificationRegistry).
+		WithWakeDispatcher(dispatcher.Wake)
 	go server.RunJournalRetention(ctx, 24*time.Hour)
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)

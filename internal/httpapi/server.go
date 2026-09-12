@@ -19,15 +19,18 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/thedemontuan/acb-transaction-webhook/internal/auth"
 	"github.com/thedemontuan/acb-transaction-webhook/internal/authbrowser"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/bark"
 	"github.com/thedemontuan/acb-transaction-webhook/internal/config"
 	"github.com/thedemontuan/acb-transaction-webhook/internal/eventhub"
 	"github.com/thedemontuan/acb-transaction-webhook/internal/httpui"
 	"github.com/thedemontuan/acb-transaction-webhook/internal/monitor"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/notification"
 	"github.com/thedemontuan/acb-transaction-webhook/internal/security"
 	"github.com/thedemontuan/acb-transaction-webhook/internal/storage"
 	"github.com/thedemontuan/acb-transaction-webhook/internal/telemetry"
@@ -63,6 +66,11 @@ type Server struct {
 	keyring         *security.Keyring
 	eventHub        *eventhub.Hub
 	ttsClient       *ttsclient.Client
+	barkSender      *bark.Sender
+	notifRegistry   *notification.Registry
+	wakeFn          func()
+	testCooldownMu  sync.Mutex
+	lastTestPerCh   map[string]time.Time
 	started         time.Time
 	handler         http.Handler
 }
@@ -139,6 +147,15 @@ func New(cfg config.Config, store *storage.Store) *Server {
 
 		api.With(s.auth.Require(auth.Owner)).Post("/webhooks", s.createEndpoint)
 		api.With(s.auth.Require(auth.Owner)).Post("/webhooks/{id}/{action:enable|disable}", s.endpointAction)
+
+		api.Get("/notification-providers", s.notificationProviders)
+		api.Get("/notification-channels", s.notificationChannels)
+		api.With(s.auth.Require(auth.Owner)).Post("/notification-channels", s.createNotificationChannel)
+		api.With(s.auth.Require(auth.Owner)).Put("/notification-channels/{id}", s.updateNotificationChannel)
+		api.With(s.auth.Require(auth.Owner)).Post("/notification-channels/{id}/{action:enable|disable}", s.toggleNotificationChannel)
+		api.With(s.auth.Require(auth.Owner)).Post("/notification-channels/{id}/rotate-secret", s.rotateChannelSecret)
+		api.With(s.auth.Require(auth.Owner)).Post("/notification-channels/{id}/test", s.testNotificationChannel)
+		api.With(s.auth.Require(auth.Owner)).Post("/deliveries/{id}/replay", s.replayDelivery)
 	})
 	ui, err := fs.Sub(httpui.Files, "dist")
 	if err == nil {
@@ -168,6 +185,21 @@ func (s *Server) WithSyncRequester(requester SyncRequester) *Server {
 
 func (s *Server) WithHistoryEnsurer(ensurer HistoryEnsurer) *Server {
 	s.historyEnsurer = ensurer
+	return s
+}
+
+func (s *Server) WithBarkSender(sender *bark.Sender) *Server {
+	s.barkSender = sender
+	return s
+}
+
+func (s *Server) WithNotificationRegistry(reg *notification.Registry) *Server {
+	s.notifRegistry = reg
+	return s
+}
+
+func (s *Server) WithWakeDispatcher(wake func()) *Server {
+	s.wakeFn = wake
 	return s
 }
 
@@ -218,7 +250,15 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "storage_error"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"service": "HEALTHY", "version": "2.0.0-dev", "uptimeSeconds": int(time.Since(s.started).Seconds()), "acb": acb, "storage": map[string]string{"status": "READY"}, "webhooks": summary})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"service":       "HEALTHY",
+		"version":       "2.0.0-dev",
+		"uptimeSeconds": int(time.Since(s.started).Seconds()),
+		"acb":           acb,
+		"storage":       map[string]string{"status": "READY"},
+		"webhooks":      summary,
+		"notifications": summary,
+	})
 }
 func (s *Server) realtimeStatus(w http.ResponseWriter, r *http.Request) {
 	if s.eventHub != nil {

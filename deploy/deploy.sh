@@ -127,6 +127,35 @@ fi
 ensure_secret_permissions "$tts_token_file" "tts_internal_token"
 [[ -s "$tts_token_file" ]] || { printf 'TTS internal token file is empty: %s\n' "$tts_token_file" >&2; exit 1; }
 
+# Ensure secrets for Bark Basic Auth
+bark_user_file="$script_dir/secrets/bark_basic_auth_user"
+if [[ ! -f "$bark_user_file" ]]; then
+  user_val=""
+  if [[ -n "${BARK_BASIC_AUTH_USER:-}" ]]; then
+    user_val="$BARK_BASIC_AUTH_USER"
+  elif grep -q '^BARK_BASIC_AUTH_USER=' "$env_file" 2>/dev/null; then
+    val="$(grep '^BARK_BASIC_AUTH_USER=' "$env_file" | head -n1 | cut -d= -f2- | tr -d ' "[:space:]' | tr -d "'")"
+    [[ -n "$val" ]] && user_val="$val"
+  fi
+  [[ -z "$user_val" ]] && user_val="bark_admin"
+  printf '%s\n' "$user_val" > "$bark_user_file"
+fi
+ensure_secret_permissions "$bark_user_file" "bark_basic_auth_user"
+
+bark_pass_file="$script_dir/secrets/bark_basic_auth_password"
+if [[ ! -f "$bark_pass_file" ]]; then
+  pass_val=""
+  if [[ -n "${BARK_BASIC_AUTH_PASSWORD:-}" ]]; then
+    pass_val="$BARK_BASIC_AUTH_PASSWORD"
+  elif grep -q '^BARK_BASIC_AUTH_PASSWORD=' "$env_file" 2>/dev/null; then
+    val="$(grep '^BARK_BASIC_AUTH_PASSWORD=' "$env_file" | head -n1 | cut -d= -f2- | tr -d ' "[:space:]' | tr -d "'")"
+    [[ -n "$val" ]] && pass_val="$val"
+  fi
+  [[ -z "$pass_val" ]] && pass_val="$(openssl rand -hex 24 2>/dev/null || head -c 32 /dev/urandom | xxd -p | head -n1)"
+  printf '%s\n' "$pass_val" > "$bark_pass_file"
+fi
+ensure_secret_permissions "$bark_pass_file" "bark_basic_auth_password"
+
 # 1. Execute pre-deployment offline backup
 if [[ -f "$script_dir/data/gateway.db" ]]; then
   printf 'Executing pre-deployment backup with WAL checkpoint...\n'
@@ -137,12 +166,20 @@ fi
 gateway_current_file="$script_dir/.deployed-image"
 browser_current_file="$script_dir/.deployed-browser-image"
 tts_current_file="$script_dir/.deployed-tts-image"
+bark_current_file="$script_dir/.deployed-bark-image"
 gateway_current="$(cat "$gateway_current_file" 2>/dev/null || true)"
 browser_current="$(cat "$browser_current_file" 2>/dev/null || true)"
 tts_current="$(cat "$tts_current_file" 2>/dev/null || true)"
+bark_current="$(cat "$bark_current_file" 2>/dev/null || true)"
+
+bark_image_ref="${BARK_IMAGE_REF:-${bark_current:-ghcr.io/finb/bark-server:latest}}"
+export BARK_IMAGE_REF="$bark_image_ref"
 
 # 2. Pull images and execute migration-only gate
 pull_targets=(gateway auth-browser tts-gateway)
+if docker compose --env-file "$env_file" -f "$compose_file" config --services 2>/dev/null | grep -q "^bark$"; then
+  pull_targets+=(bark)
+fi
 if ! docker compose --env-file "$env_file" -f "$compose_file" pull "${pull_targets[@]}"; then
   echo "Failed to pull deployment images." >&2
   exit 1
@@ -178,7 +215,11 @@ fi
 if [[ -n "$tts_current" && "$tts_current" != "$tts_image_ref" ]]; then
   printf '%s\n' "$tts_current" > "$script_dir/.previous-tts-image"
 fi
+if [[ -n "$bark_current" && "$bark_current" != "$bark_image_ref" ]]; then
+  printf '%s\n' "$bark_current" > "$script_dir/.previous-bark-image"
+fi
 printf '%s\n' "$image_ref" > "$gateway_current_file"
 printf '%s\n' "$browser_image_ref" > "$browser_current_file"
 printf '%s\n' "$tts_image_ref" > "$tts_current_file"
-printf 'Deployment successful: gateway=%s auth-browser=%s tts=%s\n' "$image_ref" "$browser_image_ref" "${tts_image_ref:-none}"
+printf '%s\n' "$bark_image_ref" > "$bark_current_file"
+printf 'Deployment successful: gateway=%s auth-browser=%s tts=%s bark=%s\n' "$image_ref" "$browser_image_ref" "${tts_image_ref:-none}" "$bark_image_ref"

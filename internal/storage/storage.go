@@ -209,4 +209,12 @@ CREATE TABLE IF NOT EXISTS voice_settings (
     online_fallback INTEGER NOT NULL DEFAULT 1,
     updated_at TEXT NOT NULL
 );
+`}, {7, "2026-09-13-v6-notification-providers", `
+ALTER TABLE webhook_endpoints ADD COLUMN provider TEXT NOT NULL DEFAULT 'WEBHOOK';
+ALTER TABLE endpoint_versions ADD COLUMN provider_config_json TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE endpoint_secrets ADD COLUMN secret_kind TEXT NOT NULL DEFAULT 'WEBHOOK_HMAC';
+ALTER TABLE delivery_attempts ADD COLUMN provider TEXT NOT NULL DEFAULT 'WEBHOOK';
+ALTER TABLE delivery_attempts ADD COLUMN provider_error_code TEXT;
+ALTER TABLE deliveries ADD COLUMN retry_cycle_start_attempt INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_webhook_endpoints_provider_status ON webhook_endpoints(provider, status);
 `}}

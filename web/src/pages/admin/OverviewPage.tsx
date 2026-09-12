@@ -11,7 +11,7 @@ import {
   Landmark,
   ShieldCheck,
 } from 'lucide-react';
-import { fetchConnection, fetchStatus, fetchWebhooks } from '../../shared/api/queries';
+import { fetchConnection, fetchNotificationChannels, fetchStatus } from '../../shared/api/queries';
 import { queryKeys } from '../../shared/api/query-keys';
 import { getAcbStatusDescriptor } from '../../content/status-copy';
 
@@ -28,16 +28,16 @@ export const OverviewPage: React.FC = () => {
     queryFn: fetchConnection,
   });
 
-  const { data: webhooksData } = useQuery({
-    queryKey: queryKeys.webhooks,
-    queryFn: fetchWebhooks,
+  const { data: channelsData } = useQuery({
+    queryKey: queryKeys.notificationChannels,
+    queryFn: fetchNotificationChannels,
   });
 
   const acbState = connData?.connection?.state || status?.acb?.state || 'UNCONFIGURED';
   const desc = getAcbStatusDescriptor(acbState);
   const isMonitoring = acbState === 'MONITORING';
-  const activeWebhooksCount =
-    webhooksData?.items?.filter((w) => w.status === 'ACTIVE').length ?? 0;
+  const activeChannelsCount =
+    channelsData?.items?.filter((w) => w.status === 'ACTIVE').length ?? 0;
 
   return (
     <div className="space-y-6">
@@ -163,7 +163,7 @@ export const OverviewPage: React.FC = () => {
           </div>
           <div className="mt-3">
             <span className="text-2xl font-bold tracking-tight text-stone-900">
-              {activeWebhooksCount}
+              {activeChannelsCount}
             </span>
             <span className="text-xs text-stone-500 ml-1.5 font-medium">kênh đang bật</span>
           </div>

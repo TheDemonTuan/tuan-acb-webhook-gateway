@@ -43,6 +43,13 @@ export interface WebhookChangedData {
   name?: string;
 }
 
+export interface NotificationChangedData {
+  id?: string;
+  status?: string;
+  name?: string;
+  provider?: string;
+}
+
 export interface DeliveryChangedData {
   id: string;
   endpointId: string;
@@ -76,6 +83,7 @@ export interface RealtimeEventMap {
   'connection.changed': ConnectionChangedData;
   'auth.changed': AuthChangedData;
   'webhook.changed': WebhookChangedData;
+  'notification.changed': NotificationChangedData;
   'delivery.changed': DeliveryChangedData;
   'poll.completed': PollCompletedData;
   'audit.created': AuditCreatedData;

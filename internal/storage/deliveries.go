@@ -8,14 +8,18 @@ import (
 )
 
 type Delivery struct {
-	ID          string `json:"id"`
-	EventID     string `json:"eventId"`
-	EndpointID  string `json:"endpointId"`
-	Status      string `json:"status"`
-	Attempts    int    `json:"attempts"`
-	ClaimToken  string `json:"-"`
-	LeaseUntil  string `json:"leaseUntil,omitempty"`
-	NextAttempt string `json:"nextAttemptAt"`
+	ID                     string `json:"id"`
+	EventID                string `json:"eventId"`
+	EndpointID             string `json:"endpointId"`
+	EndpointRevision       int    `json:"endpointRevision"`
+	KeyID                  string `json:"keyId"`
+	Provider               string `json:"provider"`
+	Status                 string `json:"status"`
+	Attempts               int    `json:"attempts"`
+	RetryCycleStartAttempt int    `json:"retryCycleStartAttempt"`
+	ClaimToken             string `json:"-"`
+	LeaseUntil             string `json:"leaseUntil,omitempty"`
+	NextAttempt            string `json:"nextAttemptAt"`
 }
 
 func (s *Store) NextDeliveryDue(ctx context.Context) (time.Time, error) {
@@ -35,16 +39,22 @@ func (s *Store) ClaimDelivery(ctx context.Context, nowAt time.Time, lease time.D
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
 		nowString := nowAt.Format(time.RFC3339Nano)
 		err := tx.QueryRowContext(ctx, `
-			SELECT d.id,d.event_id,d.endpoint_id,d.status,d.attempts,d.next_attempt_at
+			SELECT d.id, d.event_id, d.endpoint_id, COALESCE(d.endpoint_revision, 1), COALESCE(d.key_id, 'k1'),
+			       COALESCE(e.provider, 'WEBHOOK'), d.status, d.attempts, COALESCE(d.retry_cycle_start_attempt, 0), d.next_attempt_at
 			FROM deliveries d
-			WHERE ((d.status='PENDING' AND d.next_attempt_at<=?) OR (d.status='IN_FLIGHT' AND d.lease_until<?))
+			JOIN webhook_endpoints e ON e.id = d.endpoint_id
+			WHERE e.status = 'ACTIVE'
+			  AND ((d.status='PENDING' AND d.next_attempt_at<=?) OR (d.status='IN_FLIGHT' AND d.lease_until<?))
 			  AND NOT EXISTS (
 				SELECT 1 FROM deliveries active
 				WHERE active.endpoint_id=d.endpoint_id AND active.status='IN_FLIGHT'
 				  AND active.lease_until>=? AND active.id<>d.id
 			  )
-			ORDER BY d.next_attempt_at,d.id LIMIT 1
-		`, nowString, nowString, nowString).Scan(&delivery.ID, &delivery.EventID, &delivery.EndpointID, &delivery.Status, &delivery.Attempts, &delivery.NextAttempt)
+			ORDER BY d.next_attempt_at, d.id LIMIT 1
+		`, nowString, nowString, nowString).Scan(
+			&delivery.ID, &delivery.EventID, &delivery.EndpointID, &delivery.EndpointRevision, &delivery.KeyID,
+			&delivery.Provider, &delivery.Status, &delivery.Attempts, &delivery.RetryCycleStartAttempt, &delivery.NextAttempt,
+		)
 		if err != nil {
 			return err
 		}

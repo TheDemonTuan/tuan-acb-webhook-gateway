@@ -150,7 +150,12 @@ func (s *Store) EmitTransactionEvent(ctx context.Context, transactionID, eventTy
 		}
 
 		// Queue delivery to all active endpoints
-		rows, err := tx.QueryContext(ctx, `SELECT id, current_revision FROM webhook_endpoints WHERE status = 'ACTIVE'`)
+		rows, err := tx.QueryContext(ctx, `
+			SELECT e.id, e.current_revision, COALESCE(e.provider, 'WEBHOOK'), COALESCE(s.key_id, 'k1')
+			FROM webhook_endpoints e
+			LEFT JOIN endpoint_secrets s ON s.endpoint_id = e.id AND s.status = 'ACTIVE'
+			WHERE e.status = 'ACTIVE'
+		`)
 		if err != nil {
 			return err
 		}
@@ -159,11 +164,13 @@ func (s *Store) EmitTransactionEvent(ctx context.Context, transactionID, eventTy
 		type epInfo struct {
 			id       string
 			revision int
+			provider string
+			keyID    string
 		}
 		var endpoints []epInfo
 		for rows.Next() {
 			var ep epInfo
-			if err := rows.Scan(&ep.id, &ep.revision); err != nil {
+			if err := rows.Scan(&ep.id, &ep.revision, &ep.provider, &ep.keyID); err != nil {
 				return err
 			}
 			endpoints = append(endpoints, ep)
@@ -176,9 +183,9 @@ func (s *Store) EmitTransactionEvent(ctx context.Context, transactionID, eventTy
 			deliveryID := id("del")
 			_, err := tx.ExecContext(ctx, `
 				INSERT INTO deliveries(id, event_id, endpoint_id, endpoint_revision, key_id, status, attempts, next_attempt_at, created_at, updated_at)
-				VALUES(?, ?, ?, ?, 'k1', 'PENDING', 0, ?, ?, ?)
+				VALUES(?, ?, ?, ?, ?, 'PENDING', 0, ?, ?, ?)
 				ON CONFLICT(event_id, endpoint_id) DO NOTHING
-			`, deliveryID, eventID, ep.id, ep.revision, createdAt, createdAt, createdAt)
+			`, deliveryID, eventID, ep.id, ep.revision, ep.keyID, createdAt, createdAt, createdAt)
 			if err != nil {
 				return err
 			}
@@ -208,11 +215,14 @@ func (s *Store) FailDelivery(ctx context.Context, deliveryID, claimToken, reason
 	return nil
 }
 
-func (s *Store) RecordAttempt(ctx context.Context, deliveryID string, attemptNum, httpStatus, durationMs int, errStr string) error {
+func (s *Store) RecordAttempt(ctx context.Context, deliveryID string, attemptNum, statusCode, latencyMs int, outcome, sanitizedError, provider, providerErrorCode string) error {
+	if provider == "" {
+		provider = "WEBHOOK"
+	}
 	attemptID := id("att")
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO delivery_attempts(id, delivery_id, attempt_number, http_status, duration_ms, error_envelope, executed_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?)
-	`, attemptID, deliveryID, attemptNum, httpStatus, durationMs, []byte(errStr), now())
+		INSERT INTO delivery_attempts(id, delivery_id, attempt_number, status_code, latency_ms, outcome, sanitized_error, provider, provider_error_code, created_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, attemptID, deliveryID, attemptNum, statusCode, latencyMs, outcome, sanitizedError, provider, providerErrorCode, now())
 	return err
 }

@@ -23,7 +23,7 @@ export const AdminLayout: React.FC = () => {
     { label: 'Tổng quan', onClick: () => navigate('/admin/overview'), active: isCurrent('/') || isCurrent('/admin') || isCurrent('/admin/overview') },
     { label: 'Kết nối ACB', onClick: () => navigate('/admin/connection'), active: isCurrent('/admin/connection') },
     { label: 'Giao dịch', onClick: () => navigate('/transactions'), active: false },
-    { label: 'Webhooks', onClick: () => navigate('/admin/notifications'), active: isCurrent('/admin/notifications') },
+    { label: 'Kênh thông báo', onClick: () => navigate('/admin/notifications'), active: isCurrent('/admin/notifications') },
     { label: 'Phân phối', onClick: () => navigate('/admin/activity?tab=deliveries'), active: isCurrent('/admin/activity', 'tab=deliveries') },
     { label: 'Polling', onClick: () => navigate('/admin/activity?tab=polling'), active: isCurrent('/admin/activity', 'tab=polling') },
     { label: 'Chẩn đoán', onClick: () => navigate('/admin/system'), active: isCurrent('/admin/system') },

@@ -32,6 +32,10 @@ services:
       AUTH_BROWSER_VNC_URL: http://auth-browser:6080
       TTS_GATEWAY_URL: http://tts-gateway:8081
       TTS_INTERNAL_TOKEN_FILE: /run/secrets/tts_internal_token
+      BARK_SERVER_URL: ${BARK_SERVER_URL:-http://bark:8080}
+      BARK_PUBLIC_URL: ${BARK_PUBLIC_URL:-https://bark.tuannguyenviet.site}
+      BARK_BASIC_AUTH_USER_FILE: /run/secrets/bark_basic_auth_user
+      BARK_BASIC_AUTH_PASSWORD_FILE: /run/secrets/bark_basic_auth_password
     expose:
       - "8090"
     networks:
@@ -43,6 +47,8 @@ services:
       - gateway_data:/data:rw
       - ./secrets/app_master_key:/run/secrets/app_master_key:ro
       - ./secrets/tts_internal_token:/run/secrets/tts_internal_token:ro
+      - ./secrets/bark_basic_auth_user:/run/secrets/bark_basic_auth_user:ro
+      - ./secrets/bark_basic_auth_password:/run/secrets/bark_basic_auth_password:ro
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,size=64m
     healthcheck:
@@ -129,6 +135,48 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  bark:
+    image: ${BARK_IMAGE_REF:-ghcr.io/finb/bark-server:latest}
+    container_name: acb-bark
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    entrypoint: ["/bin/sh", "/bark-entrypoint.sh"]
+    environment:
+      TZ: Asia/Ho_Chi_Minh
+      BARK_SERVER_ADDRESS: 0.0.0.0:8080
+      BARK_SERVER_DATA_DIR: /data
+      BARK_SERVER_REDUCE_MEMORY_USAGE: "true"
+    expose:
+      - "8080"
+    networks:
+      default:
+        aliases:
+          - bark
+      edge:
+        aliases:
+          - acb-bark
+    volumes:
+      - bark_data:/data:rw
+      - ./bark-entrypoint.sh:/bark-entrypoint.sh:ro
+      - ./secrets/bark_basic_auth_user:/run/secrets/bark_basic_auth_user:ro
+      - ./secrets/bark_basic_auth_password:/run/secrets/bark_basic_auth_password:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/healthz | grep -q ok || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    pids_limit: 50
+    mem_limit: 128m
+    cpus: 0.25
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 networks:
   default:
     internal: false
@@ -139,3 +187,5 @@ networks:
 volumes:
   gateway_data:
     name: bank-event-gateway_gateway_data
+  bark_data:
+    name: bank-event-gateway_bark_data

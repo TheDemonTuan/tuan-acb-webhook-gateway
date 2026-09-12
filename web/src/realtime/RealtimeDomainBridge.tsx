@@ -104,8 +104,15 @@ export const RealtimeDomainBridge: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.status });
     });
 
-    // 4. webhook.changed & delivery.changed -> Invalidate webhooks & deliveries
+    // 4. webhook.changed, notification.changed & delivery.changed -> Invalidate webhooks, channels & deliveries
     const unsubWebhook = subscribe('webhook.changed', () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.webhooks });
+      queryClient.invalidateQueries({ queryKey: queryKeys.notificationChannels });
+      queryClient.invalidateQueries({ queryKey: queryKeys.status });
+    });
+
+    const unsubNotification = subscribe('notification.changed', () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.notificationChannels });
       queryClient.invalidateQueries({ queryKey: queryKeys.webhooks });
       queryClient.invalidateQueries({ queryKey: queryKeys.status });
     });
@@ -126,6 +133,7 @@ export const RealtimeDomainBridge: React.FC = () => {
       unsubConn();
       unsubAuth();
       unsubWebhook();
+      unsubNotification();
       unsubDelivery();
       unsubAudit();
     };

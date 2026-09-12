@@ -21,7 +21,19 @@ cd deploy
   ghcr.io/owner/acb-transaction-webhook-tts-gateway@sha256:<tts-digest>
 ```
 
-The image workflow publishes tags; resolve immutable digests before deploying. Do not deploy `latest`. `deploy.sh` automatically provisions `secrets/app_master_key` and `secrets/tts_internal_token` with UID 1000 compatibility if they do not already exist.
+The image workflow publishes tags; resolve immutable digests before deploying. Do not deploy `latest`. `deploy.sh` automatically provisions `secrets/app_master_key`, `secrets/tts_internal_token`, and Bark Basic Auth secrets (`secrets/bark_basic_auth_user`, `secrets/bark_basic_auth_password`) with UID 1000 compatibility if they do not already exist.
+
+## Bark Notification Service (iOS Push)
+
+Bark runs as a self-hosted notification provider in `acb-bark` container on the private Docker network (`http://bark:8080`).
+
+- **Internal access only**: The gateway contacts Bark over Docker private DNS. Bark port 8080 is NOT published to the host or public internet directly.
+- **Onboarding via Cloudflare Tunnel**: Route a dedicated hostname (e.g. `bark.tuannguyenviet.site`) through Cloudflare Tunnel to `http://acb-bark:8080`. Keep `/ping`, `/healthz`, `/register` accessible for iPhone registration, while `/push` is protected by Basic Auth.
+- **Encryption at rest**: Bark device keys are encrypted with AES-256-GCM using the gateway master key and never exposed via API or logs.
+- **Smoke test**:
+  ```bash
+  BARK_HOST=127.0.0.1 BARK_PORT=8080 BARK_USER=admin BARK_PASS=... ./deploy/smoke-test-bark.sh
+  ```
 
 ## Health
 
