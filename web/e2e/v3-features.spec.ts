@@ -78,7 +78,7 @@ test.describe('V3 Features: Schedule, QR, Server-side Transactions & Detail', ()
       await expect(page.getByRole('heading', { name: 'Quét mã nhận tiền ACB' })).toBeVisible();
 
       // Close modal
-      await page.getByRole('button', { name: 'Đóng' }).click();
+      await page.getByRole('button', { name: 'Đóng', exact: true }).click();
       await expect(page.getByRole('heading', { name: 'Quét mã nhận tiền ACB' })).not.toBeVisible();
     }
   });
