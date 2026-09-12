@@ -12,6 +12,13 @@ export interface VoiceMessage {
   pitch?: number;
   voiceURI?: string;
   lang?: string;
+  transactionId?: string;
+  summaryTransactionIds?: string[];
+  isTest?: boolean;
+  isReplay?: boolean;
+  includeDescription?: boolean;
+  onSuccess?: () => void;
+  onError?: (error: unknown) => void;
 }
 
 export interface VoiceEngine {
@@ -20,3 +27,4 @@ export interface VoiceEngine {
   speak(message: VoiceMessage): Promise<void>;
   cancel(): void;
 }
+

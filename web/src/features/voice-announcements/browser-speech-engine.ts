@@ -1,5 +1,11 @@
 import type { VoiceEngine, VoiceInfo, VoiceMessage } from './voice-engine';
 
+export function isVietnameseVoice(v: { lang?: string }): boolean {
+  if (!v.lang) return false;
+  const lang = v.lang.toLowerCase().replace('_', '-');
+  return lang === 'vi' || lang.startsWith('vi-');
+}
+
 export class BrowserSpeechEngine implements VoiceEngine {
   public isSupported(): boolean {
     return (
@@ -55,69 +61,69 @@ export class BrowserSpeechEngine implements VoiceEngine {
 
     const synth = window.speechSynthesis;
 
-    // In some browsers, speechSynthesis can get into a paused state
     if (synth.paused) {
       synth.resume();
     }
 
-    return new Promise((resolve) => {
-      const utterance = new SpeechSynthesisUtterance(message.text);
-      utterance.lang = message.lang || 'vi-VN';
+    const rawVoices = synth.getVoices();
+    let selectedVoice: SpeechSynthesisVoice | undefined;
+
+    if (message.voiceURI) {
+      const match = rawVoices.find((v) => v.voiceURI === message.voiceURI);
+      if (match && isVietnameseVoice(match)) {
+        selectedVoice = match;
+      }
+    }
+
+    if (!selectedVoice) {
+      selectedVoice =
+        rawVoices.find((v) => v.lang.toLowerCase().replace('_', '-') === 'vi-vn') ??
+        rawVoices.find((v) => isVietnameseVoice(v));
+    }
+
+    // STRICT VIETNAMESE ONLY: Never fallback to English or default non-Vietnamese voices!
+    if (!selectedVoice) {
+      throw new Error('BROWSER_VIETNAMESE_VOICE_UNAVAILABLE');
+    }
+
+    return new Promise((resolve, reject) => {
+      const UtteranceClass = (window as any).SpeechSynthesisUtterance || SpeechSynthesisUtterance;
+      const utterance = new UtteranceClass(message.text);
+      utterance.voice = selectedVoice;
+      utterance.lang = selectedVoice.lang || 'vi-VN';
       utterance.volume = message.volume ?? 1;
       utterance.rate = message.rate ?? 1;
       utterance.pitch = message.pitch ?? 1;
 
-      const rawVoices = synth.getVoices();
-      let selectedVoice: SpeechSynthesisVoice | undefined;
+      let settled = false;
 
-      if (message.voiceURI) {
-        selectedVoice = rawVoices.find((v) => v.voiceURI === message.voiceURI);
-      }
-
-      if (!selectedVoice) {
-        // Priority: exact vi-VN -> starts with vi -> contains vietnam / tiếng việt -> default voice
-        selectedVoice =
-          rawVoices.find((v) => v.lang.toLowerCase() === 'vi-vn') ??
-          rawVoices.find((v) => v.lang.toLowerCase().startsWith('vi')) ??
-          rawVoices.find(
-            (v) =>
-              v.name.toLowerCase().includes('vietnamese') ||
-              v.name.toLowerCase().includes('tiếng việt') ||
-              v.name.toLowerCase().includes('viet nam')
-          ) ??
-          rawVoices.find((v) => v.default) ??
-          rawVoices[0];
-      }
-
-      if (selectedVoice) {
-        utterance.voice = selectedVoice;
-      }
-
-      let finished = false;
-      const finish = () => {
-        if (!finished) {
-          finished = true;
+      utterance.onend = () => {
+        if (!settled) {
+          settled = true;
           resolve();
         }
       };
 
-      utterance.onend = finish;
-      utterance.onerror = () => {
-        finish();
+      utterance.onerror = (event: SpeechSynthesisErrorEvent) => {
+        if (!settled) {
+          settled = true;
+          if (event.error === 'canceled' || event.error === 'interrupted') {
+            resolve();
+          } else {
+            reject(new Error(`BROWSER_SPEECH_ERROR: ${event.error || 'unknown'}`));
+          }
+        }
       };
-
-      // Fallback timeout in case utterance stalls
-      const maxSpeechTimeout = Math.max(3000, message.text.length * 150);
-      setTimeout(finish, maxSpeechTimeout);
 
       synth.speak(utterance);
     });
   }
 
   public cancel(): void {
-    if (!this.isSupported()) return;
-    try {
-      window.speechSynthesis.cancel();
-    } catch {}
+    if (this.isSupported()) {
+      try {
+        window.speechSynthesis.cancel();
+      } catch {}
+    }
   }
 }

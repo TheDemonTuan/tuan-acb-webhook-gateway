@@ -9,13 +9,14 @@ export interface VoiceSettingsSheetProps {
 }
 
 export const VoiceSettingsSheet: React.FC<VoiceSettingsSheetProps> = ({ isOpen, onClose }) => {
-  const { settings, updateSettings, isSupported, voices } = useVoiceAnnouncements();
+  const { settings, updateSettings, unlockAudio, isSupported, voices } = useVoiceAnnouncements();
 
   if (!isOpen) return null;
 
-  const vietnameseVoices = voices.filter(
-    (v) => v.lang.toLowerCase().includes('vi') || v.lang.toLowerCase().includes('vn')
-  );
+  const vietnameseVoices = voices.filter((v) => {
+    const l = v.lang.toLowerCase().replace('_', '-');
+    return l === 'vi' || l.startsWith('vi-');
+  });
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
@@ -64,7 +65,14 @@ export const VoiceSettingsSheet: React.FC<VoiceSettingsSheetProps> = ({ isOpen, 
                   role="switch"
                   aria-checked={settings.enabled}
                   aria-label="Bật đọc giao dịch"
-                  onClick={() => updateSettings({ enabled: !settings.enabled })}
+                  onClick={async () => {
+                    if (!settings.enabled) {
+                      await unlockAudio();
+                      updateSettings({ enabled: true });
+                    } else {
+                      updateSettings({ enabled: false });
+                    }
+                  }}
                   className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-emerald-500 ${
                     settings.enabled ? 'bg-emerald-600' : 'bg-stone-300'
                   }`}
@@ -152,8 +160,11 @@ export const VoiceSettingsSheet: React.FC<VoiceSettingsSheetProps> = ({ isOpen, 
                   <span className="text-sm font-medium text-stone-800 block">
                     Đọc kèm nội dung chuyển khoản
                   </span>
-                  <span className="text-xs text-stone-500">
+                  <span className="text-xs text-stone-500 block">
                     Phát thêm nội dung tin nhắn giao dịch sau khi đọc số tiền
+                  </span>
+                  <span className="text-[11px] text-amber-700 bg-amber-50 rounded px-1.5 py-0.5 mt-1 inline-block border border-amber-200/60">
+                    Khi bật, nội dung chuyển khoản sẽ được gửi tới dịch vụ đọc trực tuyến.
                   </span>
                 </div>
               </label>

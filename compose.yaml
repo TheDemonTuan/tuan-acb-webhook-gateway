@@ -1,0 +1,32 @@
+name: acb-transaction-webhook
+
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: acb-gateway-dev
+    ports:
+      - "8090:8090"
+    environment:
+      APP_ENV: development
+      LISTEN_ADDR: 0.0.0.0:8090
+      DATA_DIR: /data
+      DATABASE_PATH: /data/gateway.db
+      TTS_GATEWAY_URL: http://tts-gateway:8081
+    volumes:
+      - ./data:/data
+    depends_on:
+      - tts-gateway
+
+  tts-gateway:
+    build:
+      context: ./tts-gateway
+      dockerfile: Dockerfile
+    container_name: acb-tts-gateway-dev
+    ports:
+      - "8081:8081"
+    environment:
+      TTS_HOST: 0.0.0.0
+      TTS_PORT: 8081
+      TZ: Asia/Ho_Chi_Minh

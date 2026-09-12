@@ -97,6 +97,65 @@ export const getCsrfToken = async (forceRefresh = false): Promise<string> => {
   return csrfPromise;
 };
 
+export interface AudioResponseResult {
+  data: ArrayBuffer;
+  provider: string;
+  voice: string;
+  fallback: boolean;
+  cached: boolean;
+}
+
+export const apiAudio = async (path: string, init?: RequestInit): Promise<AudioResponseResult> => {
+  const method = init?.method?.toUpperCase() ?? 'GET';
+  const isMutating = method !== 'GET' && method !== 'HEAD';
+  let token: string | null = null;
+  if (isMutating) {
+    try {
+      token = await getCsrfToken();
+    } catch {}
+  }
+
+  const headers = new Headers(init?.headers);
+  if (token && !headers.has('X-CSRF-Token')) {
+    headers.set('X-CSRF-Token', token);
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(`/api/v1${path}`, { credentials: 'same-origin', ...init, headers });
+  } catch {
+    throw new Error('Không thể kết nối máy chủ. Vui lòng kiểm tra kết nối và thử lại.');
+  }
+
+  if (!response.ok && isMutating) {
+    let code: string | undefined;
+    try {
+      const cloned = response.clone();
+      const body = await cloned.json();
+      code = body?.code;
+    } catch {}
+
+    if (code === CSRF_CODE_TOKEN_INVALID) {
+      token = await getCsrfToken(true);
+      headers.set('X-CSRF-Token', token);
+      response = await fetch(`/api/v1${path}`, { credentials: 'same-origin', ...init, headers });
+    }
+  }
+
+  if (!response.ok) {
+    throw await parseApiError(response);
+  }
+
+  const data = await response.arrayBuffer();
+  return {
+    data,
+    provider: response.headers.get('X-TTS-Provider') || 'edge',
+    voice: response.headers.get('X-TTS-Voice') || '',
+    fallback: response.headers.get('X-TTS-Fallback') === 'true',
+    cached: response.headers.get('X-TTS-Cached') === 'true',
+  };
+};
+
 export const invalidateCsrfToken = () => {
   cachedCsrfToken = null;
 };

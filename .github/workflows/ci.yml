@@ -33,6 +33,14 @@ jobs:
         run: |
           go test -race ./...
           go vet ./...
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test TTS Gateway
+        working-directory: tts-gateway
+        run: |
+          pip install -r requirements.txt
+          pytest -v
       - name: Verify deployment scripts
         run: bash -n deploy/*.sh
       - name: Check generated source and whitespace
@@ -81,3 +89,26 @@ jobs:
         run: |
           chmod +x deploy/smoke-test-auth-browser.sh
           ./deploy/smoke-test-auth-browser.sh acb-transaction-webhook-auth-browser:smoke-test
+
+  docker-smoke-tts-gateway:
+    name: Docker smoke test (tts-gateway)
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: ./tts-gateway
+          push: false
+          tags: acb-tts-gateway:smoke-test
+          load: true
+      - name: Run tts-gateway image smoke test
+        run: |
+          docker run -d --name smoke-test-tts \
+            -e TTS_PORT=8081 \
+            acb-tts-gateway:smoke-test
+          sleep 3
+          docker exec smoke-test-tts curl -f http://127.0.0.1:8081/health
+          docker stop smoke-test-tts
+          docker rm -f smoke-test-tts

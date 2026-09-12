@@ -31,6 +31,7 @@ import (
 	"github.com/thedemontuan/acb-transaction-webhook/internal/security"
 	"github.com/thedemontuan/acb-transaction-webhook/internal/storage"
 	"github.com/thedemontuan/acb-transaction-webhook/internal/telemetry"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/ttsclient"
 )
 
 type SyncRequester interface {
@@ -61,6 +62,7 @@ type Server struct {
 	browserVNCURL   string
 	keyring         *security.Keyring
 	eventHub        *eventhub.Hub
+	ttsClient       *ttsclient.Client
 	started         time.Time
 	handler         http.Handler
 }
@@ -74,6 +76,10 @@ func New(cfg config.Config, store *storage.Store) *Server {
 	if cfg.Production {
 		verifier = auth.NewCloudflareVerifier(cfg)
 	}
+	var ttsClientInstance *ttsclient.Client
+	if cfg.TTSGatewayURL != "" {
+		ttsClientInstance = ttsclient.New(cfg.TTSGatewayURL, cfg.TTSInternalToken)
+	}
 	s := &Server{
 		cfg:           cfg,
 		store:         store,
@@ -82,6 +88,7 @@ func New(cfg config.Config, store *storage.Store) *Server {
 		browserVNCURL: cfg.AuthBrowserVNCURL,
 		keyring:       keyring,
 		eventHub:      eventhub.New(),
+		ttsClient:     ttsClientInstance,
 		started:       time.Now().UTC(),
 	}
 	r := chi.NewRouter()
@@ -113,6 +120,14 @@ func New(cfg config.Config, store *storage.Store) *Server {
 		api.With(s.auth.Require(auth.Owner, auth.Operator)).Post("/payment-qr/upload", s.uploadPaymentQR)
 		api.With(s.auth.Require(auth.Owner, auth.Operator)).Post("/payment-qr/generate", s.generatePaymentQR)
 		api.With(s.auth.Require(auth.Owner, auth.Operator)).Delete("/payment-qr", s.deletePaymentQR)
+
+		api.Get("/voice/settings", s.getVoiceSettings)
+		api.With(s.auth.Require(auth.Owner, auth.Operator)).Put("/voice/settings", s.updateVoiceSettings)
+		api.Get("/voice/status", s.voiceStatus)
+		api.Post("/voice/test", s.testVoiceAudio)
+		api.Post("/voice/transactions/{id}", s.synthesizeTransactionAudio)
+		api.Post("/voice/transactions/{id}/replay", s.replayTransactionAudio)
+		api.Post("/voice/transactions/summary", s.synthesizeSummaryAudio)
 
 		api.With(s.auth.Require(auth.Owner)).Post("/connection/configure", s.configure)
 		api.With(s.auth.Require(auth.Owner, auth.Operator)).Post("/connection/{action:pause|resume|sync}", s.connectionAction)
@@ -157,6 +172,11 @@ func (s *Server) WithHistoryEnsurer(ensurer HistoryEnsurer) *Server {
 
 func (s *Server) WithMonitorNotifier(notifier MonitorNotifier) *Server {
 	s.monitorNotifier = notifier
+	return s
+}
+
+func (s *Server) WithTTSClient(client *ttsclient.Client) *Server {
+	s.ttsClient = client
 	return s
 }
 
@@ -749,7 +769,16 @@ func (s *Server) getPaymentQRImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := os.ReadFile(qr.ImagePath)
+	cleanedPath := filepath.Clean(qr.ImagePath)
+	dataDir := filepath.Dir(s.cfg.DatabasePath)
+	qrDir := filepath.Clean(filepath.Join(dataDir, "qr"))
+	rel, err := filepath.Rel(qrDir, cleanedPath)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		writeError(w, http.StatusForbidden, "invalid image path")
+		return
+	}
+
+	data, err := os.ReadFile(cleanedPath)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "qr image file missing")
 		return
@@ -767,12 +796,35 @@ func (s *Server) getPaymentQRImage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) savePaymentQR(w http.ResponseWriter, r *http.Request) {
-	var input storage.PaymentQR
+	var input struct {
+		AccountNumber string `json:"accountNumber"`
+		AccountName   string `json:"accountName"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	saved, err := s.store.SavePaymentQR(r.Context(), input)
+	input.AccountNumber = strings.TrimSpace(input.AccountNumber)
+	input.AccountName = strings.TrimSpace(input.AccountName)
+	if input.AccountNumber == "" || input.AccountName == "" {
+		writeError(w, http.StatusBadRequest, "accountNumber and accountName are required")
+		return
+	}
+
+	existing, _ := s.store.GetPaymentQR(r.Context(), "")
+	qr := storage.PaymentQR{
+		AccountNumber: input.AccountNumber,
+		AccountName:   input.AccountName,
+		Provider:      "UPLOAD",
+	}
+	if existing != nil {
+		qr.ImagePath = existing.ImagePath
+		qr.ImageHash = existing.ImageHash
+		qr.ImageContentType = existing.ImageContentType
+		qr.Provider = existing.Provider
+		qr.Revision = existing.Revision
+	}
+	saved, err := s.store.SavePaymentQR(r.Context(), qr)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -828,10 +880,12 @@ func (s *Server) uploadPaymentQR(w http.ResponseWriter, r *http.Request) {
 
 	imgHash := storage.HashBytes(imgBytes)
 	filePath := filepath.Join(qrDir, fmt.Sprintf("qr_%s%s", imgHash[:16], ext))
-	if err := os.WriteFile(filePath, imgBytes, 0o640); err != nil {
+	tempPath := filepath.Join(qrDir, fmt.Sprintf(".tmp_upload_%d", time.Now().UnixNano()))
+	if err := os.WriteFile(tempPath, imgBytes, 0o640); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to store image file")
 		return
 	}
+	_ = os.Rename(tempPath, filePath)
 
 	existing, _ := s.store.GetPaymentQR(r.Context(), "")
 	qr := storage.PaymentQR{
@@ -890,8 +944,14 @@ func (s *Server) generatePaymentQR(w http.ResponseWriter, r *http.Request) {
 	vietQRURL := fmt.Sprintf("https://img.vietqr.io/image/970416-%s-compact.png?accountName=%s",
 		url.PathEscape(input.AccountNumber), url.QueryEscape(input.AccountName))
 
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, vietQRURL, nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create request")
+		return
+	}
+
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(vietQRURL)
+	resp, err := client.Do(req)
 	if err != nil || resp.StatusCode != http.StatusOK {
 		writeError(w, http.StatusBadGateway, "failed to generate QR from VietQR provider")
 		return
@@ -904,23 +964,34 @@ func (s *Server) generatePaymentQR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate content type
+	contentType := http.DetectContentType(imgBytes)
+	if !strings.HasPrefix(contentType, "image/png") &&
+		!strings.HasPrefix(contentType, "image/jpeg") &&
+		!strings.HasPrefix(contentType, "image/webp") {
+		writeError(w, http.StatusBadGateway, "invalid image received from VietQR provider")
+		return
+	}
+
 	dataDir := filepath.Dir(s.cfg.DatabasePath)
 	qrDir := filepath.Join(dataDir, "qr")
 	_ = os.MkdirAll(qrDir, 0o750)
 
 	imgHash := storage.HashBytes(imgBytes)
 	filePath := filepath.Join(qrDir, fmt.Sprintf("qr_gen_%s.png", imgHash[:16]))
-	if err := os.WriteFile(filePath, imgBytes, 0o640); err != nil {
+	tempPath := filepath.Join(qrDir, fmt.Sprintf(".tmp_gen_%d", time.Now().UnixNano()))
+	if err := os.WriteFile(tempPath, imgBytes, 0o640); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save generated QR image")
 		return
 	}
+	_ = os.Rename(tempPath, filePath)
 
 	qr := storage.PaymentQR{
 		AccountNumber:    input.AccountNumber,
 		AccountName:      input.AccountName,
 		ImagePath:        filePath,
 		ImageHash:        imgHash,
-		ImageContentType: "image/png",
+		ImageContentType: contentType,
 		Provider:         "VIETQR",
 	}
 	saved, err := s.store.SavePaymentQR(r.Context(), qr)

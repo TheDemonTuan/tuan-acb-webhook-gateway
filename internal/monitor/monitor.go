@@ -40,6 +40,7 @@ type Monitor struct {
 	settingsCh      chan struct{}
 	cachedSettings  storage.MonitorSettings
 	lastMode        storage.PollMode
+	catchUpPending  bool
 	historyGroup    Group
 	onNewEvents     func([]storage.EventNotification)
 	onPollFinished  func(poll storage.PollRun, insertedCount int)
@@ -635,6 +636,14 @@ func (m *Monitor) catchUp(ctx context.Context) error {
 		return fmt.Errorf("catch-up ingest: %w", err)
 	}
 
+	_ = m.store.RecordCoverage(ctx, conn.ID, []string{yesterday, today}, len(txns))
+	if m.sessions != nil {
+		_ = m.sessions.Persist(ctx, conn.ID, conn.Generation)
+	}
+	if m.onNewEvents != nil && len(res.NewEvents) > 0 {
+		m.onNewEvents(res.NewEvents)
+	}
+
 	slog.Info("catch-up completed", "inserted", res.InsertedCount, "skipped", res.SkippedCount)
 	return nil
 }
@@ -660,11 +669,17 @@ func (m *Monitor) Run(ctx context.Context) {
 
 		// Transition check: transitioning into REALTIME triggers catch-up!
 		if (m.lastMode == storage.ModeKeepaliveOnly || m.lastMode == storage.ModePaused) && schedule.Mode == storage.ModeRealtime {
-			if err := m.catchUp(ctx); err != nil {
-				slog.Warn("catch-up sync failed", "error", err)
-			}
+			m.catchUpPending = true
 		}
 		m.lastMode = schedule.Mode
+
+		if m.catchUpPending && schedule.Mode == storage.ModeRealtime {
+			if err := m.catchUp(ctx); err != nil {
+				slog.Warn("catch-up sync failed; will retry before realtime polling", "error", err)
+			} else {
+				m.catchUpPending = false
+			}
+		}
 
 		wait := m.nextInterval(schedule.MinInterval, schedule.MaxInterval)
 		if schedule.Mode == storage.ModePaused {
@@ -712,6 +727,14 @@ func (m *Monitor) Run(ctx context.Context) {
 			}
 
 		case <-timer.C:
+			if m.catchUpPending && schedule.Mode == storage.ModeRealtime {
+				if err := m.catchUp(ctx); err != nil {
+					slog.Warn("catch-up sync failed; retrying before realtime polling", "error", err)
+					continue
+				}
+				m.catchUpPending = false
+			}
+
 			switch schedule.Mode {
 			case storage.ModeRealtime:
 				if err := m.pollOnce(ctx, nil); err != nil {

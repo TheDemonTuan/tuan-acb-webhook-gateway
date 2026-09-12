@@ -45,8 +45,9 @@ export class VoiceQueue {
 
     try {
       await this.engine.speak(message);
-    } catch {
-      // Swallowed safely
+      message.onSuccess?.();
+    } catch (err) {
+      message.onError?.(err);
     }
 
     // Cancellation token check: if cancelled during await, abort this loop immediately
@@ -66,12 +67,20 @@ export class VoiceQueue {
 
   public cancel(): void {
     this.operationId++;
+    const remaining = this.queue;
     this.queue = [];
     this.engine.cancel();
     this.setState('idle');
+    for (const msg of remaining) {
+      msg.onError?.(new Error('VOICE_CANCELLED'));
+    }
   }
 
   public clear(): void {
+    const remaining = this.queue;
     this.queue = [];
+    for (const msg of remaining) {
+      msg.onError?.(new Error('VOICE_CANCELLED'));
+    }
   }
 }

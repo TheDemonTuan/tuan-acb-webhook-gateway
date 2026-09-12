@@ -42,36 +42,25 @@ export const RealtimeDomainBridge: React.FC = () => {
 
         // Optimistically prepend transaction to matching caches (unfiltered or credit-only)
         queryClient.setQueriesData<PageResponse<Transaction>>(
-          {
-            predicate: (query) => {
-              const [key, params] = query.queryKey as [
-                string,
-                Record<string, unknown> | undefined
-              ];
-              if (key !== 'transactions') return false;
-              if (
-                params &&
-                (params.query ||
-                  params.q ||
-                  params.direction === 'debit' ||
-                  params.type === 'debit')
-              ) {
-                return false;
-              }
-              return true;
-            },
-          },
-          (old: PageResponse<Transaction> | undefined) => {
-            if (!old || !Array.isArray(old.items)) {
+          { queryKey: ['transactions'], exact: false },
+          (old) => {
+            if (!old) {
               return { items: [newTx] };
             }
-            // Check if already in list
-            if (old.items.some((t) => t.id === newTx.id || t.semanticKey === newTx.semanticKey)) {
+            const currentItems = Array.isArray(old.items) ? old.items : [];
+            if (currentItems.some((t) => t.id === newTx.id || t.semanticKey === newTx.semanticKey)) {
               return old;
             }
             return {
               ...old,
-              items: [newTx, ...old.items],
+              items: [newTx, ...currentItems],
+              summary: old.summary
+                ? {
+                    ...old.summary,
+                    count: (old.summary.count || 0) + 1,
+                    incoming: (old.summary.incoming || 0) + (newTx.credit || 0),
+                  }
+                : undefined,
             };
           }
         );
@@ -85,7 +74,12 @@ export const RealtimeDomainBridge: React.FC = () => {
             ];
             return (
               key === 'transactions' &&
-              Boolean(params?.query || params?.q || params?.direction || params?.type)
+              Boolean(
+                params?.query ||
+                  params?.q ||
+                  (params?.direction && params.direction !== 'all') ||
+                  (params?.type && params.type !== 'all')
+              )
             );
           },
         });

@@ -99,10 +99,19 @@ func TestCatchUpIngestsTransactionsWithCatchUpSourceAndWebhooks(t *testing.T) {
 	mockClient := &keepaliveMockClient{}
 	mon := New(store, mockClient, 5*time.Second, 15*time.Second)
 
+	var receivedEvents []storage.EventNotification
+	mon.WithEventNotifier(func(events []storage.EventNotification) {
+		receivedEvents = append(receivedEvents, events...)
+	})
+
 	// Run catchUp
 	err = mon.catchUp(ctx)
 	if err != nil {
 		t.Fatalf("catchUp failed: %v", err)
+	}
+
+	if len(receivedEvents) != 2 {
+		t.Fatalf("expected 2 new events emitted on catchup, got %d", len(receivedEvents))
 	}
 
 	// Transactions A and B should be ingested with source = 'CATCH_UP'

@@ -30,6 +30,7 @@ services:
       OWNER_SUBJECTS: ${OWNER_SUBJECTS:-${CLOUDFLARE_ACCESS_OWNER_EMAIL:-}}
       AUTH_BROWSER_URL: http://auth-browser:8181
       AUTH_BROWSER_VNC_URL: http://auth-browser:6080
+      TTS_GATEWAY_URL: http://tts-gateway:8081
     expose:
       - "8090"
     networks:
@@ -83,6 +84,39 @@ services:
     pids_limit: 300
     mem_limit: 1536m
     cpus: 1.5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  tts-gateway:
+    image: ${TTS_GATEWAY_IMAGE_REF:-ghcr.io/thedemontuan/acb-tts-gateway:latest}
+    container_name: acb-tts-gateway
+    restart: unless-stopped
+    read_only: true
+    user: "1000:1000"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      TTS_HOST: 0.0.0.0
+      TTS_PORT: 8081
+      TZ: Asia/Ho_Chi_Minh
+    expose:
+      - "8081"
+    networks:
+      default:
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=32m
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8081/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    pids_limit: 50
+    mem_limit: 256m
+    cpus: 0.5
     logging:
       driver: json-file
       options:

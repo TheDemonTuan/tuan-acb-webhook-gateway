@@ -3,12 +3,13 @@ import { Play } from 'lucide-react';
 import { useVoiceAnnouncements } from '../VoiceAnnouncementProvider';
 
 export const VoiceTestButton: React.FC<{ className?: string }> = ({ className = '' }) => {
-  const { testVoice, isSupported } = useVoiceAnnouncements();
+  const { testVoice, unlockAudio, isSupported } = useVoiceAnnouncements();
   const [testing, setTesting] = useState(false);
 
   const handleClick = async () => {
     setTesting(true);
     try {
+      await unlockAudio();
       await testVoice();
     } finally {
       setTimeout(() => setTesting(false), 1500);

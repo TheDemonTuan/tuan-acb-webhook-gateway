@@ -200,4 +200,13 @@ CREATE TABLE IF NOT EXISTS payment_qr_settings (
     updated_at TEXT NOT NULL,
     UNIQUE(connection_id)
 );
+`}, {6, "2026-09-12-v5-voice-settings", `
+CREATE TABLE IF NOT EXISTS voice_settings (
+    id TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL DEFAULT 1,
+    provider_mode TEXT NOT NULL DEFAULT 'ONLINE_AUTO',
+    edge_voice TEXT NOT NULL DEFAULT 'vi-VN-HoaiMyNeural',
+    online_fallback INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL
+);
 `}}

@@ -24,7 +24,7 @@ export const TransactionDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [copied, setCopied] = useState(false);
-  const { testVoice } = useVoiceAnnouncements();
+  const { replayVoice } = useVoiceAnnouncements();
 
   const { data: transaction, isLoading } = useQuery({
     queryKey: queryKeys.transactionDetail(id || ''),
@@ -83,11 +83,8 @@ export const TransactionDetailPage: React.FC = () => {
   };
 
   const handleSpeak = () => {
-    if (isCredit) {
-      const phrase = buildSingleTransactionPhrase(transaction.credit, transaction.description, {
-        includeDescription: true,
-      });
-      testVoice(phrase);
+    if (isCredit && transaction.id) {
+      replayVoice(transaction.id);
     }
   };
 

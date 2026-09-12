@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { BrowserSpeechEngine } from './browser-speech-engine';
+import { TransactionAudioEngine } from './transaction-audio-engine';
 import { MultiTabLeader } from './multi-tab-leader';
 import { VoiceDedupe } from './voice-dedupe';
 import type { VoiceEngine, VoiceInfo } from './voice-engine';
@@ -25,6 +25,8 @@ export interface VoiceAnnouncementContextValue {
   voices: VoiceInfo[];
   handleCreditEvent: (envelope: RealtimeEnvelope<BankTransactionCreditData>) => void;
   testVoice: (customPhrase?: string) => Promise<void>;
+  replayVoice: (transactionId: string) => Promise<void>;
+  unlockAudio: () => Promise<boolean>;
   cancelVoice: () => void;
 }
 
@@ -35,17 +37,27 @@ export interface VoiceAnnouncementProviderProps {
   engine?: VoiceEngine;
 }
 
+interface BurstItem {
+  amount: bigint;
+  desc: string;
+  dedupeOpts: {
+    eventId?: string | null;
+    transactionId?: string | null;
+    semanticKey?: string | null;
+  };
+}
+
 export const VoiceAnnouncementProvider: React.FC<VoiceAnnouncementProviderProps> = ({
   children,
   engine: injectedEngine,
 }) => {
   const [settings, setSettings] = useState<VoiceSettings>(() => loadVoiceSettings());
-  const [isLeader, setIsLeader] = useState(true);
+  const [isLeader, setIsLeader] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [voices, setVoices] = useState<VoiceInfo[]>([]);
 
   const engine = useMemo<VoiceEngine>(() => {
-    return injectedEngine || new BrowserSpeechEngine();
+    return injectedEngine || new TransactionAudioEngine();
   }, [injectedEngine]);
 
   const queue = useMemo(() => {
@@ -87,6 +99,9 @@ export const VoiceAnnouncementProvider: React.FC<VoiceAnnouncementProviderProps>
     const updated = saveVoiceSettings(changes);
     setSettings(updated);
     if (changes.enabled === false) {
+      for (const item of burstBufferRef.current) {
+        dedupe.release(item.dedupeOpts);
+      }
       burstBufferRef.current = [];
       if (burstTimerRef.current) {
         clearTimeout(burstTimerRef.current);
@@ -97,7 +112,7 @@ export const VoiceAnnouncementProvider: React.FC<VoiceAnnouncementProviderProps>
   };
 
   // Burst aggregation queue
-  const burstBufferRef = useRef<Array<{ amount: bigint; desc: string }>>([]);
+  const burstBufferRef = useRef<BurstItem[]>([]);
   const burstTimerRef = useRef<any>(null);
 
   const processBurstBuffer = () => {
@@ -119,17 +134,40 @@ export const VoiceAnnouncementProvider: React.FC<VoiceAnnouncementProviderProps>
           rate: currentSettings.rate,
           pitch: currentSettings.pitch,
           voiceURI: currentSettings.voiceURI,
+          transactionId: item.dedupeOpts.transactionId || undefined,
+          includeDescription: currentSettings.includeDescription,
+          onSuccess: () => {
+            dedupe.commit(item.dedupeOpts);
+          },
+          onError: () => {
+            dedupe.release(item.dedupeOpts);
+          },
         });
       }
     } else {
       const total = items.reduce((acc, curr) => acc + curr.amount, 0n);
       const text = buildBurstTransactionPhrase(items.length, total.toString());
+      const summaryIds = items
+        .map((i) => i.dedupeOpts.transactionId)
+        .filter((id): id is string => Boolean(id));
+
       queue.enqueue({
         text,
         volume: currentSettings.volume,
         rate: currentSettings.rate,
         pitch: currentSettings.pitch,
         voiceURI: currentSettings.voiceURI,
+        summaryTransactionIds: summaryIds.length >= 2 ? summaryIds : undefined,
+        onSuccess: () => {
+          for (const item of items) {
+            dedupe.commit(item.dedupeOpts);
+          }
+        },
+        onError: () => {
+          for (const item of items) {
+            dedupe.release(item.dedupeOpts);
+          }
+        },
       });
     }
   };
@@ -150,8 +188,8 @@ export const VoiceAnnouncementProvider: React.FC<VoiceAnnouncementProviderProps>
     const data = envelope.data;
     if (!data) return;
 
-    // Suppress voice announcements for non-realtime sources (CATCH_UP, FILTER_SYNC, BOOTSTRAP)
-    if (data.source && data.source !== 'REALTIME') {
+    // Strict source policy: ONLY REALTIME sources are voice eligible
+    if (data.source !== 'REALTIME') {
       return;
     }
 
@@ -162,17 +200,15 @@ export const VoiceAnnouncementProvider: React.FC<VoiceAnnouncementProviderProps>
       semanticKey: data.transactionNumber ? `ACB:${data.transactionNumber}` : undefined,
     };
 
-    if (dedupe.has(dedupeOpts)) {
+    if (dedupe.has(dedupeOpts) || dedupe.isReserved(dedupeOpts)) {
       return;
     }
 
-    // Freshness check: suppress announcements for historical events (> 120s)
-    if (!dedupe.isFreshEnough(data.detectedAt)) {
-      dedupe.mark(dedupeOpts);
+    // Freshness check: allow future clock skew up to 30s and max age 120s
+    if (!dedupe.isFreshEnough(data.detectedAt, undefined, envelope.receivedAt)) {
+      dedupe.markSkipped(dedupeOpts, 'EXPIRED_FRESHNESS');
       return;
     }
-
-    dedupe.mark(dedupeOpts);
 
     // Parse amount
     let amountBigInt = 0n;
@@ -185,10 +221,16 @@ export const VoiceAnnouncementProvider: React.FC<VoiceAnnouncementProviderProps>
 
     if (amountBigInt <= 0n) return;
 
+    // Two-phase reservation: reserve before enqueuing/playing
+    if (!dedupe.reserve(dedupeOpts)) {
+      return;
+    }
+
     // Push into burst buffer (750ms collection window)
     burstBufferRef.current.push({
       amount: amountBigInt,
       desc: data.description || '',
+      dedupeOpts,
     });
 
     if (burstTimerRef.current) {
@@ -201,13 +243,44 @@ export const VoiceAnnouncementProvider: React.FC<VoiceAnnouncementProviderProps>
     queue.cancel();
     const testText =
       customPhrase || 'Đã bật đọc giao dịch mới. Bạn vừa nhận được năm trăm nghìn đồng.';
-    queue.enqueue({
-      text: testText,
-      volume: settings.volume,
-      rate: settings.rate,
-      pitch: settings.pitch,
-      voiceURI: settings.voiceURI,
+
+    return new Promise<void>((resolve, reject) => {
+      queue.enqueue({
+        text: testText,
+        volume: settings.volume,
+        rate: settings.rate,
+        pitch: settings.pitch,
+        voiceURI: settings.voiceURI,
+        isTest: true,
+        onSuccess: () => resolve(),
+        onError: (err) => reject(err),
+      });
     });
+  };
+
+  const replayVoice = async (transactionId: string) => {
+    queue.cancel();
+    return new Promise<void>((resolve, reject) => {
+      queue.enqueue({
+        text: 'Đang phát lại giao dịch...',
+        volume: settings.volume,
+        rate: settings.rate,
+        pitch: settings.pitch,
+        voiceURI: settings.voiceURI,
+        transactionId,
+        isReplay: true,
+        includeDescription: settings.includeDescription,
+        onSuccess: () => resolve(),
+        onError: (err) => reject(err),
+      });
+    });
+  };
+
+  const unlockAudio = async (): Promise<boolean> => {
+    if ('unlock' in engine && typeof (engine as any).unlock === 'function') {
+      return await (engine as any).unlock();
+    }
+    return true;
   };
 
   const cancelVoice = () => {
@@ -229,6 +302,8 @@ export const VoiceAnnouncementProvider: React.FC<VoiceAnnouncementProviderProps>
       voices,
       handleCreditEvent,
       testVoice,
+      replayVoice,
+      unlockAudio,
       cancelVoice,
     };
   }, [settings, isSupported, isLeader, isSpeaking, voices]);

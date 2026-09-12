@@ -1,0 +1,202 @@
+import { apiAudio } from '../../api';
+import { BrowserSpeechEngine } from './browser-speech-engine';
+import type { VoiceEngine, VoiceInfo, VoiceMessage } from './voice-engine';
+
+export class TransactionAudioEngine implements VoiceEngine {
+  private audioContext: AudioContext | null = null;
+  private gainNode: GainNode | null = null;
+  private currentSource: AudioBufferSourceNode | null = null;
+  private browserFallback = new BrowserSpeechEngine();
+  private abortController: AbortController | null = null;
+
+  public isSupported(): boolean {
+    return (
+      typeof window !== 'undefined' &&
+      (typeof window.AudioContext !== 'undefined' ||
+        typeof (window as any).webkitAudioContext !== 'undefined')
+    );
+  }
+
+  private initAudioContext(): AudioContext | null {
+    if (this.audioContext) return this.audioContext;
+    if (typeof window === 'undefined') return null;
+
+    const AudioContextClass =
+      window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioContextClass) return null;
+
+    try {
+      this.audioContext = new AudioContextClass();
+      this.gainNode = this.audioContext.createGain();
+      this.gainNode.connect(this.audioContext.destination);
+      return this.audioContext;
+    } catch {
+      return null;
+    }
+  }
+
+  public async unlock(): Promise<boolean> {
+    const ctx = this.initAudioContext();
+    if (!ctx) return false;
+    if (ctx.state === 'suspended') {
+      try {
+        await ctx.resume();
+      } catch {
+        return false;
+      }
+    }
+    return ctx.state === 'running';
+  }
+
+  public async getVoices(): Promise<VoiceInfo[]> {
+    const onlineVoices: VoiceInfo[] = [
+      {
+        uri: 'vi-VN-HoaiMyNeural',
+        name: 'Hoài My (Giọng trực tuyến)',
+        lang: 'vi-VN',
+        isDefault: true,
+      },
+      {
+        uri: 'vi-VN-NamMinhNeural',
+        name: 'Nam Minh (Giọng trực tuyến)',
+        lang: 'vi-VN',
+        isDefault: false,
+      },
+    ];
+
+    try {
+      const localVoices = await this.browserFallback.getVoices();
+      const localVi = localVoices.filter((v) => {
+        const l = v.lang.toLowerCase().replace('_', '-');
+        return l === 'vi' || l.startsWith('vi-');
+      });
+      return [...onlineVoices, ...localVi];
+    } catch {
+      return onlineVoices;
+    }
+  }
+
+  public async speak(message: VoiceMessage): Promise<void> {
+    this.cancel();
+
+    // 1. Try online transaction audio synthesis
+    try {
+      await this.speakOnline(message);
+      return;
+    } catch (onlineError) {
+      // 2. Fallback to BrowserSpeechEngine with strict Vietnamese voice
+      try {
+        await this.browserFallback.speak(message);
+      } catch (browserError) {
+        throw browserError;
+      }
+    }
+  }
+
+  private async speakOnline(message: VoiceMessage): Promise<void> {
+    this.abortController = new AbortController();
+    const signal = this.abortController.signal;
+
+    let path = '';
+    let body: any = null;
+
+    if (message.isTest) {
+      path = '/voice/test';
+      body = { voiceId: message.voiceURI || 'vi-VN-HoaiMyNeural' };
+    } else if (message.isReplay && message.transactionId) {
+      path = `/voice/transactions/${encodeURIComponent(message.transactionId)}/replay`;
+      body = { includeDescription: Boolean(message.includeDescription) };
+    } else if (
+      message.summaryTransactionIds &&
+      message.summaryTransactionIds.length >= 2
+    ) {
+      path = '/voice/transactions/summary';
+      body = {
+        transactionIds: message.summaryTransactionIds,
+        includeDescription: false,
+      };
+    } else if (message.transactionId) {
+      path = `/voice/transactions/${encodeURIComponent(message.transactionId)}`;
+      body = { includeDescription: Boolean(message.includeDescription) };
+    } else {
+      // If no transaction ID, fall back directly to browser speech
+      throw new Error('NO_ONLINE_ROUTE');
+    }
+
+    const { data: audioData } = await apiAudio(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    });
+
+    if (signal.aborted) {
+      throw new Error('VOICE_CANCELLED');
+    }
+
+    await this.playAudioBuffer(audioData, message.volume ?? 1);
+  }
+
+  private async playAudioBuffer(
+    arrayBuffer: ArrayBuffer,
+    volume: number
+  ): Promise<void> {
+    const ctx = this.initAudioContext();
+    if (!ctx) {
+      throw new Error('AUDIO_CONTEXT_UNAVAILABLE');
+    }
+
+    if (ctx.state === 'suspended') {
+      try {
+        await ctx.resume();
+      } catch {
+        throw new Error('AUDIO_LOCKED');
+      }
+    }
+
+    const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+
+    return new Promise((resolve, reject) => {
+      try {
+        const source = ctx.createBufferSource();
+        source.buffer = audioBuffer;
+
+        if (this.gainNode) {
+          this.gainNode.gain.setValueAtTime(Math.max(0, Math.min(1, volume)), ctx.currentTime);
+          source.connect(this.gainNode);
+        } else {
+          source.connect(ctx.destination);
+        }
+
+        let settled = false;
+
+        source.onended = () => {
+          if (!settled) {
+            settled = true;
+            this.currentSource = null;
+            resolve();
+          }
+        };
+
+        this.currentSource = source;
+        source.start(0);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  public cancel(): void {
+    if (this.abortController) {
+      this.abortController.abort();
+      this.abortController = null;
+    }
+    if (this.currentSource) {
+      try {
+        this.currentSource.stop();
+      } catch {}
+      this.currentSource = null;
+    }
+    this.browserFallback.cancel();
+  }
+}

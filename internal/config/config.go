@@ -32,6 +32,8 @@ type Config struct {
 	PublicOrigin       string
 	AuthBrowserURL     string
 	AuthBrowserVNCURL  string
+	TTSGatewayURL      string
+	TTSInternalToken   string
 }
 
 func Load() (Config, error) {
@@ -89,6 +91,13 @@ func Load() (Config, error) {
 		}
 	}
 
+	ttsToken := value("TTS_INTERNAL_TOKEN", "")
+	if ttsTokenFile := os.Getenv("TTS_INTERNAL_TOKEN_FILE"); ttsTokenFile != "" {
+		if data, err := os.ReadFile(ttsTokenFile); err == nil {
+			ttsToken = strings.TrimSpace(string(data))
+		}
+	}
+
 	cfg := Config{
 		Address:            value("LISTEN_ADDR", "0.0.0.0:"+value("PORT", "8090")),
 		DatabasePath:       value("DATABASE_PATH", filepath.Join(dataDir, "gateway.db")),
@@ -109,6 +118,8 @@ func Load() (Config, error) {
 		PublicOrigin:       publicOrigin,
 		AuthBrowserURL:     value("AUTH_BROWSER_URL", "http://auth-browser:8181"),
 		AuthBrowserVNCURL:  value("AUTH_BROWSER_VNC_URL", "http://auth-browser:6080"),
+		TTSGatewayURL:      value("TTS_GATEWAY_URL", "http://tts-gateway:8081"),
+		TTSInternalToken:   ttsToken,
 	}
 	if production {
 		if cfg.MasterKeyFile == "" {

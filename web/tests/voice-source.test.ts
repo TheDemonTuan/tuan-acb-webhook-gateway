@@ -2,16 +2,14 @@ import { describe, it, expect } from 'vitest';
 import type { BankTransactionCreditData, RealtimeEnvelope } from '../src/realtime/realtime.types';
 
 describe('Voice source policy', () => {
-  it('identifies non-realtime sources as suppressed from voice', () => {
+  it('identifies ONLY REALTIME sources as voice eligible', () => {
     const isVoiceEligible = (source?: string): boolean => {
-      if (source && source !== 'REALTIME') {
-        return false;
-      }
-      return true;
+      return source === 'REALTIME';
     };
 
     expect(isVoiceEligible('REALTIME')).toBe(true);
-    expect(isVoiceEligible(undefined)).toBe(true);
+    expect(isVoiceEligible(undefined)).toBe(false);
+    expect(isVoiceEligible('')).toBe(false);
     expect(isVoiceEligible('CATCH_UP')).toBe(false);
     expect(isVoiceEligible('FILTER_SYNC')).toBe(false);
     expect(isVoiceEligible('BOOTSTRAP')).toBe(false);

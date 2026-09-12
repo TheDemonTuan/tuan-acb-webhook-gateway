@@ -4,7 +4,7 @@ import { useVoiceAnnouncements } from '../VoiceAnnouncementProvider';
 import { VoiceSettingsSheet } from './VoiceSettingsSheet';
 
 export const VoiceToggle: React.FC<{ className?: string }> = ({ className = '' }) => {
-  const { settings, isSupported } = useVoiceAnnouncements();
+  const { settings, updateSettings, unlockAudio, isSupported } = useVoiceAnnouncements();
   const [sheetOpen, setSheetOpen] = useState(false);
 
   return (
@@ -12,13 +12,20 @@ export const VoiceToggle: React.FC<{ className?: string }> = ({ className = '' }
       <div className={`inline-flex items-center shrink-0 flex-nowrap gap-1 bg-stone-100 p-1 rounded-xl border border-stone-200/80 ${className}`}>
         <button
           type="button"
-          onClick={() => setSheetOpen(true)}
+          onClick={async () => {
+            if (!settings.enabled) {
+              await unlockAudio();
+              updateSettings({ enabled: true });
+            } else {
+              updateSettings({ enabled: false });
+            }
+          }}
           className={`flex items-center shrink-0 gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer whitespace-nowrap ${
             settings.enabled
               ? 'bg-emerald-600 text-white shadow-xs'
               : 'text-stone-700 hover:bg-stone-200/60'
           }`}
-          title={isSupported ? 'Cài đặt đọc giao dịch' : 'Trình duyệt chưa hỗ trợ Web Speech'}
+          title={isSupported ? 'Bật/Tắt đọc giao dịch' : 'Trình duyệt chưa hỗ trợ phát âm thanh'}
         >
           {settings.enabled ? (
             <>

@@ -1,0 +1,287 @@
+package httpapi
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/storage"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/ttsclient"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/voicecopy"
+)
+
+type voiceAudioRequest struct {
+	IncludeDescription bool `json:"includeDescription"`
+}
+
+type voiceSummaryRequest struct {
+	TransactionIDs     []string `json:"transactionIds"`
+	IncludeDescription bool     `json:"includeDescription"`
+}
+
+type voiceTestRequest struct {
+	VoiceID string `json:"voiceId,omitempty"`
+}
+
+func (s *Server) getVoiceSettings(w http.ResponseWriter, r *http.Request) {
+	settings, err := s.store.GetVoiceSettings(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get voice settings")
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (s *Server) updateVoiceSettings(w http.ResponseWriter, r *http.Request) {
+	var input storage.VoiceSettings
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	saved, err := s.store.SaveVoiceSettings(r.Context(), input)
+	if err != nil {
+		if errors.Is(err, storage.ErrVoiceSettingsConflict) {
+			writeError(w, http.StatusConflict, "voice settings modified by another operator")
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	audit(s.store, r, "voice_settings.update", fmt.Sprintf("rev_%d", saved.Revision))
+	s.publishStateEvent("voice.settings.changed", "singleton", saved)
+	writeJSON(w, http.StatusOK, saved)
+}
+
+func (s *Server) voiceStatus(w http.ResponseWriter, r *http.Request) {
+	settings, _ := s.store.GetVoiceSettings(r.Context())
+	writeJSON(w, http.StatusOK, map[string]any{
+		"available":      s.ttsClient != nil,
+		"primary":        "edge",
+		"fallback":       "gtts",
+		"providerMode":   settings.ProviderMode,
+		"edgeVoice":      settings.EdgeVoice,
+		"onlineFallback": settings.OnlineFallback,
+	})
+}
+
+func (s *Server) testVoiceAudio(w http.ResponseWriter, r *http.Request) {
+	if s.ttsClient == nil {
+		writeError(w, http.StatusServiceUnavailable, "tts_client_not_configured")
+		return
+	}
+
+	var req voiceTestRequest
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	settings, _ := s.store.GetVoiceSettings(r.Context())
+	voice := settings.EdgeVoice
+	if req.VoiceID == "vi-VN-HoaiMyNeural" || req.VoiceID == "vi-VN-NamMinhNeural" {
+		voice = req.VoiceID
+	}
+
+	phrase := "Đã bật đọc giao dịch mới. Bạn vừa nhận được năm trăm nghìn đồng."
+	res, err := s.ttsClient.Synthesize(r.Context(), ttsclient.SynthesizeRequest{
+		Text:      phrase,
+		Voice:     voice,
+		Cacheable: true,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("tts_synthesis_failed: %v", err))
+		return
+	}
+
+	w.Header().Set("Content-Type", "audio/mpeg")
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-TTS-Provider", res.Provider)
+	w.Header().Set("X-TTS-Voice", res.Voice)
+	w.Header().Set("X-TTS-Fallback", fmt.Sprintf("%t", res.Fallback))
+	w.Header().Set("X-TTS-Cached", fmt.Sprintf("%t", res.Cached))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(res.Audio)
+}
+
+func (s *Server) synthesizeTransactionAudio(w http.ResponseWriter, r *http.Request) {
+	if s.ttsClient == nil {
+		writeError(w, http.StatusServiceUnavailable, "tts_client_not_configured")
+		return
+	}
+
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "transaction_id_required")
+		return
+	}
+
+	var req voiceAudioRequest
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	item, err := s.store.GetTransactionByID(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "transaction_not_found")
+		return
+	}
+
+	if item.Credit <= 0 {
+		writeError(w, http.StatusUnprocessableEntity, "voice_credit_zero_or_negative")
+		return
+	}
+
+	if item.Source != "REALTIME" {
+		writeError(w, http.StatusUnprocessableEntity, "voice_source_not_realtime")
+		return
+	}
+
+	// Freshness verification: transaction must have been observed within 5 minutes
+	if item.FirstSeenAt != "" {
+		seenTime, err := time.Parse(time.RFC3339Nano, item.FirstSeenAt)
+		if err != nil {
+			seenTime, err = time.Parse(time.RFC3339, item.FirstSeenAt)
+		}
+		if err == nil {
+			age := time.Since(seenTime)
+			if age > 5*time.Minute {
+				writeError(w, http.StatusUnprocessableEntity, "voice_event_expired")
+				return
+			}
+		}
+	}
+
+	settings, _ := s.store.GetVoiceSettings(r.Context())
+	phrase := voicecopy.BuildCreditAnnouncement(item.Credit, item.Description, req.IncludeDescription)
+
+	res, err := s.ttsClient.Synthesize(r.Context(), ttsclient.SynthesizeRequest{
+		Text:      phrase,
+		Voice:     settings.EdgeVoice,
+		Cacheable: !req.IncludeDescription,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("tts_synthesis_failed: %v", err))
+		return
+	}
+
+	w.Header().Set("Content-Type", "audio/mpeg")
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-TTS-Provider", res.Provider)
+	w.Header().Set("X-TTS-Voice", res.Voice)
+	w.Header().Set("X-TTS-Fallback", fmt.Sprintf("%t", res.Fallback))
+	w.Header().Set("X-TTS-Cached", fmt.Sprintf("%t", res.Cached))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(res.Audio)
+}
+
+func (s *Server) synthesizeSummaryAudio(w http.ResponseWriter, r *http.Request) {
+	if s.ttsClient == nil {
+		writeError(w, http.StatusServiceUnavailable, "tts_client_not_configured")
+		return
+	}
+
+	var req voiceSummaryRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if len(req.TransactionIDs) < 2 || len(req.TransactionIDs) > 50 {
+		writeError(w, http.StatusBadRequest, "transactionIds count must be between 2 and 50")
+		return
+	}
+
+	var totalCredit int64
+	validCount := 0
+
+	for _, txID := range req.TransactionIDs {
+		item, err := s.store.GetTransactionByID(r.Context(), txID)
+		if err != nil || item == nil {
+			continue
+		}
+		if item.Credit > 0 && item.Source == "REALTIME" {
+			totalCredit += item.Credit
+			validCount++
+		}
+	}
+
+	if validCount == 0 {
+		writeError(w, http.StatusUnprocessableEntity, "no_valid_realtime_credits_in_summary")
+		return
+	}
+
+	settings, _ := s.store.GetVoiceSettings(r.Context())
+	phrase := voicecopy.BuildBurstAnnouncement(validCount, totalCredit)
+
+	res, err := s.ttsClient.Synthesize(r.Context(), ttsclient.SynthesizeRequest{
+		Text:      phrase,
+		Voice:     settings.EdgeVoice,
+		Cacheable: true,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("tts_synthesis_failed: %v", err))
+		return
+	}
+
+	w.Header().Set("Content-Type", "audio/mpeg")
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-TTS-Provider", res.Provider)
+	w.Header().Set("X-TTS-Voice", res.Voice)
+	w.Header().Set("X-TTS-Fallback", fmt.Sprintf("%t", res.Fallback))
+	w.Header().Set("X-TTS-Cached", fmt.Sprintf("%t", res.Cached))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(res.Audio)
+}
+
+func (s *Server) replayTransactionAudio(w http.ResponseWriter, r *http.Request) {
+	if s.ttsClient == nil {
+		writeError(w, http.StatusServiceUnavailable, "tts_client_not_configured")
+		return
+	}
+
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "transaction_id_required")
+		return
+	}
+
+	var req voiceAudioRequest
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	item, err := s.store.GetTransactionByID(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "transaction_not_found")
+		return
+	}
+
+	if item.Credit <= 0 {
+		writeError(w, http.StatusUnprocessableEntity, "voice_credit_zero_or_negative")
+		return
+	}
+
+	// Manual replay: does not enforce realtime source or freshness
+	settings, _ := s.store.GetVoiceSettings(r.Context())
+	phrase := voicecopy.BuildCreditAnnouncement(item.Credit, item.Description, req.IncludeDescription)
+
+	res, err := s.ttsClient.Synthesize(r.Context(), ttsclient.SynthesizeRequest{
+		Text:      phrase,
+		Voice:     settings.EdgeVoice,
+		Cacheable: !req.IncludeDescription,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("tts_synthesis_failed: %v", err))
+		return
+	}
+
+	w.Header().Set("Content-Type", "audio/mpeg")
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-TTS-Provider", res.Provider)
+	w.Header().Set("X-TTS-Voice", res.Voice)
+	w.Header().Set("X-TTS-Fallback", fmt.Sprintf("%t", res.Fallback))
+	w.Header().Set("X-TTS-Cached", fmt.Sprintf("%t", res.Cached))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(res.Audio)
+}

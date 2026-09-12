@@ -17,3 +17,8 @@ web/playwright-report/
 *.db-shm
 *.db-wal
 PLAN_ACB_WEB_MONITOR_SERVICE_PRODUCTION.md
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
