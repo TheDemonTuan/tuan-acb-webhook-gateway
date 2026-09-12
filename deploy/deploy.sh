@@ -201,7 +201,7 @@ fi
 if ! timeout "${READY_TIMEOUT:-120}" docker compose --env-file "$env_file" -f "$compose_file" up -d --remove-orphans --wait --wait-timeout "${READY_TIMEOUT:-120}"; then
   echo "Docker compose deployment failed. Dumping container status and logs:" >&2
   docker compose --env-file "$env_file" -f "$compose_file" ps -a || true
-  docker compose --env-file "$env_file" -f "$compose_file" logs --tail 50 gateway auth-browser tts-gateway || true
+  docker compose --env-file "$env_file" -f "$compose_file" logs --tail 50 gateway auth-browser tts-gateway bark || true
   exit 1
 fi
 
