@@ -135,8 +135,8 @@ func TestStaleAuthAttemptExpiryAndRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 1. Create an attempt with very short TTL
-	attempt, err := store.StartAuthAttempt(ctx, "admin@example.com", 20*time.Millisecond)
+	// 1. Create an attempt with short TTL
+	attempt, err := store.StartAuthAttempt(ctx, "admin@example.com", 150*time.Millisecond)
 	if err != nil {
 		t.Fatalf("start initial attempt: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestStaleAuthAttemptExpiryAndRecovery(t *testing.T) {
 	}
 
 	// Wait for TTL to elapse
-	time.Sleep(30 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 
 	// Expire stale attempts
 	count, err := store.ExpireStaleAuthAttempts(ctx)

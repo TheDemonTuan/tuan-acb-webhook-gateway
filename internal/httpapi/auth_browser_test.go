@@ -230,13 +230,13 @@ func TestAuthBrowserStatusTTLExpiryLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Start attempt with very short TTL
-	attempt, err := store.StartAuthAttempt(ctx, "", 20*time.Millisecond)
+	// Start attempt with short TTL
+	attempt, err := store.StartAuthAttempt(ctx, "", 100*time.Millisecond)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	time.Sleep(35 * time.Millisecond)
+	time.Sleep(150 * time.Millisecond)
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
