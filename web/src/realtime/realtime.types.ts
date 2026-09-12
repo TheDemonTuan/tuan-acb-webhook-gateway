@@ -16,6 +16,9 @@ export interface BankTransactionCreditData {
   debit: string;
   currency: 'VND';
   transactionDate: string;
+  transactionDay?: string;
+  datePrecision?: string;
+  source?: string;
   description: string;
   detectedAt: string;
 }

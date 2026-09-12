@@ -19,16 +19,36 @@ export const fetchConnection = async (): Promise<Connection> => {
 };
 
 export const fetchTransactions = async (params?: {
+  from?: string;
+  to?: string;
+  direction?: 'all' | 'credit' | 'debit';
+  query?: string;
   limit?: number;
   cursor?: string;
-  query?: string;
 }): Promise<PageResponse<Transaction>> => {
   const query = new URLSearchParams();
+  if (params?.from) query.set('from', params.from);
+  if (params?.to) query.set('to', params.to);
+  if (params?.direction && params.direction !== 'all') query.set('direction', params.direction);
+  if (params?.query) query.set('q', params.query);
   if (params?.limit) query.set('limit', String(params.limit));
   if (params?.cursor) query.set('cursor', params.cursor);
-  if (params?.query) query.set('q', params.query);
   const qStr = query.toString();
   return api<PageResponse<Transaction>>(`/transactions${qStr ? `?${qStr}` : ''}`);
+};
+
+export const fetchTransactionDetail = async (id: string): Promise<Transaction> => {
+  return api<Transaction>(`/transactions/${encodeURIComponent(id)}`);
+};
+
+export const ensureHistory = async (params: {
+  from: string;
+  to: string;
+}): Promise<{ status: string; coverage: string; synced: boolean; rowsSeen?: number }> => {
+  return api('/transactions/ensure-history', {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
 };
 
 export const fetchWebhooks = async (): Promise<{ items: Endpoint[] }> => {
@@ -104,6 +124,52 @@ export const cancelAuthSession = async (attemptId: string): Promise<void> => {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrf },
     body: JSON.stringify({ attemptId }),
+  });
+};
+
+export const fetchMonitorSettings = async (): Promise<any> => {
+  return api('/monitor/settings');
+};
+
+export const updateMonitorSettings = async (settings: any): Promise<any> => {
+  const csrf = await getCsrfToken();
+  return api('/monitor/settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrf },
+    body: JSON.stringify(settings),
+  });
+};
+
+export const fetchPaymentQR = async (): Promise<any> => {
+  return api('/payment-qr');
+};
+
+export const uploadPaymentQR = async (formData: FormData): Promise<any> => {
+  const csrf = await getCsrfToken();
+  return api('/payment-qr/upload', {
+    method: 'POST',
+    headers: { 'x-csrf-token': csrf },
+    body: formData,
+  });
+};
+
+export const generatePaymentQR = async (params: {
+  accountNumber: string;
+  accountName: string;
+}): Promise<any> => {
+  const csrf = await getCsrfToken();
+  return api('/payment-qr/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrf },
+    body: JSON.stringify(params),
+  });
+};
+
+export const deletePaymentQR = async (): Promise<any> => {
+  const csrf = await getCsrfToken();
+  return api('/payment-qr', {
+    method: 'DELETE',
+    headers: { 'x-csrf-token': csrf },
   });
 };
 

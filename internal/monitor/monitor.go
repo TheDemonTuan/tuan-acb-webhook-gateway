@@ -37,6 +37,10 @@ type Monitor struct {
 	syncMu          sync.Mutex
 	syncReq         *syncRequest
 	syncCh          chan struct{}
+	settingsCh      chan struct{}
+	cachedSettings  storage.MonitorSettings
+	lastMode        storage.PollMode
+	historyGroup    Group
 	onNewEvents     func([]storage.EventNotification)
 	onPollFinished  func(poll storage.PollRun, insertedCount int)
 	backoffUntil    time.Time
@@ -82,7 +86,16 @@ func New(store *storage.Store, client BankClient, minInterval, maxInterval time.
 			}
 			return minimum + time.Duration(rand.Int64N(int64(maximum-minimum)+1))
 		},
-		syncCh: make(chan struct{}, 1),
+		syncCh:         make(chan struct{}, 1),
+		settingsCh:     make(chan struct{}, 1),
+		cachedSettings: storage.DefaultMonitorSettings,
+	}
+}
+
+func (m *Monitor) NotifySettingsChanged() {
+	select {
+	case m.settingsCh <- struct{}{}:
+	default:
 	}
 }
 
@@ -127,6 +140,136 @@ func (m *Monitor) RequestSync(ctx context.Context) error {
 	default:
 	}
 	return nil
+}
+
+// EnsureHistory ensures ACB transaction history for the requested [fromDay, toDay] date range is synchronized.
+// It coalesces concurrent requests, checks cached coverage with TTLs, pushes date filters to ACB, and ingests with FILTER_SYNC source.
+func (m *Monitor) EnsureHistory(ctx context.Context, fromDay, toDay string) (int, error) {
+	fromT, err := time.Parse("2006-01-02", fromDay)
+	if err != nil {
+		return 0, fmt.Errorf("invalid from date: %w", err)
+	}
+	toT, err := time.Parse("2006-01-02", toDay)
+	if err != nil {
+		return 0, fmt.Errorf("invalid to date: %w", err)
+	}
+	if fromT.After(toT) {
+		return 0, errors.New("from date must not be after to date")
+	}
+	if toT.Sub(fromT) > 31*24*time.Hour {
+		return 0, errors.New("range too large (max 31 days)")
+	}
+
+	conn, err := m.store.Connection(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if conn.State != "MONITORING" {
+		return 0, errors.New("bank connection is not in MONITORING state")
+	}
+
+	// 1. Fast cache check
+	covered, err := m.store.CheckRangeCoverage(ctx, conn.ID, fromDay, toDay)
+	if err == nil && covered {
+		return 0, nil
+	}
+
+	// 2. Coalescing single-flight group
+	flightKey := fmt.Sprintf("%s:%s:%s", conn.ID, fromDay, toDay)
+	val, err := m.historyGroup.Do(flightKey, func() (any, error) {
+		// Re-check coverage under flight
+		if cov, _ := m.store.CheckRangeCoverage(ctx, conn.ID, fromDay, toDay); cov {
+			return 0, nil
+		}
+
+		m.mu.Lock()
+		defer m.mu.Unlock()
+
+		if time.Now().Before(m.backoffUntil) {
+			return 0, errors.New("circuit breaker backoff active")
+		}
+
+		if m.client == nil {
+			return 0, errors.New("bank client not configured")
+		}
+		if m.sessions != nil {
+			if err := m.sessions.Restore(ctx, conn.ID, conn.Generation); err != nil {
+				return 0, fmt.Errorf("restore ACB session: %w", err)
+			}
+		}
+
+		resp, err := m.client.Bootstrap(ctx)
+		if err != nil {
+			return 0, fmt.Errorf("bootstrap ACB session: %w", err)
+		}
+		if resp.Kind == acb.LoginPage || resp.Kind == acb.OTPChallenge || resp.Kind == acb.CaptchaPage {
+			return 0, errors.New("ACB session expired or challenge required")
+		}
+		if resp.Kind == acb.MaintenancePage {
+			m.backoffUntil = time.Now().Add(60 * time.Second)
+			return 0, errors.New("ACB maintenance")
+		}
+
+		form, formErr := acb.ExtractHistoryForm(resp.Body)
+		if formErr != nil {
+			return 0, fmt.Errorf("extract history form: %w", formErr)
+		}
+
+		if form.Fields["AccountNbr"] == "" && conn.AccountMasked != "" {
+			form.Fields["AccountNbr"] = conn.AccountMasked
+		}
+
+		fromACB := fromT.Format("02/01/2006")
+		toACB := toT.Format("02/01/2006")
+		form.Fields["FromDate"] = fromACB
+		form.Fields["ToDate"] = toACB
+		form.Fields["_explicitRange"] = "true"
+
+		histResp, histErr := m.client.History(ctx, form.Action, form.Fields)
+		if histErr != nil {
+			return 0, fmt.Errorf("query ACB history range: %w", histErr)
+		}
+		if histResp.Kind == acb.LoginPage || histResp.Kind == acb.OTPChallenge {
+			return 0, errors.New("ACB session expired during history query")
+		}
+
+		txns, parseErr := acb.ParseHistory(histResp.Body)
+		if parseErr != nil {
+			return 0, fmt.Errorf("parse ACB history: %w", parseErr)
+		}
+
+		batchItems := make([]storage.BatchTransactionItem, len(txns))
+		for i, txn := range txns {
+			batchItems[i] = storage.BatchTransactionItem{
+				Number:        txn.Number,
+				Credit:        txn.Credit,
+				Debit:         txn.Debit,
+				Balance:       txn.Balance,
+				TransactionAt: txn.TransactionAt,
+				EffectiveAt:   txn.EffectiveDate,
+				Description:   txn.Description,
+			}
+		}
+
+		// Ingest with FILTER_SYNC source (suppressing webhooks and voice)
+		_, ingestErr := m.store.IngestTransactionsBatchWithSource(ctx, conn.ID, conn.Generation, conn.AccountMasked, batchItems, false, "FILTER_SYNC")
+		if ingestErr != nil {
+			return 0, fmt.Errorf("ingest history transactions: %w", ingestErr)
+		}
+
+		var days []string
+		for cur := fromT; !cur.After(toT); cur = cur.AddDate(0, 0, 1) {
+			days = append(days, cur.Format("2006-01-02"))
+		}
+		_ = m.store.RecordCoverage(ctx, conn.ID, days, len(txns))
+
+		return len(txns), nil
+	})
+
+	if err != nil {
+		return 0, err
+	}
+	return val.(int), nil
 }
 
 // PollOnce executes a single poll cycle if the connection is in MONITORING state.
@@ -330,6 +473,172 @@ func (m *Monitor) pollOnce(ctx context.Context, expected *syncRequest) error {
 	return nil
 }
 
+func (m *Monitor) pollKeepalive(ctx context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	conn, err := m.store.Connection(ctx)
+	if err != nil {
+		return err
+	}
+	if conn.State != "MONITORING" {
+		return nil
+	}
+
+	if time.Now().Before(m.backoffUntil) {
+		return nil
+	}
+
+	if m.client == nil {
+		return errors.New("bank client not configured")
+	}
+	if m.sessions != nil {
+		if err := m.sessions.Restore(ctx, conn.ID, conn.Generation); err != nil {
+			return fmt.Errorf("restore ACB session: %w", err)
+		}
+	}
+
+	poll, err := m.store.StartPoll(ctx)
+	if err != nil {
+		return fmt.Errorf("start poll: %w", err)
+	}
+
+	// Bootstrap page only to keep session alive and rotate cookies - never calls History!
+	resp, err := m.client.Bootstrap(ctx)
+	if err != nil {
+		poll.Status = "FAILED"
+		poll.Error = err.Error()
+		_ = m.finishPoll(ctx, poll, 0)
+		return err
+	}
+
+	poll.Classifier = string(resp.Kind)
+	poll.HTTPStatus = resp.StatusCode
+
+	if resp.Kind == acb.LoginPage || resp.Kind == acb.OTPChallenge || resp.Kind == acb.CaptchaPage {
+		poll.Status = "AUTH_REQUIRED"
+		poll.Error = "SESSION_EXPIRED"
+		_ = m.finishPoll(ctx, poll, 0)
+		slog.Warn("ACB session expired during keepalive; transitioned to AUTH_REQUIRED")
+		return nil
+	}
+
+	if resp.StatusCode == 429 {
+		poll.Status = "FAILED"
+		poll.Error = "ACB_RATE_LIMITED"
+		m.backoffUntil = time.Now().Add(60 * time.Second)
+		_ = m.finishPoll(ctx, poll, 0)
+		return nil
+	}
+
+	if resp.Kind == acb.MaintenancePage {
+		poll.Status = "FAILED"
+		poll.Error = "ACB_MAINTENANCE"
+		m.backoffUntil = time.Now().Add(60 * time.Second)
+		_ = m.finishPoll(ctx, poll, 0)
+		return nil
+	}
+
+	if m.sessions != nil {
+		_ = m.sessions.Persist(ctx, conn.ID, conn.Generation)
+	}
+
+	poll.Status = "SUCCEEDED"
+	poll.Pages = 0
+	poll.RowsSeen = 0
+	return m.finishPoll(ctx, poll, 0)
+}
+
+func (m *Monitor) catchUp(ctx context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	conn, err := m.store.Connection(ctx)
+	if err != nil {
+		return err
+	}
+	if conn.State != "MONITORING" {
+		return nil
+	}
+
+	nowInLoc := time.Now().In(acb.DefaultLocation)
+	yesterday := nowInLoc.AddDate(0, 0, -1).Format("2006-01-02")
+	today := nowInLoc.Format("2006-01-02")
+
+	slog.Info("running catch-up history sync before resuming realtime", "from", yesterday, "to", today)
+
+	if m.client == nil {
+		return errors.New("bank client not configured")
+	}
+	if m.sessions != nil {
+		if err := m.sessions.Restore(ctx, conn.ID, conn.Generation); err != nil {
+			return fmt.Errorf("restore ACB session: %w", err)
+		}
+	}
+
+	resp, err := m.client.Bootstrap(ctx)
+	if err != nil {
+		return fmt.Errorf("bootstrap for catch-up: %w", err)
+	}
+	if resp.Kind == acb.LoginPage || resp.Kind == acb.OTPChallenge || resp.Kind == acb.CaptchaPage {
+		return errors.New("session expired")
+	}
+
+	form, formErr := acb.ExtractHistoryForm(resp.Body)
+	if formErr != nil {
+		return fmt.Errorf("extract history form: %w", formErr)
+	}
+	if form.Fields["AccountNbr"] == "" && conn.AccountMasked != "" {
+		form.Fields["AccountNbr"] = conn.AccountMasked
+	}
+
+	fromT, _ := time.Parse("2006-01-02", yesterday)
+	toT, _ := time.Parse("2006-01-02", today)
+	form.Fields["FromDate"] = fromT.Format("02/01/2006")
+	form.Fields["ToDate"] = toT.Format("02/01/2006")
+	form.Fields["_explicitRange"] = "true"
+
+	histResp, histErr := m.client.History(ctx, form.Action, form.Fields)
+	if histErr != nil {
+		return fmt.Errorf("catch-up history query: %w", histErr)
+	}
+	txns, parseErr := acb.ParseHistory(histResp.Body)
+	if parseErr != nil {
+		return fmt.Errorf("catch-up parse: %w", parseErr)
+	}
+
+	batchItems := make([]storage.BatchTransactionItem, len(txns))
+	for i, txn := range txns {
+		batchItems[i] = storage.BatchTransactionItem{
+			Number:        txn.Number,
+			Credit:        txn.Credit,
+			Debit:         txn.Debit,
+			Balance:       txn.Balance,
+			TransactionAt: txn.TransactionAt,
+			EffectiveAt:   txn.EffectiveDate,
+			Description:   txn.Description,
+		}
+	}
+
+	// Ingest with CATCH_UP source:
+	// New credit transactions enqueue webhooks (no missed payments!), but voice is suppressed!
+	res, err := m.store.IngestTransactionsBatchWithSource(ctx, conn.ID, conn.Generation, conn.AccountMasked, batchItems, false, "CATCH_UP")
+	if err != nil {
+		return fmt.Errorf("catch-up ingest: %w", err)
+	}
+
+	slog.Info("catch-up completed", "inserted", res.InsertedCount, "skipped", res.SkippedCount)
+	return nil
+}
+
 func (m *Monitor) Run(ctx context.Context) {
 	m.syncMu.Lock()
 	if m.syncCh == nil {
@@ -338,13 +647,53 @@ func (m *Monitor) Run(ctx context.Context) {
 	syncCh := m.syncCh
 	m.syncMu.Unlock()
 
-	timer := time.NewTimer(m.nextInterval(m.pollMinInterval, m.pollMaxInterval))
+	// Initial load of settings from database
+	if initSettings, err := m.store.GetMonitorSettings(ctx); err == nil {
+		m.cachedSettings = initSettings
+	}
+
+	timer := time.NewTimer(100 * time.Millisecond)
 	defer timer.Stop()
 
 	for {
+		schedule := storage.ResolveSchedule(time.Now(), &m.cachedSettings)
+
+		// Transition check: transitioning into REALTIME triggers catch-up!
+		if (m.lastMode == storage.ModeKeepaliveOnly || m.lastMode == storage.ModePaused) && schedule.Mode == storage.ModeRealtime {
+			if err := m.catchUp(ctx); err != nil {
+				slog.Warn("catch-up sync failed", "error", err)
+			}
+		}
+		m.lastMode = schedule.Mode
+
+		wait := m.nextInterval(schedule.MinInterval, schedule.MaxInterval)
+		if schedule.Mode == storage.ModePaused {
+			wait = 10 * time.Minute
+		}
+		untilTrans := time.Until(schedule.NextTransition)
+		if untilTrans > 0 && untilTrans < wait {
+			wait = untilTrans
+		}
+		timer.Reset(wait)
+
 		select {
 		case <-ctx.Done():
 			return
+
+		case <-m.settingsCh:
+			// Hot reload settings
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			if s, err := m.store.GetMonitorSettings(ctx); err == nil {
+				m.cachedSettings = s
+				slog.Info("monitor schedule hot-reloaded", "revision", s.Revision, "enabled", s.Enabled)
+			}
+			continue
+
 		case <-syncCh:
 			if !timer.Stop() {
 				select {
@@ -361,11 +710,20 @@ func (m *Monitor) Run(ctx context.Context) {
 					slog.Warn("monitor sync poll completed with error", "error", err)
 				}
 			}
+
 		case <-timer.C:
-			if err := m.pollOnce(ctx, nil); err != nil {
-				slog.Warn("monitor poll cycle completed with error", "error", err)
+			switch schedule.Mode {
+			case storage.ModeRealtime:
+				if err := m.pollOnce(ctx, nil); err != nil {
+					slog.Warn("monitor poll cycle completed with error", "error", err)
+				}
+			case storage.ModeKeepaliveOnly:
+				if err := m.pollKeepalive(ctx); err != nil {
+					slog.Warn("monitor keepalive cycle completed with error", "error", err)
+				}
+			case storage.ModePaused:
+				// No upstream request
 			}
 		}
-		timer.Reset(m.nextInterval(m.pollMinInterval, m.pollMaxInterval))
 	}
 }

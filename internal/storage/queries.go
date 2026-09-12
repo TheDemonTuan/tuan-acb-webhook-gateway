@@ -9,15 +9,51 @@ import (
 )
 
 type TransactionView struct {
-	ID            string `json:"id"`
-	SemanticKey   string `json:"semanticKey"`
-	TransactionAt string `json:"transactionDate"`
-	EffectiveAt   string `json:"effectiveDate"`
-	Debit         int64  `json:"debit"`
-	Credit        int64  `json:"credit"`
-	Balance       *int64 `json:"balance,omitempty"`
-	Description   string `json:"description"`
-	FirstSeenAt   string `json:"firstSeenAt"`
+	ID             string `json:"id"`
+	SemanticKey    string `json:"semanticKey"`
+	TransactionAt  string `json:"transactionDate"`
+	TransactionDay string `json:"transactionDay,omitempty"`
+	DatePrecision  string `json:"datePrecision,omitempty"`
+	EffectiveAt    string `json:"effectiveDate"`
+	Debit          int64  `json:"debit"`
+	Credit         int64  `json:"credit"`
+	Balance        *int64 `json:"balance,omitempty"`
+	Description    string `json:"description"`
+	FirstSeenAt    string `json:"firstSeenAt"`
+	Source         string `json:"source,omitempty"`
+}
+
+type TransactionSummary struct {
+	TotalCount int64 `json:"count"`
+	Incoming   int64 `json:"incoming"`
+	Outgoing   int64 `json:"outgoing"`
+}
+
+type TransactionsPage struct {
+	Items      []TransactionView   `json:"items"`
+	NextCursor string              `json:"nextCursor,omitempty"`
+	Summary    *TransactionSummary `json:"summary,omitempty"`
+}
+
+type TransactionFilter struct {
+	From      string
+	To        string
+	Direction string
+	Query     string
+	Limit     int
+	Cursor    string
+}
+
+func escapeLike(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case '%', '_', '\\':
+			b.WriteRune('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 type DeliveryView struct {
@@ -77,45 +113,181 @@ func decodeCursor(cursor string) (string, string, error) {
 	return parts[0], parts[1], nil
 }
 
-func (s *Store) ListTransactionsPage(ctx context.Context, limit int, cursor string) (Page[TransactionView], error) {
-	limit = normalizePageSize(limit)
-	sortValue, cursorID, err := decodeCursor(cursor)
-	if err != nil {
-		return Page[TransactionView]{}, err
+func (s *Store) ListTransactionsFiltered(ctx context.Context, filter TransactionFilter) (TransactionsPage, error) {
+	var conditions []string
+	var filterArgs []any
+
+	if filter.From != "" {
+		conditions = append(conditions, "(transaction_day >= ? OR (transaction_day = '' AND substr(first_seen_at, 1, 10) >= ?))")
+		filterArgs = append(filterArgs, filter.From, filter.From)
 	}
-	query := `SELECT id, semantic_key, transaction_date, effective_date, debit, credit, balance, COALESCE(CAST(description_envelope AS TEXT), ''), first_seen_at FROM transactions`
-	args := []any{}
+	if filter.To != "" {
+		conditions = append(conditions, "(transaction_day <= ? OR (transaction_day = '' AND substr(first_seen_at, 1, 10) <= ?))")
+		filterArgs = append(filterArgs, filter.To, filter.To)
+	}
+	if filter.Direction == "credit" {
+		conditions = append(conditions, "credit > 0")
+	} else if filter.Direction == "debit" {
+		conditions = append(conditions, "debit > 0")
+	}
+	if filter.Query != "" {
+		escaped := "%" + escapeLike(filter.Query) + "%"
+		conditions = append(conditions, "(CAST(description_envelope AS TEXT) LIKE ? ESCAPE '\\' OR semantic_key LIKE ? ESCAPE '\\')")
+		filterArgs = append(filterArgs, escaped, escaped)
+	}
+
+	whereClause := ""
+	if len(conditions) > 0 {
+		whereClause = " WHERE " + strings.Join(conditions, " AND ")
+	}
+
+	// 1. Calculate summary aggregate across the entire filtered range
+	summaryQuery := `
+		SELECT
+			COUNT(*),
+			COALESCE(SUM(CASE WHEN credit > 0 THEN credit ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN debit > 0 THEN debit ELSE 0 END), 0)
+		FROM transactions` + whereClause
+
+	var summary TransactionSummary
+	if err := s.db.QueryRowContext(ctx, summaryQuery, filterArgs...).Scan(&summary.TotalCount, &summary.Incoming, &summary.Outgoing); err != nil {
+		return TransactionsPage{}, err
+	}
+
+	// 2. Query page items with cursor
+	limit := normalizePageSize(filter.Limit)
+	sortValue, cursorID, err := decodeCursor(filter.Cursor)
+	if err != nil {
+		return TransactionsPage{}, err
+	}
+
+	itemConditions := make([]string, len(conditions))
+	copy(itemConditions, conditions)
+	itemArgs := make([]any, len(filterArgs))
+	copy(itemArgs, filterArgs)
+
 	if sortValue != "" {
-		query += ` WHERE first_seen_at < ? OR (first_seen_at = ? AND id < ?)`
-		args = append(args, sortValue, sortValue, cursorID)
+		itemConditions = append(itemConditions, "(first_seen_at < ? OR (first_seen_at = ? AND id < ?))")
+		itemArgs = append(itemArgs, sortValue, sortValue, cursorID)
 	}
-	query += ` ORDER BY first_seen_at DESC, id DESC LIMIT ?`
-	args = append(args, limit+1)
-	rows, err := s.db.QueryContext(ctx, query, args...)
+
+	itemWhere := ""
+	if len(itemConditions) > 0 {
+		itemWhere = " WHERE " + strings.Join(itemConditions, " AND ")
+	}
+
+	query := `
+		SELECT
+			id,
+			semantic_key,
+			COALESCE(NULLIF(transaction_at_iso, ''), transaction_date),
+			COALESCE(transaction_day, ''),
+			COALESCE(date_precision, 'unknown'),
+			effective_date,
+			debit,
+			credit,
+			balance,
+			COALESCE(CAST(description_envelope AS TEXT), ''),
+			first_seen_at,
+			COALESCE(ingest_source, 'REALTIME')
+		FROM transactions` + itemWhere + ` ORDER BY first_seen_at DESC, id DESC LIMIT ?`
+	itemArgs = append(itemArgs, limit+1)
+
+	rows, err := s.db.QueryContext(ctx, query, itemArgs...)
 	if err != nil {
-		return Page[TransactionView]{}, err
+		return TransactionsPage{}, err
 	}
 	defer rows.Close()
+
 	items := make([]TransactionView, 0, limit)
 	for rows.Next() {
 		var item TransactionView
 		var description string
-		if err := rows.Scan(&item.ID, &item.SemanticKey, &item.TransactionAt, &item.EffectiveAt, &item.Debit, &item.Credit, &item.Balance, &description, &item.FirstSeenAt); err != nil {
-			return Page[TransactionView]{}, err
+		if err := rows.Scan(
+			&item.ID,
+			&item.SemanticKey,
+			&item.TransactionAt,
+			&item.TransactionDay,
+			&item.DatePrecision,
+			&item.EffectiveAt,
+			&item.Debit,
+			&item.Credit,
+			&item.Balance,
+			&description,
+			&item.FirstSeenAt,
+			&item.Source,
+		); err != nil {
+			return TransactionsPage{}, err
 		}
 		item.Description = description
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
-		return Page[TransactionView]{}, err
+		return TransactionsPage{}, err
 	}
-	page := Page[TransactionView]{Items: items}
+
+	page := TransactionsPage{
+		Items:   items,
+		Summary: &summary,
+	}
 	if len(items) > limit {
 		last := items[limit-1]
 		page.Items = items[:limit]
 		page.NextCursor = encodeCursor(last.FirstSeenAt, last.ID)
 	}
 	return page, nil
+}
+
+func (s *Store) ListTransactionsPage(ctx context.Context, limit int, cursor string) (Page[TransactionView], error) {
+	p, err := s.ListTransactionsFiltered(ctx, TransactionFilter{Limit: limit, Cursor: cursor})
+	if err != nil {
+		return Page[TransactionView]{}, err
+	}
+	return Page[TransactionView]{
+		Items:      p.Items,
+		NextCursor: p.NextCursor,
+	}, nil
+}
+
+func (s *Store) GetTransactionByID(ctx context.Context, id string) (*TransactionView, error) {
+	query := `
+		SELECT
+			id,
+			semantic_key,
+			COALESCE(NULLIF(transaction_at_iso, ''), transaction_date),
+			COALESCE(transaction_day, ''),
+			COALESCE(date_precision, 'unknown'),
+			effective_date,
+			debit,
+			credit,
+			balance,
+			COALESCE(CAST(description_envelope AS TEXT), ''),
+			first_seen_at,
+			COALESCE(ingest_source, 'REALTIME')
+		FROM transactions
+		WHERE id = ?`
+
+	var item TransactionView
+	var description string
+	err := s.db.QueryRowContext(ctx, query, id).Scan(
+		&item.ID,
+		&item.SemanticKey,
+		&item.TransactionAt,
+		&item.TransactionDay,
+		&item.DatePrecision,
+		&item.EffectiveAt,
+		&item.Debit,
+		&item.Credit,
+		&item.Balance,
+		&description,
+		&item.FirstSeenAt,
+		&item.Source,
+	)
+	if err != nil {
+		return nil, err
+	}
+	item.Description = description
+	return &item, nil
 }
 
 func (s *Store) ListDeliveriesPage(ctx context.Context, limit int, cursor string) (Page[DeliveryView], error) {

@@ -3,15 +3,20 @@ package httpapi
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -32,22 +37,32 @@ type SyncRequester interface {
 	RequestSync(context.Context) error
 }
 
+type HistoryEnsurer interface {
+	EnsureHistory(ctx context.Context, fromDay, toDay string) (int, error)
+}
+
+type MonitorNotifier interface {
+	NotifySettingsChanged()
+}
+
 type AuthVerifier interface {
 	VerifySession(context.Context, string, int64, []byte) error
 }
 
 type Server struct {
-	syncRequester SyncRequester
-	authVerifier  AuthVerifier
-	cfg           config.Config
-	store         *storage.Store
-	auth          *auth.Middleware
-	browser       *authbrowser.Client
-	browserVNCURL string
-	keyring       *security.Keyring
-	eventHub      *eventhub.Hub
-	started       time.Time
-	handler       http.Handler
+	syncRequester   SyncRequester
+	historyEnsurer  HistoryEnsurer
+	monitorNotifier MonitorNotifier
+	authVerifier    AuthVerifier
+	cfg             config.Config
+	store           *storage.Store
+	auth            *auth.Middleware
+	browser         *authbrowser.Client
+	browserVNCURL   string
+	keyring         *security.Keyring
+	eventHub        *eventhub.Hub
+	started         time.Time
+	handler         http.Handler
 }
 
 func New(cfg config.Config, store *storage.Store) *Server {
@@ -82,12 +97,22 @@ func New(cfg config.Config, store *storage.Store) *Server {
 		api.Get("/connection", s.connection)
 		api.Get("/webhooks", s.endpoints)
 		api.Get("/transactions", s.transactions)
+		api.Get("/transactions/{id}", s.transactionDetail)
+		api.Post("/transactions/ensure-history", s.ensureHistory)
 		api.Get("/deliveries", s.deliveries)
 		api.Get("/poll-runs", s.pollRuns)
 		api.Get("/audit", s.auditLogs)
 		api.Get("/events", s.eventsStream)
 		api.Get("/events/stream", s.eventsStream)
 		api.Get("/realtime/status", s.realtimeStatus)
+		api.Get("/monitor/settings", s.getMonitorSettings)
+		api.With(s.auth.Require(auth.Owner, auth.Operator)).Put("/monitor/settings", s.updateMonitorSettings)
+		api.Get("/payment-qr", s.getPaymentQR)
+		api.Get("/payment-qr/image", s.getPaymentQRImage)
+		api.With(s.auth.Require(auth.Owner, auth.Operator)).Post("/payment-qr", s.savePaymentQR)
+		api.With(s.auth.Require(auth.Owner, auth.Operator)).Post("/payment-qr/upload", s.uploadPaymentQR)
+		api.With(s.auth.Require(auth.Owner, auth.Operator)).Post("/payment-qr/generate", s.generatePaymentQR)
+		api.With(s.auth.Require(auth.Owner, auth.Operator)).Delete("/payment-qr", s.deletePaymentQR)
 
 		api.With(s.auth.Require(auth.Owner)).Post("/connection/configure", s.configure)
 		api.With(s.auth.Require(auth.Owner, auth.Operator)).Post("/connection/{action:pause|resume|sync}", s.connectionAction)
@@ -125,6 +150,16 @@ func (s *Server) WithSyncRequester(requester SyncRequester) *Server {
 	return s
 }
 
+func (s *Server) WithHistoryEnsurer(ensurer HistoryEnsurer) *Server {
+	s.historyEnsurer = ensurer
+	return s
+}
+
+func (s *Server) WithMonitorNotifier(notifier MonitorNotifier) *Server {
+	s.monitorNotifier = notifier
+	return s
+}
+
 func (s *Server) Handler() http.Handler { return s.handler }
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -144,6 +179,15 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		acb["accountMasked"] = connection.AccountMasked
 		acb["generation"] = connection.Generation
 		acb["coverage"] = "PENDING_ACB_POC"
+
+		monSettings, errSettings := s.store.GetMonitorSettings(r.Context())
+		if errSettings == nil {
+			resolved := storage.ResolveSchedule(time.Now(), &monSettings)
+			acb["scheduleMode"] = resolved.Mode
+			acb["scheduleWindow"] = resolved.ActiveWindow
+			acb["scheduleMinSeconds"] = int(resolved.MinInterval.Seconds())
+			acb["scheduleMaxSeconds"] = int(resolved.MaxInterval.Seconds())
+		}
 	} else if !errors.Is(err, storage.ErrNotFound) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "storage_error"})
 		return
@@ -503,16 +547,403 @@ func (s *Server) transactions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	page, err := s.store.ListTransactionsPage(r.Context(), limit, cursor)
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if len(q) > 200 {
+		q = q[:200]
+	}
+	from := strings.TrimSpace(r.URL.Query().Get("from"))
+	to := strings.TrimSpace(r.URL.Query().Get("to"))
+	direction := strings.TrimSpace(r.URL.Query().Get("direction"))
+	if direction != "credit" && direction != "debit" {
+		direction = "all"
+	}
+	if from != "" {
+		if _, err := time.Parse("2006-01-02", from); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid from date: expected YYYY-MM-DD")
+			return
+		}
+	}
+	if to != "" {
+		if _, err := time.Parse("2006-01-02", to); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid to date: expected YYYY-MM-DD")
+			return
+		}
+	}
+	if from != "" && to != "" && from > to {
+		writeError(w, http.StatusBadRequest, "from date must not be after to date")
+		return
+	}
+
+	filter := storage.TransactionFilter{
+		From:      from,
+		To:        to,
+		Direction: direction,
+		Query:     q,
+		Limit:     limit,
+		Cursor:    cursor,
+	}
+	page, err := s.store.ListTransactionsFiltered(r.Context(), filter)
 	if err != nil {
 		status := http.StatusInternalServerError
 		if cursor != "" {
 			status = http.StatusBadRequest
 		}
-		writeError(w, status, "pagination request failed")
+		writeError(w, status, "query transactions failed")
 		return
 	}
 	writeJSON(w, http.StatusOK, page)
+}
+
+func (s *Server) transactionDetail(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "transaction id is required")
+		return
+	}
+	txn, err := s.store.GetTransactionByID(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "transaction not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to get transaction")
+		return
+	}
+	writeJSON(w, http.StatusOK, txn)
+}
+
+type ensureHistoryRequest struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+func (s *Server) ensureHistory(w http.ResponseWriter, r *http.Request) {
+	if s.historyEnsurer == nil {
+		writeError(w, http.StatusServiceUnavailable, "history sync unavailable")
+		return
+	}
+	var req ensureHistoryRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	req.From = strings.TrimSpace(req.From)
+	req.To = strings.TrimSpace(req.To)
+	if req.From == "" || req.To == "" {
+		writeError(w, http.StatusBadRequest, "from and to dates are required (YYYY-MM-DD)")
+		return
+	}
+	fromT, err := time.Parse("2006-01-02", req.From)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid from date: expected YYYY-MM-DD")
+		return
+	}
+	toT, err := time.Parse("2006-01-02", req.To)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid to date: expected YYYY-MM-DD")
+		return
+	}
+	if fromT.After(toT) {
+		writeError(w, http.StatusBadRequest, "from date must not be after to date")
+		return
+	}
+	if toT.Sub(fromT) > 31*24*time.Hour {
+		writeError(w, http.StatusBadRequest, "range too large: maximum 31 days")
+		return
+	}
+
+	rowsSeen, err := s.historyEnsurer.EnsureHistory(r.Context(), req.From, req.To)
+	if err != nil {
+		slog.Warn("ensure history failed", "from", req.From, "to", req.To, "error", err)
+		writeError(w, http.StatusBadGateway, "failed to sync history: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":   "COMPLETE",
+		"coverage": "COMPLETE",
+		"synced":   true,
+		"rowsSeen": rowsSeen,
+	})
+}
+
+func (s *Server) getMonitorSettings(w http.ResponseWriter, r *http.Request) {
+	settings, err := s.store.GetMonitorSettings(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load monitor settings")
+		return
+	}
+	resolved := storage.ResolveSchedule(time.Now(), &settings)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"settings": settings,
+		"current": map[string]any{
+			"mode":             resolved.Mode,
+			"minSeconds":       int(resolved.MinInterval.Seconds()),
+			"maxSeconds":       int(resolved.MaxInterval.Seconds()),
+			"activeWindow":     resolved.ActiveWindow,
+			"nextTransitionAt": resolved.NextTransition.Format(time.RFC3339),
+			"nextMode":         resolved.NextMode,
+		},
+	})
+}
+
+func (s *Server) updateMonitorSettings(w http.ResponseWriter, r *http.Request) {
+	var input storage.MonitorSettings
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	saved, err := s.store.SaveMonitorSettings(r.Context(), input)
+	if err != nil {
+		if errors.Is(err, storage.ErrSettingsConflict) {
+			writeError(w, http.StatusConflict, "settings conflict: revision mismatch, please reload and retry")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "invalid settings: "+err.Error())
+		return
+	}
+
+	audit(s.store, r, "monitor.settings.update", "singleton")
+
+	if s.monitorNotifier != nil {
+		s.monitorNotifier.NotifySettingsChanged()
+	}
+
+	resolved := storage.ResolveSchedule(time.Now(), &saved)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"settings": saved,
+		"current": map[string]any{
+			"mode":             resolved.Mode,
+			"minSeconds":       int(resolved.MinInterval.Seconds()),
+			"maxSeconds":       int(resolved.MaxInterval.Seconds()),
+			"activeWindow":     resolved.ActiveWindow,
+			"nextTransitionAt": resolved.NextTransition.Format(time.RFC3339),
+			"nextMode":         resolved.NextMode,
+		},
+	})
+}
+
+func (s *Server) getPaymentQR(w http.ResponseWriter, r *http.Request) {
+	qr, err := s.store.GetPaymentQR(r.Context(), "")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get payment qr")
+		return
+	}
+	if qr == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"configured": false})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"configured": true,
+		"qr":         qr,
+		"hasImage":   qr.ImagePath != "",
+		"imageURL":   "/api/v1/payment-qr/image?v=" + strconv.FormatInt(qr.Revision, 10),
+	})
+}
+
+func (s *Server) getPaymentQRImage(w http.ResponseWriter, r *http.Request) {
+	qr, err := s.store.GetPaymentQR(r.Context(), "")
+	if err != nil || qr == nil || qr.ImagePath == "" {
+		writeError(w, http.StatusNotFound, "payment qr image not found")
+		return
+	}
+
+	data, err := os.ReadFile(qr.ImagePath)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "qr image file missing")
+		return
+	}
+
+	contentType := qr.ImageContentType
+	if contentType == "" {
+		contentType = "image/png"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("ETag", fmt.Sprintf(`"%s"`, qr.ImageHash))
+	w.Header().Set("Cache-Control", "private, max-age=3600")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+func (s *Server) savePaymentQR(w http.ResponseWriter, r *http.Request) {
+	var input storage.PaymentQR
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	saved, err := s.store.SavePaymentQR(r.Context(), input)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	audit(s.store, r, "payment_qr.save", saved.ID)
+	writeJSON(w, http.StatusOK, saved)
+}
+
+func (s *Server) uploadPaymentQR(w http.ResponseWriter, r *http.Request) {
+	// Limit upload size to 2MB
+	r.Body = http.MaxBytesReader(w, r.Body, 2*1024*1024)
+	if err := r.ParseMultipartForm(2 * 1024 * 1024); err != nil {
+		writeError(w, http.StatusBadRequest, "image too large (max 2MB)")
+		return
+	}
+
+	file, header, err := r.FormFile("image")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "image file is required")
+		return
+	}
+	defer file.Close()
+
+	accountNumber := strings.TrimSpace(r.FormValue("accountNumber"))
+	accountName := strings.TrimSpace(r.FormValue("accountName"))
+
+	imgBytes, err := io.ReadAll(file)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to read image file")
+		return
+	}
+
+	// Sniff MIME type - reject SVG/HTML/executable
+	contentType := http.DetectContentType(imgBytes)
+	if !strings.HasPrefix(contentType, "image/png") &&
+		!strings.HasPrefix(contentType, "image/jpeg") &&
+		!strings.HasPrefix(contentType, "image/webp") {
+		writeError(w, http.StatusBadRequest, "invalid image format: only PNG, JPEG and WebP allowed")
+		return
+	}
+
+	// Save image file
+	dataDir := filepath.Dir(s.cfg.DatabasePath)
+	qrDir := filepath.Join(dataDir, "qr")
+	_ = os.MkdirAll(qrDir, 0o750)
+
+	ext := ".png"
+	if strings.Contains(contentType, "jpeg") {
+		ext = ".jpg"
+	} else if strings.Contains(contentType, "webp") {
+		ext = ".webp"
+	}
+
+	imgHash := storage.HashBytes(imgBytes)
+	filePath := filepath.Join(qrDir, fmt.Sprintf("qr_%s%s", imgHash[:16], ext))
+	if err := os.WriteFile(filePath, imgBytes, 0o640); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to store image file")
+		return
+	}
+
+	existing, _ := s.store.GetPaymentQR(r.Context(), "")
+	qr := storage.PaymentQR{
+		AccountNumber:    accountNumber,
+		AccountName:      accountName,
+		ImagePath:        filePath,
+		ImageHash:        imgHash,
+		ImageContentType: contentType,
+		Provider:         "UPLOAD",
+	}
+	if existing != nil {
+		if qr.AccountNumber == "" {
+			qr.AccountNumber = existing.AccountNumber
+		}
+		if qr.AccountName == "" {
+			qr.AccountName = existing.AccountName
+		}
+	}
+	if qr.AccountNumber == "" || qr.AccountName == "" {
+		writeError(w, http.StatusBadRequest, "accountNumber and accountName are required")
+		return
+	}
+
+	saved, err := s.store.SavePaymentQR(r.Context(), qr)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save payment qr: "+err.Error())
+		return
+	}
+
+	audit(s.store, r, "payment_qr.upload", saved.ID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":   "OK",
+		"qr":       saved,
+		"imageURL": "/api/v1/payment-qr/image?v=" + strconv.FormatInt(saved.Revision, 10),
+	})
+	_ = header
+}
+
+func (s *Server) generatePaymentQR(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		AccountNumber string `json:"accountNumber"`
+		AccountName   string `json:"accountName"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	input.AccountNumber = strings.TrimSpace(input.AccountNumber)
+	input.AccountName = strings.TrimSpace(input.AccountName)
+	if input.AccountNumber == "" || input.AccountName == "" {
+		writeError(w, http.StatusBadRequest, "accountNumber and accountName are required")
+		return
+	}
+
+	// Generate VietQR using VietQR standard quick link (ACB BIN: 970416)
+	vietQRURL := fmt.Sprintf("https://img.vietqr.io/image/970416-%s-compact.png?accountName=%s",
+		url.PathEscape(input.AccountNumber), url.QueryEscape(input.AccountName))
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(vietQRURL)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		writeError(w, http.StatusBadGateway, "failed to generate QR from VietQR provider")
+		return
+	}
+	defer resp.Body.Close()
+
+	imgBytes, err := io.ReadAll(http.MaxBytesReader(w, resp.Body, 2*1024*1024))
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "failed to read generated QR data")
+		return
+	}
+
+	dataDir := filepath.Dir(s.cfg.DatabasePath)
+	qrDir := filepath.Join(dataDir, "qr")
+	_ = os.MkdirAll(qrDir, 0o750)
+
+	imgHash := storage.HashBytes(imgBytes)
+	filePath := filepath.Join(qrDir, fmt.Sprintf("qr_gen_%s.png", imgHash[:16]))
+	if err := os.WriteFile(filePath, imgBytes, 0o640); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save generated QR image")
+		return
+	}
+
+	qr := storage.PaymentQR{
+		AccountNumber:    input.AccountNumber,
+		AccountName:      input.AccountName,
+		ImagePath:        filePath,
+		ImageHash:        imgHash,
+		ImageContentType: "image/png",
+		Provider:         "VIETQR",
+	}
+	saved, err := s.store.SavePaymentQR(r.Context(), qr)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save qr: "+err.Error())
+		return
+	}
+
+	audit(s.store, r, "payment_qr.generate", saved.ID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":   "OK",
+		"qr":       saved,
+		"imageURL": "/api/v1/payment-qr/image?v=" + strconv.FormatInt(saved.Revision, 10),
+	})
+}
+
+func (s *Server) deletePaymentQR(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.DeletePaymentQR(r.Context(), ""); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete payment qr")
+		return
+	}
+	audit(s.store, r, "payment_qr.delete", "singleton")
+	writeJSON(w, http.StatusOK, map[string]string{"status": "DELETED"})
 }
 func (s *Server) deliveries(w http.ResponseWriter, r *http.Request) {
 	limit, cursor, err := pageParams(r)

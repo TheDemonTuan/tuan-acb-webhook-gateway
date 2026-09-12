@@ -76,7 +76,7 @@ func TestHubConcurrentPublishers(t *testing.T) {
 
 	// Read received events
 	received := 0
-	drain:
+drain:
 	for {
 		select {
 		case <-ch:

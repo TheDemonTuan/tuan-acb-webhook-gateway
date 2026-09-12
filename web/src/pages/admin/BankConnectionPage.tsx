@@ -11,6 +11,8 @@ import { configureConnection, fetchConnection, fetchStatus } from '../../shared/
 import { queryKeys } from '../../shared/api/query-keys';
 import { getAcbStatusDescriptor } from '../../content/status-copy';
 import { useBankConnection } from '../../features/bank-connection/BankConnectionProvider';
+import { ScheduleSettingsSection } from '../../features/bank-connection/ScheduleSettingsSection';
+import { PaymentQRSettingsSection } from '../../features/bank-connection/PaymentQRSettingsSection';
 
 export const BankConnectionPage: React.FC = () => {
   const queryClient = useQueryClient();
@@ -227,6 +229,12 @@ export const BankConnectionPage: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Schedule Polling Settings */}
+      <ScheduleSettingsSection />
+
+      {/* Static Payment QR Settings */}
+      <PaymentQRSettingsSection />
     </div>
   );
 };

@@ -14,7 +14,7 @@ import {
   Wallet,
   Receipt,
 } from 'lucide-react';
-import { fetchTransactions } from '../../shared/api/queries';
+import { fetchTransactionDetail } from '../../shared/api/queries';
 import { queryKeys } from '../../shared/api/query-keys';
 import { formatVndCurrency } from '../../shared/formatters/money';
 import { useVoiceAnnouncements } from '../../features/voice-announcements/VoiceAnnouncementProvider';
@@ -26,12 +26,11 @@ export const TransactionDetailPage: React.FC = () => {
   const [copied, setCopied] = useState(false);
   const { testVoice } = useVoiceAnnouncements();
 
-  const { data, isLoading } = useQuery({
-    queryKey: queryKeys.transactions({ limit: 100 }),
-    queryFn: () => fetchTransactions({ limit: 100 }),
+  const { data: transaction, isLoading } = useQuery({
+    queryKey: queryKeys.transactionDetail(id || ''),
+    queryFn: () => fetchTransactionDetail(id || ''),
+    enabled: !!id,
   });
-
-  const transaction = data?.items?.find((t) => t.id === id || t.semanticKey === id);
 
   if (isLoading) {
     return (

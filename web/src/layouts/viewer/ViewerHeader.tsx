@@ -1,11 +1,13 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Shield, ArrowRight } from 'lucide-react';
+import { Shield, ArrowRight, QrCode } from 'lucide-react';
 import { ViewerRealtimeStatus } from './ViewerRealtimeStatus';
 import { VoiceToggle } from '../../features/voice-announcements/components/VoiceToggle';
+import { ReceivingQRModal } from '../../features/payment-qr/ReceivingQRModal';
 
 export const ViewerHeader: React.FC = () => {
   const navigate = useNavigate();
+  const [isQROpen, setIsQROpen] = useState(false);
 
   return (
     <header className="bg-white border-b border-stone-200">
@@ -26,11 +28,23 @@ export const ViewerHeader: React.FC = () => {
           </Link>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2.5">
           <div className="hidden sm:block">
             <ViewerRealtimeStatus />
           </div>
+
+          <button
+            type="button"
+            onClick={() => setIsQROpen(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-white border border-stone-200 text-stone-700 hover:bg-stone-50 shadow-2xs transition cursor-pointer"
+            title="Xem mã QR nhận tiền"
+          >
+            <QrCode className="w-3.5 h-3.5 text-emerald-600" />
+            <span className="hidden md:inline">Mã QR nhận tiền</span>
+          </button>
+
           <VoiceToggle />
+
           <button
             type="button"
             role="button"
@@ -38,11 +52,13 @@ export const ViewerHeader: React.FC = () => {
             className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-stone-900 text-white hover:bg-stone-800 transition shadow-xs cursor-pointer"
           >
             <Shield className="w-3.5 h-3.5 text-emerald-400" />
-            <span>Quản trị hệ thống</span>
+            <span className="hidden sm:inline">Quản trị</span>
             <ArrowRight className="w-3 h-3 text-stone-400" />
           </button>
         </div>
       </div>
+
+      <ReceivingQRModal isOpen={isQROpen} onClose={() => setIsQROpen(false)} />
     </header>
   );
 };

@@ -8,4 +8,6 @@ export const queryKeys = {
   pollRuns: (params?: Record<string, unknown>) => ['pollRuns', params] as const,
   auditLogs: (params?: Record<string, unknown>) => ['auditLogs', params] as const,
   adminOverview: ['admin-overview'] as const,
+  monitorSettings: ['monitor-settings'] as const,
+  paymentQR: ['payment-qr'] as const,
 };

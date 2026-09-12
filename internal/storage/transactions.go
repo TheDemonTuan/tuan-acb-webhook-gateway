@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/thedemontuan/acb-transaction-webhook/internal/acb"
 )
 
 type TransactionInput struct {
@@ -83,8 +85,18 @@ func (s *Store) IngestTransaction(ctx context.Context, in TransactionInput) (Ing
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
+		norm, normErr := acb.NormalizeDate(in.TransactionAt, nil)
+		iso := in.TransactionAt
+		day := ""
+		precision := "unknown"
+		if normErr == nil {
+			iso = norm.TransactionAtISO
+			day = norm.TransactionDay
+			precision = norm.DatePrecision
+		}
 		result.TransactionID = id("txn")
-		_, err = tx.ExecContext(ctx, `INSERT INTO transactions(id,connection_id,semantic_key,canonical_hash,transaction_date,effective_date,debit,credit,balance,description_envelope,parser_version,first_seen_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, result.TransactionID, in.ConnectionID, in.SemanticKey, in.CanonicalHash, in.TransactionAt, in.EffectiveAt, in.Debit, in.Credit, in.Balance, in.Description, in.ParserVersion, now())
+		_, err = tx.ExecContext(ctx, `INSERT INTO transactions(id,connection_id,semantic_key,canonical_hash,transaction_date,effective_date,debit,credit,balance,description_envelope,parser_version,first_seen_at,transaction_at_iso,transaction_day,date_precision,ingest_source) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			result.TransactionID, in.ConnectionID, in.SemanticKey, in.CanonicalHash, in.TransactionAt, in.EffectiveAt, in.Debit, in.Credit, in.Balance, in.Description, in.ParserVersion, now(), iso, day, precision, "REALTIME")
 		if err != nil {
 			return err
 		}
@@ -95,10 +107,19 @@ func (s *Store) IngestTransaction(ctx context.Context, in TransactionInput) (Ing
 }
 
 // IngestTransactionsBatch atomically inserts transactions, events, deliveries, and journal entries
-// in a single SQLite transaction guarded by a generation fence.
+// in a single SQLite transaction guarded by a generation fence with default REALTIME source.
 func (s *Store) IngestTransactionsBatch(ctx context.Context, connectionID string, expectedGeneration int64, accountMasked string, items []BatchTransactionItem, isBaseline bool) (BatchIngestResult, error) {
+	return s.IngestTransactionsBatchWithSource(ctx, connectionID, expectedGeneration, accountMasked, items, isBaseline, "REALTIME")
+}
+
+// IngestTransactionsBatchWithSource atomically inserts transactions with explicit source policy
+// (REALTIME, CATCH_UP, FILTER_SYNC, BOOTSTRAP).
+func (s *Store) IngestTransactionsBatchWithSource(ctx context.Context, connectionID string, expectedGeneration int64, accountMasked string, items []BatchTransactionItem, isBaseline bool, source string) (BatchIngestResult, error) {
 	if connectionID == "" {
 		return BatchIngestResult{}, errors.New("connection ID is required")
+	}
+	if source == "" {
+		source = "REALTIME"
 	}
 
 	res := BatchIngestResult{}
@@ -154,21 +175,37 @@ func (s *Store) IngestTransactionsBatch(ctx context.Context, connectionID string
 				return err
 			}
 
+			norm, normErr := acb.NormalizeDate(item.TransactionAt, nil)
+			iso := item.TransactionAt
+			day := ""
+			precision := "unknown"
+			if normErr == nil {
+				iso = norm.TransactionAtISO
+				day = norm.TransactionDay
+				precision = norm.DatePrecision
+			}
+
 			txnID := id("txn")
 			baselineState := "NONE"
 			if isBaseline {
 				baselineState = "BASELINE"
 			}
 			nowTime := now()
-			_, err = tx.ExecContext(ctx, `INSERT INTO transactions(id, connection_id, semantic_key, canonical_hash, transaction_date, effective_date, debit, credit, balance, description_envelope, parser_version, baseline_state, first_seen_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'v1', ?, ?)`,
-				txnID, connectionID, semanticKey, canonicalHash, item.TransactionAt, item.EffectiveAt, item.Debit, item.Credit, item.Balance, []byte(item.Description), baselineState, nowTime)
+			_, err = tx.ExecContext(ctx, `INSERT INTO transactions(id, connection_id, semantic_key, canonical_hash, transaction_date, effective_date, debit, credit, balance, description_envelope, parser_version, baseline_state, first_seen_at, transaction_at_iso, transaction_day, date_precision, ingest_source) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'v1', ?, ?, ?, ?, ?, ?)`,
+				txnID, connectionID, semanticKey, canonicalHash, item.TransactionAt, item.EffectiveAt, item.Debit, item.Credit, item.Balance, []byte(item.Description), baselineState, nowTime, iso, day, precision, source)
 			if err != nil {
 				return fmt.Errorf("insert transaction: %w", err)
 			}
 			res.InsertedCount++
 
-			// Emit event and deliveries only for non-baseline credit transactions
-			if !isBaseline && item.Credit > 0 {
+			// Notification & delivery policy:
+			// FILTER_SYNC and BOOTSTRAP: suppressed webhooks and voice events.
+			// CATCH_UP: enqueues webhooks for newly found credit transactions, but source is CATCH_UP.
+			// REALTIME: enqueues webhooks and emits voice-eligible credit events.
+			emitCreditEvent := !isBaseline && item.Credit > 0 && source != "FILTER_SYNC" && source != "BOOTSTRAP"
+			deliverWebhooks := emitCreditEvent && (source == "REALTIME" || source == "CATCH_UP")
+
+			if emitCreditEvent {
 				sum := sha256.Sum256([]byte("acb" + "\x00" + semanticKey + "\x00" + "bank.transaction.credit"))
 				eventID := "bevt_" + hex.EncodeToString(sum[:16])
 				payloadHash := hex.EncodeToString(sum[:])
@@ -181,7 +218,10 @@ func (s *Store) IngestTransactionsBatch(ctx context.Context, connectionID string
 					"credit":            fmt.Sprintf("%d", item.Credit),
 					"debit":             fmt.Sprintf("%d", item.Debit),
 					"currency":          "VND",
-					"transactionDate":   item.TransactionAt,
+					"transactionDate":   iso,
+					"transactionDay":    day,
+					"datePrecision":     precision,
+					"source":            source,
 					"description":       item.Description,
 					"detectedAt":        nowTime,
 				}
@@ -202,15 +242,17 @@ func (s *Store) IngestTransactionsBatch(ctx context.Context, connectionID string
 					return fmt.Errorf("insert event: %w", err)
 				}
 
-				for _, ep := range activeEndpoints {
-					deliveryID := id("deliv")
-					_, err = tx.ExecContext(ctx, `
-						INSERT INTO deliveries(id, event_id, endpoint_id, endpoint_revision, key_id, status, attempts, next_attempt_at, created_at, updated_at)
-						VALUES(?, ?, ?, ?, 'k1', 'PENDING', 0, ?, ?, ?)
-						ON CONFLICT(event_id, endpoint_id) DO NOTHING
-					`, deliveryID, eventID, ep.id, ep.revision, nowTime, nowTime, nowTime)
-					if err != nil {
-						return fmt.Errorf("insert delivery: %w", err)
+				if deliverWebhooks {
+					for _, ep := range activeEndpoints {
+						deliveryID := id("deliv")
+						_, err = tx.ExecContext(ctx, `
+							INSERT INTO deliveries(id, event_id, endpoint_id, endpoint_revision, key_id, status, attempts, next_attempt_at, created_at, updated_at)
+							VALUES(?, ?, ?, ?, 'k1', 'PENDING', 0, ?, ?, ?)
+							ON CONFLICT(event_id, endpoint_id) DO NOTHING
+						`, deliveryID, eventID, ep.id, ep.revision, nowTime, nowTime, nowTime)
+						if err != nil {
+							return fmt.Errorf("insert delivery: %w", err)
+						}
 					}
 				}
 
@@ -242,4 +284,65 @@ func (s *Store) IngestTransactionsBatch(ctx context.Context, connectionID string
 	})
 
 	return res, err
+}
+
+// BackfillCanonicalDates updates any transactions missing canonical day/ISO representation.
+func (s *Store) BackfillCanonicalDates(ctx context.Context) (int, error) {
+	totalUpdated := 0
+	for {
+		type rowToUpdate struct {
+			id  string
+			raw string
+		}
+		var batch []rowToUpdate
+
+		rows, err := s.db.QueryContext(ctx, `
+			SELECT id, transaction_date
+			FROM transactions
+			WHERE (transaction_day IS NULL OR transaction_day = '')
+			  AND (date_precision IS NULL OR date_precision != 'unknown')
+			LIMIT 200
+		`)
+		if err != nil {
+			return totalUpdated, err
+		}
+		for rows.Next() {
+			var r rowToUpdate
+			if err := rows.Scan(&r.id, &r.raw); err == nil {
+				batch = append(batch, r)
+			}
+		}
+		_ = rows.Close()
+
+		if len(batch) == 0 {
+			break
+		}
+
+		err = s.withTx(ctx, func(tx *sql.Tx) error {
+			stmt, err := tx.PrepareContext(ctx, `
+				UPDATE transactions
+				SET transaction_at_iso = ?, transaction_day = ?, date_precision = ?
+				WHERE id = ?
+			`)
+			if err != nil {
+				return err
+			}
+			defer stmt.Close()
+
+			for _, r := range batch {
+				norm, err := acb.NormalizeDate(r.raw, nil)
+				if err == nil {
+					_, _ = stmt.ExecContext(ctx, norm.TransactionAtISO, norm.TransactionDay, norm.DatePrecision, r.id)
+					totalUpdated++
+				} else {
+					_, _ = stmt.ExecContext(ctx, r.raw, "", "unknown", r.id)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return totalUpdated, err
+		}
+	}
+	return totalUpdated, nil
 }

@@ -15,21 +15,16 @@ type FormState struct {
 
 const historyDateLayout = "02/01/2006"
 
-// PrepareHistoryFields converts the current ACB account-detail form into an
-// explicit by-date query for yesterday through today in the configured zone.
-func PrepareHistoryFields(fields map[string]string, now time.Time, location *time.Location) (map[string]string, error) {
-	if location == nil {
-		return nil, errors.New("ACB history timezone is required")
-	}
+// PrepareHistoryFieldsWithRange converts form fields into an explicit by-date query with specified date range.
+func PrepareHistoryFieldsWithRange(fields map[string]string, fromDate, toDate string) (map[string]string, error) {
 	prepared := cloneFields(fields)
 	if prepared["dse_operationName"] == "" || prepared["dse_processorState"] == "" {
 		return nil, errors.New("ACB history request is missing current form state")
 	}
-	today := now.In(location)
 	prepared["dse_nextEventName"] = "byDate"
 	prepared["activeDatetimeYN"] = "N"
-	prepared["FromDate"] = today.AddDate(0, 0, -1).Format(historyDateLayout)
-	prepared["ToDate"] = today.Format(historyDateLayout)
+	prepared["FromDate"] = fromDate
+	prepared["ToDate"] = toDate
 	prepared["CheckRef"] = "false"
 	prepared["CheckDoiUng"] = "false"
 
@@ -38,6 +33,27 @@ func PrepareHistoryFields(fields map[string]string, now time.Time, location *tim
 		delete(prepared, name)
 	}
 	return prepared, nil
+}
+
+// PrepareHistoryFields converts the current ACB account-detail form into an
+// explicit by-date query for yesterday through today in the configured zone,
+// or uses explicit FromDate/ToDate if _explicitRange is set.
+func PrepareHistoryFields(fields map[string]string, now time.Time, location *time.Location) (map[string]string, error) {
+	if location == nil {
+		return nil, errors.New("ACB history timezone is required")
+	}
+	today := now.In(location)
+	fromDate := today.AddDate(0, 0, -1).Format(historyDateLayout)
+	toDate := today.Format(historyDateLayout)
+	if fields != nil && fields["_explicitRange"] == "true" && fields["FromDate"] != "" && fields["ToDate"] != "" {
+		fromDate = fields["FromDate"]
+		toDate = fields["ToDate"]
+	}
+	res, err := PrepareHistoryFieldsWithRange(fields, fromDate, toDate)
+	if err == nil && res != nil {
+		delete(res, "_explicitRange")
+	}
+	return res, err
 }
 
 // ExtractHistoryForm reads the current server-generated form state. It never

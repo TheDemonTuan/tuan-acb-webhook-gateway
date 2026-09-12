@@ -150,6 +150,11 @@ export const VoiceAnnouncementProvider: React.FC<VoiceAnnouncementProviderProps>
     const data = envelope.data;
     if (!data) return;
 
+    // Suppress voice announcements for non-realtime sources (CATCH_UP, FILTER_SYNC, BOOTSTRAP)
+    if (data.source && data.source !== 'REALTIME') {
+      return;
+    }
+
     // Dedupe checks
     const dedupeOpts = {
       eventId: envelope.id,

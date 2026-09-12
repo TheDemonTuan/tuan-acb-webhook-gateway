@@ -207,7 +207,7 @@ func main() {
 		addresses = append(addresses, strings.TrimSuffix(primaryAddr, ":8080")+":8090")
 	}
 
-	server := httpapi.New(cfg, store).WithSyncRequester(bankMonitor).WithEventHub(hub)
+	server := httpapi.New(cfg, store).WithSyncRequester(bankMonitor).WithHistoryEnsurer(bankMonitor).WithMonitorNotifier(bankMonitor).WithEventHub(hub)
 	go server.RunJournalRetention(ctx, 24*time.Hour)
 	if keyring != nil {
 		verifierClient, verifierErr := acb.NewClient("https://online.acb.com.vn", nil)

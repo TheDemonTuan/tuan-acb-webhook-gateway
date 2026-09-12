@@ -28,12 +28,52 @@ export type Transaction = {
   id: string;
   semanticKey: string;
   transactionDate: string;
+  transactionDay?: string;
+  datePrecision?: string;
   effectiveDate: string;
   debit: number;
   credit: number;
   balance?: number;
   description: string;
   firstSeenAt: string;
+  source?: string;
+};
+
+export type PollMode = 'REALTIME' | 'KEEPALIVE_ONLY' | 'PAUSED';
+
+export type Profile = {
+  mode: PollMode;
+  minSeconds: number;
+  maxSeconds: number;
+};
+
+export type Window = {
+  name: string;
+  daysOfWeek: number[];
+  startTime: string;
+  endTime: string;
+  profile: Profile;
+};
+
+export type MonitorSettings = {
+  revision: number;
+  enabled: boolean;
+  timezone: string;
+  defaultProfile: Profile;
+  windows: Window[];
+  updatedAt?: string;
+};
+
+export type MonitorSettingsResponse = {
+  settings: MonitorSettings;
+  current: {
+    mode: PollMode;
+    minSeconds: number;
+    maxSeconds: number;
+    activeWindow?: string;
+    nextTransitionAt: string;
+    nextMode: PollMode;
+  };
 };
 
 export type Delivery = {
@@ -70,7 +110,17 @@ export type AuditLog = {
   createdAt: string;
 };
 
-export type PageResponse<T> = { items: T[]; nextCursor?: string };
+export type TransactionSummary = {
+  count: number;
+  incoming: number;
+  outgoing: number;
+};
+
+export type PageResponse<T> = {
+  items: T[];
+  nextCursor?: string;
+  summary?: TransactionSummary;
+};
 
 export type RealtimeEvent = {
   id?: string;

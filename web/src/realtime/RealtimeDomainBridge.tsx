@@ -30,11 +30,14 @@ export const RealtimeDomainBridge: React.FC = () => {
           id: data.transactionId,
           semanticKey: `ACB:${data.transactionNumber}`,
           transactionDate: data.transactionDate,
+          transactionDay: data.transactionDay,
+          datePrecision: data.datePrecision,
           effectiveDate: data.transactionDate,
           debit: Number(data.debit || 0),
           credit: Number(data.credit || 0),
           description: data.description || '',
           firstSeenAt: data.detectedAt || new Date().toISOString(),
+          source: data.source || 'REALTIME',
         };
 
         // Optimistically prepend transaction to matching caches (unfiltered or credit-only)

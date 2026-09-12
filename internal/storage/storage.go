@@ -50,7 +50,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 func (s *Store) Close() error { return s.db.Close() }
 func (s *Store) DB() *sql.DB  { return s.db }
 func (s *Store) Migrate(ctx context.Context) error {
-	return s.withTx(ctx, func(tx *sql.Tx) error {
+	err := s.withTx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)`); err != nil {
 			return err
 		}
@@ -72,6 +72,11 @@ func (s *Store) Migrate(ctx context.Context) error {
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	_, _ = s.BackfillCanonicalDates(ctx)
+	return nil
 }
 func (s *Store) withTx(ctx context.Context, fn func(*sql.Tx) error) error {
 	s.writeMu.Lock()
@@ -138,4 +143,61 @@ CREATE INDEX IF NOT EXISTS idx_event_journal_created ON event_journal(created_at
 CREATE INDEX IF NOT EXISTS idx_deliveries_claim_order ON deliveries(status, next_attempt_at, id);
 CREATE INDEX IF NOT EXISTS idx_deliveries_claim_lease ON deliveries(endpoint_id, status, next_attempt_at, lease_until);
 ALTER TABLE endpoint_secrets ADD COLUMN encoding_version TEXT NOT NULL DEFAULT 'legacy-hex';
+`}, {5, "2026-09-12-v3-filter-schedule-qr", `
+ALTER TABLE transactions ADD COLUMN transaction_at_iso TEXT;
+ALTER TABLE transactions ADD COLUMN transaction_day TEXT;
+ALTER TABLE transactions ADD COLUMN date_precision TEXT NOT NULL DEFAULT 'datetime';
+ALTER TABLE transactions ADD COLUMN ingest_source TEXT NOT NULL DEFAULT 'REALTIME';
+CREATE INDEX IF NOT EXISTS idx_transactions_day_id ON transactions(connection_id, transaction_day, id DESC);
+CREATE INDEX IF NOT EXISTS idx_transactions_first_seen ON transactions(connection_id, first_seen_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS monitor_settings (
+    id TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL DEFAULT 1,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    timezone TEXT NOT NULL DEFAULT 'Asia/Ho_Chi_Minh',
+    default_profile_json TEXT NOT NULL,
+    windows_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS history_coverage (
+    id TEXT PRIMARY KEY,
+    connection_id TEXT NOT NULL REFERENCES connections(id),
+    day TEXT NOT NULL,
+    status TEXT NOT NULL,
+    last_sync_at TEXT NOT NULL,
+    rows_seen INTEGER NOT NULL DEFAULT 0,
+    error_message TEXT,
+    UNIQUE(connection_id, day)
+);
+
+CREATE TABLE IF NOT EXISTS history_sync_jobs (
+    id TEXT PRIMARY KEY,
+    connection_id TEXT NOT NULL REFERENCES connections(id),
+    range_from TEXT NOT NULL,
+    range_to TEXT NOT NULL,
+    status TEXT NOT NULL,
+    rows_seen INTEGER NOT NULL DEFAULT 0,
+    error_message TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS payment_qr_settings (
+    id TEXT PRIMARY KEY,
+    connection_id TEXT NOT NULL REFERENCES connections(id),
+    account_number TEXT NOT NULL,
+    account_name TEXT NOT NULL,
+    bin TEXT NOT NULL DEFAULT '970416',
+    bank_name TEXT NOT NULL DEFAULT 'ACB',
+    image_path TEXT,
+    image_hash TEXT,
+    image_content_type TEXT,
+    provider TEXT NOT NULL DEFAULT 'UPLOAD',
+    revision INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(connection_id)
+);
 `}}
