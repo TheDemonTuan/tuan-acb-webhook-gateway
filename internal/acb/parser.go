@@ -71,9 +71,6 @@ func ParseHistory(markup string) ([]Transaction, error) {
 				if isTableFooter(rowText) {
 					continue
 				}
-				if allTransactionColumnsBlank(row, columns) {
-					continue
-				}
 				return nil, err
 			}
 			if columns.description < 0 && i+1 < len(rows) {
@@ -119,20 +116,10 @@ func historyHeader(rows [][]string) (int, columns) {
 	return -1, columns{}
 }
 
-func allTransactionColumnsBlank(row []string, c columns) bool {
-	for _, index := range []int{c.number, c.effective, c.transaction, c.debit, c.credit, c.balance} {
-		if index >= 0 && index < len(row) && strings.TrimSpace(row[index]) != "" {
-			return false
-		}
-	}
-	return true
-}
-
 func isTableFooter(text string) bool {
 	return containsAny(text,
 		"trang truoc", "trang trước", "trang sau", "next", "previous",
-		"tong cong", "tổng cộng", "page", "export", "xuat excel", "xuất excel",
-		"first", "last", "dau", "đầu", "cuoi", "cuối", "go to", "goto",
+		"xuat excel", "xuất excel",
 	)
 }
 
@@ -224,12 +211,9 @@ func parseMoney(value string) (int64, error) {
 
 func tableRows(table *html.Node) [][]string {
 	var rows [][]string
-	walk(table, func(node *html.Node) {
-		if node.Type != html.ElementNode || node.Data != "tr" {
-			return
-		}
+	appendRow := func(tr *html.Node) {
 		var cells []string
-		for child := node.FirstChild; child != nil; child = child.NextSibling {
+		for child := tr.FirstChild; child != nil; child = child.NextSibling {
 			if child.Type == html.ElementNode && (child.Data == "th" || child.Data == "td") {
 				cells = append(cells, strings.TrimSpace(text(child)))
 			}
@@ -237,7 +221,19 @@ func tableRows(table *html.Node) [][]string {
 		if len(cells) > 0 {
 			rows = append(rows, cells)
 		}
-	})
+	}
+
+	for child := table.FirstChild; child != nil; child = child.NextSibling {
+		if child.Type == html.ElementNode && child.Data == "tr" {
+			appendRow(child)
+		} else if child.Type == html.ElementNode && (child.Data == "tbody" || child.Data == "thead" || child.Data == "tfoot") {
+			for subChild := child.FirstChild; subChild != nil; subChild = subChild.NextSibling {
+				if subChild.Type == html.ElementNode && subChild.Data == "tr" {
+					appendRow(subChild)
+				}
+			}
+		}
+	}
 	return rows
 }
 

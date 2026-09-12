@@ -54,17 +54,35 @@ func TestParseHistorySkipsFooterBeforeRecognizedEmptyMarker(t *testing.T) {
 	}
 }
 
-func TestParseHistorySkipsBlankStructuralRowBeforeEmptyMarker(t *testing.T) {
-	transactions, err := ParseHistory(`<table>
-	<tr><th>Ngày giao dịch</th><th>Số GD</th><th>Ghi nợ</th><th>Ghi có</th></tr>
-	<tr><td></td><td></td><td></td><td></td><td>controls</td></tr>
-	<tr><td colspan="4">Không có giao dịch</td></tr>
-	</table>`)
+func TestParseHistoryNestedTablesWithOuterSummary(t *testing.T) {
+	html := `
+	<table id="outer">
+		<tr><td><table id="account"><tr><td>Account info</td></tr></table></td></tr>
+		<tr><td>
+			<table id="history">
+				<tr><th>Ngày hiệu lực</th><th>Ngày giao dịch</th><th>Số GD</th><th>Ghi nợ</th><th>Ghi có</th><th>Số dư</th></tr>
+				<tr><td>12/09/2026</td><td>12/09/2026 10:00:00</td><td>1001</td><td></td><td>50.000</td><td>500.000</td></tr>
+				<tr><td></td><td colspan="5">Chuyen tien thanh toan</td><td></td></tr>
+				<tr><td>12/09/2026</td><td>12/09/2026 11:00:00</td><td>1002</td><td>20.000</td><td></td><td>480.000</td></tr>
+				<tr><td></td><td colspan="5">Rut tien</td><td></td></tr>
+			</table>
+		</td></tr>
+		<tr><td>Tổng rút ra: 20.000 (VND)  Tổng gửi vào: 50.000 (VND)</td></tr>
+		<tr><td>Số dư cuối: 480.000 (VND)</td></tr>
+	</table>`
+
+	transactions, err := ParseHistory(html)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("ParseHistory failed: %v", err)
 	}
-	if len(transactions) != 0 {
-		t.Fatalf("transactions=%+v", transactions)
+	if len(transactions) != 2 {
+		t.Fatalf("expected 2 transactions, got %d", len(transactions))
+	}
+	if transactions[0].Number != "1001" || transactions[0].Credit != 50000 || transactions[0].Description != "Chuyen tien thanh toan" {
+		t.Fatalf("unexpected txn 0: %+v", transactions[0])
+	}
+	if transactions[1].Number != "1002" || transactions[1].Debit != 20000 || transactions[1].Description != "Rut tien" {
+		t.Fatalf("unexpected txn 1: %+v", transactions[1])
 	}
 }
 

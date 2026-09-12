@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -255,13 +253,6 @@ func (m *Monitor) pollOnce(ctx context.Context, expected *syncRequest) error {
 	}
 
 	// Parse transaction history
-	if os.Getenv("DIAGNOSTIC_CAPTURE_HISTORY") == "1" {
-		dumpDir := filepath.Join(os.Getenv("DATA_DIR"), "diagnostic")
-		if err := os.MkdirAll(dumpDir, 0700); err == nil {
-			target := filepath.Join(dumpDir, "latest_history.html")
-			_ = os.WriteFile(target, []byte(historyMarkup), 0600)
-		}
-	}
 	txns, parseErr := acb.ParseHistory(historyMarkup)
 	if parseErr != nil {
 		poll.Status = "FAILED"
