@@ -68,6 +68,9 @@ func ParseHistory(markup string) ([]Transaction, error) {
 					emptyHistory = true
 					continue
 				}
+				if isTableFooter(rowText) {
+					continue
+				}
 				return nil, err
 			}
 			if columns.description < 0 && i+1 < len(rows) {
@@ -111,6 +114,13 @@ func historyHeader(rows [][]string) (int, columns) {
 		}
 	}
 	return -1, columns{}
+}
+
+func isTableFooter(text string) bool {
+	return containsAny(text,
+		"trang truoc", "trang trước", "trang sau", "next", "previous",
+		"tong cong", "tổng cộng", "page", "export", "xuat excel", "xuất excel",
+	)
 }
 
 type columns struct{ number, effective, transaction, debit, credit, balance, description int }
