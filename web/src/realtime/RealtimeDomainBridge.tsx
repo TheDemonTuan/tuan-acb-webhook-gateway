@@ -37,8 +37,27 @@ export const RealtimeDomainBridge: React.FC = () => {
           firstSeenAt: data.detectedAt || new Date().toISOString(),
         };
 
-        queryClient.setQueriesData(
-          { queryKey: ['transactions'] },
+        // Optimistically prepend transaction to matching caches (unfiltered or credit-only)
+        queryClient.setQueriesData<PageResponse<Transaction>>(
+          {
+            predicate: (query) => {
+              const [key, params] = query.queryKey as [
+                string,
+                Record<string, unknown> | undefined
+              ];
+              if (key !== 'transactions') return false;
+              if (
+                params &&
+                (params.query ||
+                  params.q ||
+                  params.direction === 'debit' ||
+                  params.type === 'debit')
+              ) {
+                return false;
+              }
+              return true;
+            },
+          },
           (old: PageResponse<Transaction> | undefined) => {
             if (!old || !Array.isArray(old.items)) {
               return { items: [newTx] };
@@ -53,6 +72,20 @@ export const RealtimeDomainBridge: React.FC = () => {
             };
           }
         );
+
+        // For queries with complex search/debit filters, invalidate so they stay consistent
+        queryClient.invalidateQueries({
+          predicate: (query) => {
+            const [key, params] = query.queryKey as [
+              string,
+              Record<string, unknown> | undefined
+            ];
+            return (
+              key === 'transactions' &&
+              Boolean(params?.query || params?.q || params?.direction || params?.type)
+            );
+          },
+        });
 
         // Invalidate status & overview metrics
         queryClient.invalidateQueries({ queryKey: queryKeys.status });

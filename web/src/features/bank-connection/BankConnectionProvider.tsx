@@ -76,10 +76,12 @@ export const BankConnectionProvider: React.FC<{ children: React.ReactNode }> = (
       queryClient.invalidateQueries({ queryKey: queryKeys.status });
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
     } catch (err: any) {
+      const msg = err instanceof Error ? err.message : 'Không thể đồng bộ.';
       setGlobalNotice({
         kind: 'error',
-        text: err instanceof Error ? err.message : 'Không thể đồng bộ.',
+        text: msg,
       });
+      throw err;
     } finally {
       setIsSyncing(false);
     }

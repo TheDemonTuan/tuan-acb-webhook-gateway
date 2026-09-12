@@ -28,6 +28,11 @@ export const NotificationChannelsPage: React.FC = () => {
   const [isCreating, setIsCreating] = useState(false);
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [revealedSecrets, setRevealedSecrets] = useState<Record<string, boolean>>({});
+  const [createdSecretDialog, setCreatedSecretDialog] = useState<{
+    name: string;
+    secret: string;
+  } | null>(null);
+  const [copiedSecret, setCopiedSecret] = useState(false);
 
   const { data, isLoading, refetch } = useQuery({
     queryKey: queryKeys.webhooks,
@@ -45,16 +50,27 @@ export const NotificationChannelsPage: React.FC = () => {
     setErrorNotice(null);
 
     try {
-      await createWebhookEndpoint(name.trim(), url.trim());
+      const created = await createWebhookEndpoint(name.trim(), url.trim());
       setNotice('Đã tạo endpoint ở trạng thái DISABLED.');
+      if (created.secret) {
+        setCreatedSecretDialog({ name: created.name, secret: created.secret });
+      }
       setName('');
       setUrl('');
       queryClient.invalidateQueries({ queryKey: queryKeys.webhooks });
-      setTimeout(() => setNotice(null), 5000);
     } catch (err) {
       setErrorNotice(formatErrorMessage(err));
     } finally {
       setIsCreating(false);
+    }
+  };
+
+  const copyCreatedSecret = () => {
+    if (!createdSecretDialog?.secret) return;
+    if (typeof navigator !== 'undefined') {
+      navigator.clipboard.writeText(createdSecretDialog.secret);
+      setCopiedSecret(true);
+      setTimeout(() => setCopiedSecret(false), 2000);
     }
   };
 
@@ -103,6 +119,46 @@ export const NotificationChannelsPage: React.FC = () => {
         <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-sm text-emerald-900 flex items-center gap-2 animate-in fade-in">
           <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
           <span>{notice}</span>
+        </div>
+      )}
+
+      {/* Secret Dialog right after creation */}
+      {createdSecretDialog && (
+        <div className="p-6 rounded-2xl bg-amber-50/80 border-2 border-amber-300 text-amber-950 space-y-3 animate-in fade-in">
+          <div className="flex items-start justify-between gap-4">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <Key className="w-5 h-5 text-amber-600" />
+                <h4 className="font-bold text-base text-amber-900">
+                  Lưu lại khóa bí mật Webhook (Secret)
+                </h4>
+              </div>
+              <p className="text-xs text-amber-800 leading-relaxed">
+                Khóa này dùng để kiểm tra chữ ký xác thực HMAC-SHA256 trên webhook receiver của bạn. Vì lý do an toàn,{' '}
+                <strong>khóa bí mật chỉ hiển thị duy nhất một lần tại đây</strong>.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setCreatedSecretDialog(null)}
+              className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-amber-200/70 hover:bg-amber-300 text-amber-900 transition cursor-pointer shrink-0"
+            >
+              Tôi đã lưu khóa
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2 bg-white p-3 rounded-xl border border-amber-200 font-mono text-sm break-all">
+            <span className="flex-1 text-stone-900 font-semibold select-all">
+              {createdSecretDialog.secret}
+            </span>
+            <button
+              type="button"
+              onClick={copyCreatedSecret}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-stone-900 text-white hover:bg-stone-800 transition cursor-pointer shrink-0"
+            >
+              {copiedSecret ? 'Đã sao chép!' : 'Sao chép khóa'}
+            </button>
+          </div>
         </div>
       )}
 

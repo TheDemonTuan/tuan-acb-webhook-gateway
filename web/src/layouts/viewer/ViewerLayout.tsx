@@ -5,47 +5,93 @@ import { ViewerHeader } from './ViewerHeader';
 export const ViewerLayout: React.FC = () => {
   const navigate = useNavigate();
 
-  const navTabs = [
-    { label: 'Tổng quan', onClick: () => navigate('/admin/overview'), active: false },
-    { label: 'Kết nối ACB', onClick: () => navigate('/admin/connection'), active: false },
-    { label: 'Giao dịch', onClick: () => navigate('/transactions'), active: true },
-    { label: 'Webhooks', onClick: () => navigate('/admin/notifications'), active: false },
-    { label: 'Phân phối', onClick: () => navigate('/admin/activity?tab=deliveries'), active: false },
-    { label: 'Polling', onClick: () => navigate('/admin/activity?tab=polling'), active: false },
-    { label: 'Chẩn đoán', onClick: () => navigate('/admin/system'), active: false },
-    { label: 'Audit', onClick: () => navigate('/admin/activity?tab=audit'), active: false },
-  ];
-
   return (
     <div className="min-h-screen bg-stone-50 text-stone-900 flex flex-col font-sans antialiased">
       <ViewerHeader />
 
-      {/* Navigation Sub-bar */}
-      <nav className="bg-white border-b border-stone-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
-          {navTabs.map((tab) => (
-            <button
-              key={tab.label}
-              type="button"
-              role="button"
-              onClick={tab.onClick}
-              className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold transition cursor-pointer shrink-0 ${
-                tab.active
-                  ? 'bg-emerald-600 text-white shadow-2xs'
-                  : 'text-stone-600 hover:bg-stone-100 hover:text-stone-900'
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
-      </nav>
-
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
         <Outlet />
       </main>
-      <footer className="py-6 border-t border-stone-200 text-center text-xs text-stone-600">
-        ACB Transaction Webhook Gateway &copy; 2026. Tất cả dữ liệu được bảo vệ và đồng bộ trực tiếp qua SSE.
+
+      {/* Discrete footer navigation */}
+      <footer className="py-8 border-t border-stone-200 text-center text-xs text-stone-500 space-y-3">
+        <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-[11px] text-stone-400">
+          <button
+            type="button"
+            role="button"
+            onClick={() => navigate('/admin/overview')}
+            className="hover:text-stone-700 transition cursor-pointer"
+          >
+            Tổng quan
+          </button>
+          <span>&middot;</span>
+          <button
+            type="button"
+            role="button"
+            onClick={() => navigate('/admin/connection')}
+            className="hover:text-stone-700 transition cursor-pointer"
+          >
+            Kết nối ACB
+          </button>
+          <span>&middot;</span>
+          <button
+            type="button"
+            role="button"
+            onClick={() => navigate('/transactions')}
+            className="text-emerald-700 font-semibold cursor-pointer"
+          >
+            Giao dịch
+          </button>
+          <span>&middot;</span>
+          <button
+            type="button"
+            role="button"
+            onClick={() => navigate('/admin/notifications')}
+            className="hover:text-stone-700 transition cursor-pointer"
+          >
+            Webhooks
+          </button>
+          <span>&middot;</span>
+          <button
+            type="button"
+            role="button"
+            onClick={() => navigate('/admin/activity?tab=polling')}
+            className="hover:text-stone-700 transition cursor-pointer"
+          >
+            Polling
+          </button>
+          <span>&middot;</span>
+          <button
+            type="button"
+            role="button"
+            onClick={() => navigate('/admin/activity?tab=deliveries')}
+            className="hover:text-stone-700 transition cursor-pointer"
+          >
+            Phân phối
+          </button>
+          <span>&middot;</span>
+          <button
+            type="button"
+            role="button"
+            onClick={() => navigate('/admin/system')}
+            className="hover:text-stone-700 transition cursor-pointer"
+          >
+            Chẩn đoán
+          </button>
+          <span>&middot;</span>
+          <button
+            type="button"
+            role="button"
+            onClick={() => navigate('/admin/activity?tab=audit')}
+            className="hover:text-stone-700 transition cursor-pointer"
+          >
+            Audit
+          </button>
+        </div>
+
+        <p className="text-[11px] text-stone-400">
+          ACB Transaction Webhook Gateway &copy; 2026. Cập nhật giao dịch tự động theo thời gian thực qua SSE.
+        </p>
       </footer>
     </div>
   );

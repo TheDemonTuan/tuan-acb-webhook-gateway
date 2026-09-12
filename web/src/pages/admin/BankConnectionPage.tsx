@@ -6,7 +6,6 @@ import {
   LogIn,
   RotateCcw,
   RefreshCw,
-  Zap,
 } from 'lucide-react';
 import { configureConnection, fetchConnection, fetchStatus } from '../../shared/api/queries';
 import { queryKeys } from '../../shared/api/query-keys';
@@ -77,17 +76,6 @@ export const BankConnectionPage: React.FC = () => {
     }
   };
 
-  const handleSimulateQuickActivate = async () => {
-    try {
-      await sync();
-      setGlobalNotice({ kind: 'ok', text: 'Phiên ACB đang hoạt động' });
-      queryClient.invalidateQueries({ queryKey: queryKeys.connection });
-      queryClient.invalidateQueries({ queryKey: queryKeys.status });
-    } catch {
-      setGlobalNotice({ kind: 'ok', text: 'Phiên ACB đang hoạt động' });
-    }
-  };
-
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -119,8 +107,9 @@ export const BankConnectionPage: React.FC = () => {
             <div>
               <div className="flex items-center gap-2">
                 <h3 className="font-bold text-stone-900 text-base">Trạng thái kết nối</h3>
-                <span className="font-mono text-xs px-2 py-0.5 rounded-md bg-stone-100 border border-stone-200 font-semibold text-stone-700">
-                  {acbState}
+                <span className="text-xs px-2.5 py-0.5 rounded-full bg-stone-100 border border-stone-200 font-semibold text-stone-700 flex items-center gap-1.5">
+                  <span>{desc.badge}</span>
+                  <span className="font-mono text-[11px] font-normal text-stone-400">({acbState})</span>
                 </span>
               </div>
               <p className="text-xs text-stone-500 mt-0.5">
@@ -133,21 +122,13 @@ export const BankConnectionPage: React.FC = () => {
             <button
               type="button"
               role="button"
-              onClick={sync}
+              aria-label="Sync"
+              onClick={() => sync().catch(() => {})}
               disabled={!isMonitoring || hasActiveAuth || isSyncing}
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-white border border-stone-200 text-stone-700 hover:bg-stone-50 transition shadow-2xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-white border border-stone-200 text-stone-700 hover:bg-stone-50 transition shadow-2xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <RotateCcw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
-              <span>Sync</span>
-            </button>
-            <button
-              type="button"
-              role="button"
-              onClick={handleSimulateQuickActivate}
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-stone-100 text-stone-700 hover:bg-stone-200 transition cursor-pointer"
-            >
-              <Zap className="w-3.5 h-3.5 text-amber-500" />
-              <span>Kích hoạt nhanh (Simulate/Verify)</span>
+              <span>Đồng bộ ngay (Sync)</span>
             </button>
           </div>
         </div>

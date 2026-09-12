@@ -8,6 +8,8 @@ import {
   ArrowRight,
   Bell,
   RefreshCw,
+  Landmark,
+  ShieldCheck,
 } from 'lucide-react';
 import { fetchConnection, fetchStatus, fetchWebhooks } from '../../shared/api/queries';
 import { queryKeys } from '../../shared/api/query-keys';
@@ -72,7 +74,7 @@ export const OverviewPage: React.FC = () => {
       >
         <div className="flex items-start gap-4">
           <div
-            className={`p-3 rounded-2xl ${
+            className={`p-3 rounded-2xl shrink-0 ${
               isMonitoring
                 ? 'bg-emerald-100 text-emerald-700'
                 : acbState === 'AUTH_REQUIRED'
@@ -87,7 +89,7 @@ export const OverviewPage: React.FC = () => {
             )}
           </div>
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2.5">
               <h3 className="text-lg font-bold">
                 {isMonitoring
                   ? 'Phiên ACB đang hoạt động bình thường'
@@ -95,8 +97,9 @@ export const OverviewPage: React.FC = () => {
                   ? 'ACB yêu cầu xác thực phiên'
                   : desc.label}
               </h3>
-              <span className="font-mono text-xs px-2 py-0.5 rounded-md bg-white/80 border border-stone-200 font-semibold text-stone-700">
-                {acbState}
+              <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-white/80 border border-stone-200 text-stone-800 flex items-center gap-1.5">
+                <span>{desc.badge}</span>
+                <span className="font-mono text-[11px] font-normal text-stone-400">({acbState})</span>
               </span>
             </div>
             <p className="text-xs text-stone-600 mt-1 max-w-xl">
@@ -135,16 +138,16 @@ export const OverviewPage: React.FC = () => {
             <span className="text-xs font-medium text-stone-500 uppercase tracking-wider">
               Tài khoản kết nối
             </span>
-            <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+            <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 font-mono">
               {connData?.connection?.accountMasked || status?.acb?.accountMasked || 'Chưa cấu hình'}
             </span>
           </div>
           <div className="mt-4">
             <span className="text-sm font-semibold text-stone-800 block">
-              Trạng thái: <span className="text-emerald-700">{desc.badge}</span>
+              Trạng thái: <span className="text-emerald-700">{desc.label}</span>
             </span>
             <span className="text-xs text-stone-400 mt-0.5 block">
-              Thế hệ phiên (Generation): {status?.acb?.generation ?? 1}
+              Kết nối trực tiếp qua kênh bảo mật
             </span>
           </div>
         </div>
@@ -152,7 +155,7 @@ export const OverviewPage: React.FC = () => {
         <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs">
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-stone-500 uppercase tracking-wider">
-              Kênh Webhooks
+              Kênh thông báo
             </span>
             <div className="p-2 rounded-xl bg-blue-50 text-blue-600">
               <Bell className="w-4 h-4" />
@@ -169,18 +172,18 @@ export const OverviewPage: React.FC = () => {
         <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs">
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-stone-500 uppercase tracking-wider">
-              Dịch vụ nền tảng
+              Hạ tầng Gateway
             </span>
-            <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-              {status?.service || 'HEALTHY'}
-            </span>
+            <div className="p-2 rounded-xl bg-emerald-50 text-emerald-600">
+              <ShieldCheck className="w-4 h-4" />
+            </div>
           </div>
           <div className="mt-3">
-            <span className="text-xs text-stone-500 block">
-              Uptime: {Math.floor((status?.uptimeSeconds || 0) / 60)} phút
+            <span className="text-sm font-semibold text-stone-800 block">
+              Hoạt động ổn định
             </span>
             <span className="text-xs text-stone-500 block mt-0.5">
-              Lưu trữ SQLite: {status?.storage?.status || 'READY'}
+              Thời gian chạy: {Math.floor((status?.uptimeSeconds || 0) / 60)} phút
             </span>
           </div>
         </div>
@@ -198,9 +201,9 @@ export const OverviewPage: React.FC = () => {
                 <Receipt className="w-5 h-5" />
               </div>
               <div>
-                <h4 className="font-bold text-stone-900">Transaction Viewer</h4>
+                <h4 className="font-bold text-stone-900">Màn hình xem giao dịch (Transaction Viewer)</h4>
                 <p className="text-xs text-stone-500">
-                  Giao diện theo dõi giao dịch và phát âm thanh tiếng Việt
+                  Giao diện độc lập theo dõi giao dịch và phát âm thanh tiếng Việt
                 </p>
               </div>
             </div>
@@ -218,7 +221,7 @@ export const OverviewPage: React.FC = () => {
                 <Bell className="w-5 h-5" />
               </div>
               <div>
-                <h4 className="font-bold text-stone-900">Kênh Webhook</h4>
+                <h4 className="font-bold text-stone-900">Cấu hình kênh thông báo</h4>
                 <p className="text-xs text-stone-500">
                   Quản lý các URL đích nhận thông báo giao dịch tự động
                 </p>

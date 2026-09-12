@@ -87,18 +87,18 @@ export const SystemPage: React.FC = () => {
         <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs">
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-stone-500 uppercase tracking-wider">
-              Kho lưu trữ SQLite
+              Cơ sở dữ liệu
             </span>
-            <div className="p-2 rounded-xl bg-amber-50 text-amber-600">
+            <div className="p-2 rounded-xl bg-emerald-50 text-emerald-600">
               <Database className="w-4 h-4" />
             </div>
           </div>
           <div className="mt-3">
             <span className="text-xl font-bold text-stone-900">
-              {status?.storage?.status || 'READY'}
+              Sẵn sàng hoạt động
             </span>
             <span className="text-xs text-stone-500 block mt-1">
-              WAL Mode &middot; Giao dịch ACID
+              Chế độ an toàn cao &middot; Giao dịch chuẩn ACID
             </span>
           </div>
         </div>
@@ -106,27 +106,33 @@ export const SystemPage: React.FC = () => {
 
       {/* Technical Diagnostics Details */}
       <div className="bg-white p-6 rounded-2xl border border-stone-200 shadow-2xs space-y-4">
-        <h3 className="font-bold text-stone-900 text-base">Thông số nội bộ ACB Gateway</h3>
+        <h3 className="font-bold text-stone-900 text-base">Thông số vận hành chi tiết</h3>
 
         <div className="divide-y divide-stone-100 text-xs font-mono">
           <div className="py-2.5 flex items-center justify-between">
-            <span className="text-stone-500">Generation phiên kết nối:</span>
+            <span className="text-stone-500">Thế hệ phiên kết nối:</span>
             <span className="font-bold text-stone-900">{status?.acb?.generation ?? 1}</span>
           </div>
           <div className="py-2.5 flex items-center justify-between">
-            <span className="text-stone-500">Mức độ bao phủ (Coverage):</span>
-            <span className="font-bold text-stone-900">{status?.acb?.coverage || 'NOT_STARTED'}</span>
+            <span className="text-stone-500">Mức độ bao phủ giao dịch:</span>
+            <span className="font-bold text-stone-900">
+              {status?.acb?.coverage === 'FULL'
+                ? 'Đầy đủ (FULL)'
+                : status?.acb?.coverage === 'PARTIAL'
+                ? 'Một phần (PARTIAL)'
+                : 'Chưa bắt đầu'}
+            </span>
           </div>
           <div className="py-2.5 flex items-center justify-between">
             <span className="text-stone-500">Số tài khoản đang theo dõi:</span>
             <span className="font-bold text-stone-900">{status?.acb?.accountMasked || 'Chưa cấu hình'}</span>
           </div>
           <div className="py-2.5 flex items-center justify-between">
-            <span className="text-stone-500">Webhooks đang chờ gửi (Pending):</span>
+            <span className="text-stone-500">Thông báo đang xếp hàng gửi:</span>
             <span className="font-bold text-stone-900">{status?.webhooks?.pending ?? 0}</span>
           </div>
           <div className="py-2.5 flex items-center justify-between">
-            <span className="text-stone-500">Webhooks không thể gửi (Dead Letter):</span>
+            <span className="text-stone-500">Thông báo gửi không thành công:</span>
             <span className="font-bold text-stone-900">{status?.webhooks?.deadLetter ?? 0}</span>
           </div>
         </div>

@@ -77,6 +77,17 @@ export class RealtimeClient {
           reason = parsed?.reason || 'unknown';
         } catch {}
         this.options.onResetState?.(reason);
+
+        // Close stale cursor stream and reconnect fresh to avoid retention_expired loops
+        if (this.eventSource) {
+          this.eventSource.close();
+          this.eventSource = null;
+        }
+        setTimeout(() => {
+          if (!this.disposed) {
+            this.connect();
+          }
+        }, 500);
       });
 
       for (const type of REALTIME_EVENT_TYPES) {

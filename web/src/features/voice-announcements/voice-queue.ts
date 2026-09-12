@@ -7,6 +7,7 @@ export class VoiceQueue {
   private state: VoiceQueueState = 'idle';
   private engine: VoiceEngine;
   private onStateChange?: (state: VoiceQueueState) => void;
+  private operationId = 0;
 
   constructor(engine: VoiceEngine, onStateChange?: (state: VoiceQueueState) => void) {
     this.engine = engine;
@@ -32,6 +33,8 @@ export class VoiceQueue {
   }
 
   private async processNext(): Promise<void> {
+    const currentOp = this.operationId;
+
     if (this.queue.length === 0) {
       this.setState('idle');
       return;
@@ -46,13 +49,23 @@ export class VoiceQueue {
       // Swallowed safely
     }
 
+    // Cancellation token check: if cancelled during await, abort this loop immediately
+    if (this.operationId !== currentOp) {
+      return;
+    }
+
     // Small delay between utterances for natural breathing room
     await new Promise((r) => setTimeout(r, 150));
+
+    if (this.operationId !== currentOp) {
+      return;
+    }
 
     void this.processNext();
   }
 
   public cancel(): void {
+    this.operationId++;
     this.queue = [];
     this.engine.cancel();
     this.setState('idle');

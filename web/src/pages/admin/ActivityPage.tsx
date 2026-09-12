@@ -14,6 +14,7 @@ import {
   fetchPollRuns,
 } from '../../shared/api/queries';
 import { queryKeys } from '../../shared/api/query-keys';
+import { getDeliveryStatus, getPollStatus } from '../../content/status-copy';
 
 export const ActivityPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -124,43 +125,43 @@ export const ActivityPage: React.FC = () => {
             </div>
           ) : (
             <div className="divide-y divide-stone-100">
-              {polls.map((p) => (
-                <div
-                  key={p.id}
-                  className="p-4 sm:px-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-stone-50/50 transition"
-                >
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`text-xs font-semibold px-2 py-0.5 rounded-md ${
-                          p.status === 'SUCCESS'
-                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                            : 'bg-rose-50 text-rose-700 border border-rose-200'
-                        }`}
-                      >
-                        {p.status}
-                      </span>
-                      <span className="text-xs text-stone-500 flex items-center gap-1 font-mono">
-                        <Clock className="w-3 h-3" />
-                        {new Date(p.startedAt).toLocaleString('vi-VN')}
-                      </span>
-                      {p.classifier && (
-                        <span className="text-[11px] text-stone-400 font-mono">
-                          [{p.classifier}]
+              {polls.map((p) => {
+                const pollStatus = getPollStatus(p.status);
+                return (
+                  <div
+                    key={p.id}
+                    className="p-4 sm:px-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-stone-50/50 transition"
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`text-xs font-semibold px-2 py-0.5 rounded-md border ${
+                            pollStatus.tone === 'success'
+                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                              : pollStatus.tone === 'warning'
+                              ? 'bg-amber-50 text-amber-700 border-amber-200'
+                              : 'bg-rose-50 text-rose-700 border-rose-200'
+                          }`}
+                        >
+                          {pollStatus.label}
                         </span>
+                        <span className="text-xs text-stone-500 flex items-center gap-1 font-mono">
+                          <Clock className="w-3 h-3" />
+                          {new Date(p.startedAt).toLocaleString('vi-VN')}
+                        </span>
+                      </div>
+                      {p.error && (
+                        <p className="text-xs text-rose-600 font-mono mt-0.5">{p.error}</p>
                       )}
                     </div>
-                    {p.error && (
-                      <p className="text-xs text-rose-600 font-mono mt-0.5">{p.error}</p>
-                    )}
-                  </div>
 
-                  <div className="flex items-center gap-4 text-xs text-stone-600 font-mono">
-                    <span>Trang: {p.pages}</span>
-                    <span>Số dòng: {p.rowsSeen}</span>
+                    <div className="flex items-center gap-4 text-xs text-stone-600 font-mono">
+                      <span>Trang: {p.pages}</span>
+                      <span>Số dòng quét: {p.rowsSeen}</span>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -180,38 +181,41 @@ export const ActivityPage: React.FC = () => {
             </div>
           ) : (
             <div className="divide-y divide-stone-100">
-              {deliveries.map((d) => (
-                <div
-                  key={d.id}
-                  className="p-4 sm:px-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-stone-50/50 transition"
-                >
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`text-xs font-semibold px-2 py-0.5 rounded-md ${
-                          d.status === 'SUCCESS'
-                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                            : d.status === 'RETRYING'
-                            ? 'bg-amber-50 text-amber-700 border border-amber-200'
-                            : 'bg-rose-50 text-rose-700 border border-rose-200'
-                        }`}
-                      >
-                        {d.status}
-                      </span>
-                      <span className="text-xs text-stone-500 font-mono">
-                        Lần thử: {d.attempts}
+              {deliveries.map((d) => {
+                const deliveryStatus = getDeliveryStatus(d.status);
+                return (
+                  <div
+                    key={d.id}
+                    className="p-4 sm:px-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-stone-50/50 transition"
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`text-xs font-semibold px-2 py-0.5 rounded-md border ${
+                            deliveryStatus.tone === 'success'
+                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                              : deliveryStatus.tone === 'warning'
+                              ? 'bg-amber-50 text-amber-700 border-amber-200'
+                              : 'bg-rose-50 text-rose-700 border-rose-200'
+                          }`}
+                        >
+                          {deliveryStatus.label}
+                        </span>
+                        <span className="text-xs text-stone-500 font-mono">
+                          Số lần gửi: {d.attempts}
+                        </span>
+                      </div>
+                      <span className="text-xs text-stone-500 block">
+                        Kênh nhận: <span className="font-mono">{d.endpointId}</span> &middot; Mã sự kiện: <span className="font-mono">{d.eventId}</span>
                       </span>
                     </div>
-                    <span className="text-xs text-stone-400 font-mono block">
-                      Endpoint ID: {d.endpointId} &middot; Sự kiện: {d.eventId}
-                    </span>
-                  </div>
 
-                  <div className="text-xs text-stone-500 font-mono">
-                    {new Date(d.createdAt).toLocaleString('vi-VN')}
+                    <div className="text-xs text-stone-500 font-mono">
+                      {new Date(d.createdAt).toLocaleString('vi-VN')}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

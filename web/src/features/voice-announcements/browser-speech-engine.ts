@@ -75,10 +75,16 @@ export class BrowserSpeechEngine implements VoiceEngine {
       }
 
       if (!selectedVoice) {
-        // Priority: exact vi-VN -> starts with vi -> default voice
+        // Priority: exact vi-VN -> starts with vi -> contains vietnam / tiếng việt -> default voice
         selectedVoice =
           rawVoices.find((v) => v.lang.toLowerCase() === 'vi-vn') ??
           rawVoices.find((v) => v.lang.toLowerCase().startsWith('vi')) ??
+          rawVoices.find(
+            (v) =>
+              v.name.toLowerCase().includes('vietnamese') ||
+              v.name.toLowerCase().includes('tiếng việt') ||
+              v.name.toLowerCase().includes('viet nam')
+          ) ??
           rawVoices.find((v) => v.default) ??
           rawVoices[0];
       }

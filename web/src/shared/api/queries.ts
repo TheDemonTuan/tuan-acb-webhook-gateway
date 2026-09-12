@@ -54,7 +54,7 @@ export const fetchPollRuns = async (params?: {
   if (params?.limit) query.set('limit', String(params.limit));
   if (params?.cursor) query.set('cursor', params.cursor);
   const qStr = query.toString();
-  return api<PageResponse<PollRun>>(`/polls${qStr ? `?${qStr}` : ''}`);
+  return api<PageResponse<PollRun>>(`/poll-runs${qStr ? `?${qStr}` : ''}`);
 };
 
 export const fetchAuditLogs = async (params?: {

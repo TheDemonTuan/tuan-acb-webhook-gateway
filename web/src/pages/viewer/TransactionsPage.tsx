@@ -22,6 +22,7 @@ import type { Transaction } from '../../realtime-types';
 export const TransactionsPage: React.FC = () => {
   const [search, setSearch] = useState('');
   const [filterType, setFilterType] = useState<'all' | 'credit' | 'debit'>('all');
+  const [dateRange, setDateRange] = useState<'today' | '7days' | 'all'>('all');
   const [selectedTx, setSelectedTx] = useState<Transaction | null>(null);
   const [copiedId, setCopiedId] = useState(false);
 
@@ -32,26 +33,59 @@ export const TransactionsPage: React.FC = () => {
 
   const transactions = useMemo(() => data?.items || [], [data?.items]);
 
-  // Compute stats for today
+  // Check if a date string falls on the same calendar day (local timezone)
+  const isToday = (dateStr?: string) => {
+    if (!dateStr) return false;
+    const d = new Date(dateStr);
+    if (Number.isNaN(d.getTime())) return false;
+    const today = new Date();
+    return (
+      d.getDate() === today.getDate() &&
+      d.getMonth() === today.getMonth() &&
+      d.getFullYear() === today.getFullYear()
+    );
+  };
+
+  const isWithinDays = (dateStr: string | undefined, days: number) => {
+    if (!dateStr) return false;
+    const d = new Date(dateStr);
+    if (Number.isNaN(d.getTime())) return false;
+    const diff = Date.now() - d.getTime();
+    return diff >= 0 && diff <= days * 24 * 60 * 60 * 1000;
+  };
+
+  // Compute stats for today strictly based on calendar date
   const stats = useMemo(() => {
-    let incoming = 0;
-    let outgoing = 0;
-    let count = transactions.length;
+    let incomingToday = 0;
+    let outgoingToday = 0;
+    let countToday = 0;
 
     for (const tx of transactions) {
-      if (tx.credit > 0) incoming += tx.credit;
-      if (tx.debit > 0) outgoing += tx.debit;
+      const txDate = tx.transactionDate || tx.firstSeenAt;
+      if (isToday(txDate)) {
+        countToday++;
+        if (tx.credit > 0) incomingToday += tx.credit;
+        if (tx.debit > 0) outgoingToday += tx.debit;
+      }
     }
 
-    return { incoming, outgoing, count };
+    return { incomingToday, outgoingToday, countToday, totalCount: transactions.length };
   }, [transactions]);
 
-  // Filter list
+  // Filter list by date, type, and search
   const filtered = useMemo(() => {
     return transactions.filter((tx) => {
+      const txDate = tx.transactionDate || tx.firstSeenAt;
+
+      // Date range filter
+      if (dateRange === 'today' && !isToday(txDate)) return false;
+      if (dateRange === '7days' && !isWithinDays(txDate, 7)) return false;
+
+      // Direction filter
       if (filterType === 'credit' && tx.credit <= 0) return false;
       if (filterType === 'debit' && tx.debit <= 0) return false;
 
+      // Search filter
       if (search.trim()) {
         const q = search.toLowerCase();
         const descMatch = tx.description?.toLowerCase().includes(q);
@@ -63,7 +97,7 @@ export const TransactionsPage: React.FC = () => {
 
       return true;
     });
-  }, [transactions, filterType, search]);
+  }, [transactions, filterType, dateRange, search]);
 
   const handleCopy = (text: string) => {
     if (typeof navigator !== 'undefined') {
@@ -107,7 +141,7 @@ export const TransactionsPage: React.FC = () => {
           </div>
           <div className="mt-3">
             <span className="text-2xl font-bold tracking-tight text-emerald-600">
-              +{formatVndCurrency(stats.incoming)}
+              +{formatVndCurrency(stats.incomingToday)}
             </span>
           </div>
         </div>
@@ -123,7 +157,7 @@ export const TransactionsPage: React.FC = () => {
           </div>
           <div className="mt-3">
             <span className="text-2xl font-bold tracking-tight text-rose-600">
-              -{formatVndCurrency(stats.outgoing)}
+              -{formatVndCurrency(stats.outgoingToday)}
             </span>
           </div>
         </div>
@@ -131,7 +165,7 @@ export const TransactionsPage: React.FC = () => {
         <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs">
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-stone-600 uppercase tracking-wider">
-              Tổng số giao dịch
+              Giao dịch hôm nay
             </span>
             <div className="p-2 rounded-xl bg-stone-100 text-stone-600">
               <Receipt className="w-4 h-4" />
@@ -139,9 +173,11 @@ export const TransactionsPage: React.FC = () => {
           </div>
           <div className="mt-3">
             <span className="text-2xl font-bold tracking-tight text-stone-900">
-              {stats.count}
+              {stats.countToday}
             </span>
-            <span className="text-xs text-stone-600 ml-1.5 font-medium">giao dịch</span>
+            <span className="text-xs text-stone-600 ml-1.5 font-medium">
+              hôm nay ({stats.totalCount} tổng)
+            </span>
           </div>
         </div>
       </div>
@@ -159,6 +195,38 @@ export const TransactionsPage: React.FC = () => {
           />
         </div>
 
+        {/* Date Filter */}
+        <div className="flex items-center gap-1 bg-stone-100 p-1 rounded-xl">
+          <button
+            type="button"
+            onClick={() => setDateRange('today')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer ${
+              dateRange === 'today' ? 'bg-white text-stone-900 shadow-2xs font-semibold' : 'text-stone-600 hover:text-stone-900'
+            }`}
+          >
+            Hôm nay
+          </button>
+          <button
+            type="button"
+            onClick={() => setDateRange('7days')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer ${
+              dateRange === '7days' ? 'bg-white text-stone-900 shadow-2xs font-semibold' : 'text-stone-600 hover:text-stone-900'
+            }`}
+          >
+            7 ngày
+          </button>
+          <button
+            type="button"
+            onClick={() => setDateRange('all')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer ${
+              dateRange === 'all' ? 'bg-white text-stone-900 shadow-2xs font-semibold' : 'text-stone-600 hover:text-stone-900'
+            }`}
+          >
+            Tất cả
+          </button>
+        </div>
+
+        {/* Type Filter */}
         <div className="flex items-center gap-1.5 w-full sm:w-auto overflow-x-auto pb-1 sm:pb-0">
           <button
             type="button"

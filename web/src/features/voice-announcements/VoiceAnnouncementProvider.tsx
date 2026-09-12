@@ -24,7 +24,7 @@ export interface VoiceAnnouncementContextValue {
   isSpeaking: boolean;
   voices: VoiceInfo[];
   handleCreditEvent: (envelope: RealtimeEnvelope<BankTransactionCreditData>) => void;
-  testVoice: () => Promise<void>;
+  testVoice: (customPhrase?: string) => Promise<void>;
   cancelVoice: () => void;
 }
 
@@ -79,11 +79,19 @@ export const VoiceAnnouncementProvider: React.FC<VoiceAnnouncementProviderProps>
     };
   }, [leaderManager]);
 
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+
   // Update settings handler
   const updateSettings = (changes: Partial<VoiceSettings>) => {
     const updated = saveVoiceSettings(changes);
     setSettings(updated);
     if (changes.enabled === false) {
+      burstBufferRef.current = [];
+      if (burstTimerRef.current) {
+        clearTimeout(burstTimerRef.current);
+        burstTimerRef.current = null;
+      }
       queue.cancel();
     }
   };
@@ -93,23 +101,24 @@ export const VoiceAnnouncementProvider: React.FC<VoiceAnnouncementProviderProps>
   const burstTimerRef = useRef<any>(null);
 
   const processBurstBuffer = () => {
+    const currentSettings = settingsRef.current;
     const items = [...burstBufferRef.current];
     burstBufferRef.current = [];
     burstTimerRef.current = null;
 
-    if (items.length === 0) return;
+    if (!currentSettings.enabled || items.length === 0) return;
 
-    if (items.length === 1 || (items.length <= 3 && settings.burstMode === 'individual')) {
+    if (items.length === 1 || (items.length <= 3 && currentSettings.burstMode === 'individual')) {
       for (const item of items) {
         const text = buildSingleTransactionPhrase(item.amount.toString(), item.desc, {
-          includeDescription: settings.includeDescription,
+          includeDescription: currentSettings.includeDescription,
         });
         queue.enqueue({
           text,
-          volume: settings.volume,
-          rate: settings.rate,
-          pitch: settings.pitch,
-          voiceURI: settings.voiceURI,
+          volume: currentSettings.volume,
+          rate: currentSettings.rate,
+          pitch: currentSettings.pitch,
+          voiceURI: currentSettings.voiceURI,
         });
       }
     } else {
@@ -117,10 +126,10 @@ export const VoiceAnnouncementProvider: React.FC<VoiceAnnouncementProviderProps>
       const text = buildBurstTransactionPhrase(items.length, total.toString());
       queue.enqueue({
         text,
-        volume: settings.volume,
-        rate: settings.rate,
-        pitch: settings.pitch,
-        voiceURI: settings.voiceURI,
+        volume: currentSettings.volume,
+        rate: currentSettings.rate,
+        pitch: currentSettings.pitch,
+        voiceURI: currentSettings.voiceURI,
       });
     }
   };
@@ -183,9 +192,10 @@ export const VoiceAnnouncementProvider: React.FC<VoiceAnnouncementProviderProps>
     burstTimerRef.current = setTimeout(processBurstBuffer, 750);
   };
 
-  const testVoice = async () => {
+  const testVoice = async (customPhrase?: string) => {
     queue.cancel();
-    const testText = 'Đã bật đọc giao dịch mới. Bạn vừa nhận được năm trăm nghìn đồng.';
+    const testText =
+      customPhrase || 'Đã bật đọc giao dịch mới. Bạn vừa nhận được năm trăm nghìn đồng.';
     queue.enqueue({
       text: testText,
       volume: settings.volume,

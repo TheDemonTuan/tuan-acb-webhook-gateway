@@ -72,6 +72,18 @@ export const COVERAGE_STATUS_MAP: Record<string, string> = {
   NOT_STARTED: 'Chưa bắt đầu',
 };
 
+export const POLL_STATUS_MAP: Record<string, { label: string; tone: Tone }> = {
+  SUCCEEDED: { label: 'Thành công', tone: 'success' },
+  FAILED: { label: 'Thất bại', tone: 'danger' },
+  AUTH_REQUIRED: { label: 'Cần xác thực ACB', tone: 'warning' },
+  PROTOCOL_CHANGED: { label: 'Giao thức ACB thay đổi', tone: 'warning' },
+};
+
+export function getPollStatus(status?: string): { label: string; tone: Tone } {
+  const normalized = (status || '').toUpperCase();
+  return POLL_STATUS_MAP[normalized] || { label: status || 'Không rõ', tone: 'neutral' };
+}
+
 export function getAcbStatusDescriptor(state?: string): StatusDescriptor {
   const normalized = (state || 'UNCONFIGURED').toUpperCase();
   return (
