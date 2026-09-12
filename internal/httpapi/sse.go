@@ -1,0 +1,189 @@
+package httpapi
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/thedemontuan/acb-transaction-webhook/internal/telemetry"
+)
+
+const (
+	realtimeEpoch = "ep1"
+	replayBatch   = 250
+)
+
+func (s *Server) eventsStream(w http.ResponseWriter, r *http.Request) {
+	if s.eventHub == nil {
+		http.Error(w, "event stream unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
+	_, live, cancel := s.eventHub.Subscribe()
+	defer cancel()
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache, no-transform")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	ctx := r.Context()
+	cursor := r.Header.Get("Last-Event-ID")
+	if cursor == "" {
+		cursor = r.URL.Query().Get("lastEventId")
+	}
+
+	var watermark int64
+	if cursor == "" {
+		maxSeq, err := s.store.GetMaxJournalSeq(ctx, realtimeEpoch)
+		if err != nil {
+			writeSSEError(rc, w, flusher, "storage_error")
+			return
+		}
+		watermark = maxSeq
+		if err := writeSSE(rc, w, flusher, "", "initial_state", fmt.Sprintf(`{"epoch":%q,"watermark":%d}`, realtimeEpoch, watermark)); err != nil {
+			return
+		}
+	} else {
+		parts := strings.SplitN(cursor, ":", 2)
+		if len(parts) != 2 || parts[0] != realtimeEpoch {
+			writeReset(rc, w, flusher, "invalid_cursor")
+			return
+		}
+		afterSeq, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil || afterSeq < 0 {
+			writeReset(rc, w, flusher, "invalid_cursor")
+			return
+		}
+		minSeq, err := s.store.GetMinJournalSeq(ctx, realtimeEpoch)
+		if err != nil {
+			writeSSEError(rc, w, flusher, "storage_error")
+			return
+		}
+		if minSeq > 0 && afterSeq < minSeq-1 {
+			writeReset(rc, w, flusher, "retention_expired")
+			return
+		}
+		watermark = afterSeq
+	}
+
+	for {
+		entries, err := s.store.ReadJournalEvents(ctx, realtimeEpoch, watermark, replayBatch)
+		if err != nil {
+			writeSSEError(rc, w, flusher, "storage_error")
+			return
+		}
+		for _, entry := range entries {
+			if err := writeJournalEntry(rc, w, flusher, entry.Epoch, entry.Seq, entry.EventType, entry.Payload); err != nil {
+				return
+			}
+			watermark = entry.Seq
+		}
+		if len(entries) < replayBatch {
+			break
+		}
+	}
+
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-heartbeat.C:
+			_ = rc.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if _, err := fmt.Fprint(w, ": heartbeat\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+			_ = rc.SetWriteDeadline(time.Time{})
+		case hint, ok := <-live:
+			if !ok {
+				return
+			}
+			if !s.drainJournal(ctx, rc, w, flusher, &watermark) {
+				return
+			}
+			if hint.Seq > watermark {
+				start := time.Now()
+				if err := writeSSE(rc, w, flusher, fmt.Sprintf("%s:%d", hint.Epoch, hint.Seq), hint.EventType, string(hint.Payload)); err != nil {
+					return
+				}
+				telemetry.Default.RecordSSE(time.Since(start))
+				watermark = hint.Seq
+			}
+		}
+	}
+}
+
+func (s *Server) drainJournal(ctx context.Context, rc *http.ResponseController, w http.ResponseWriter, flusher http.Flusher, watermark *int64) bool {
+	for {
+		entries, err := s.store.ReadJournalEvents(ctx, realtimeEpoch, *watermark, replayBatch)
+		if err != nil {
+			return false
+		}
+		for _, entry := range entries {
+			start := time.Now()
+			if err := writeJournalEntry(rc, w, flusher, entry.Epoch, entry.Seq, entry.EventType, entry.Payload); err != nil {
+				return false
+			}
+			telemetry.Default.RecordSSE(time.Since(start))
+			*watermark = entry.Seq
+		}
+		if len(entries) < replayBatch {
+			return true
+		}
+	}
+}
+
+func writeJournalEntry(rc *http.ResponseController, w http.ResponseWriter, flusher http.Flusher, epoch string, seq int64, eventType string, payload []byte) error {
+	data := string(payload)
+	if eventType == "bank.transaction.credit" {
+		var raw map[string]any
+		if err := json.Unmarshal(payload, &raw); err == nil {
+			delete(raw, "balance")
+			delete(raw, "accountNumber")
+			delete(raw, "sessionToken")
+			if safe, err := json.Marshal(raw); err == nil {
+				data = string(safe)
+			}
+		}
+	}
+	return writeSSE(rc, w, flusher, fmt.Sprintf("%s:%d", epoch, seq), eventType, data)
+}
+
+func writeSSE(rc *http.ResponseController, w http.ResponseWriter, flusher http.Flusher, id, event, data string) error {
+	_ = rc.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	if id != "" {
+		if _, err := fmt.Fprintf(w, "id: %s\n", id); err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data); err != nil {
+		return err
+	}
+	flusher.Flush()
+	_ = rc.SetWriteDeadline(time.Time{})
+	return nil
+}
+
+func writeReset(rc *http.ResponseController, w http.ResponseWriter, flusher http.Flusher, reason string) {
+	_ = writeSSE(rc, w, flusher, "", "reset_state", fmt.Sprintf(`{"reason":%q}`, reason))
+}
+
+func writeSSEError(rc *http.ResponseController, w http.ResponseWriter, flusher http.Flusher, reason string) {
+	_ = writeSSE(rc, w, flusher, "", "stream_error", fmt.Sprintf(`{"reason":%q}`, reason))
+}

@@ -11,13 +11,21 @@ import (
 type FileLock struct{ file *os.File }
 
 func Acquire(path string) (*FileLock, error) {
+	return acquire(path, syscall.LOCK_EX|syscall.LOCK_NB)
+}
+
+func AcquireShared(path string) (*FileLock, error) {
+	return acquire(path, syscall.LOCK_SH|syscall.LOCK_NB)
+}
+
+func acquire(path string, mode int) (*FileLock, error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
 	}
-	if err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err = syscall.Flock(int(f.Fd()), mode); err != nil {
 		_ = f.Close()
-		return nil, fmt.Errorf("another gateway instance holds %s: %w", path, err)
+		return nil, fmt.Errorf("gateway lock unavailable at %s: %w", path, err)
 	}
 	return &FileLock{file: f}, nil
 }

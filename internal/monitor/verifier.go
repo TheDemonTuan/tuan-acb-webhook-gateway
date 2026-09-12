@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 
 	"github.com/thedemontuan/acb-transaction-webhook/internal/acb"
 )
@@ -11,15 +12,24 @@ import (
 type SessionVerifier struct {
 	sessions *SessionLoader
 	client   *acb.Client
+	gate     *sync.Mutex
 }
 
-func NewSessionVerifier(sessions *SessionLoader, client *acb.Client) *SessionVerifier {
-	return &SessionVerifier{sessions: sessions, client: client}
+func NewSessionVerifier(sessions *SessionLoader, client *acb.Client, gate ...*sync.Mutex) *SessionVerifier {
+	v := &SessionVerifier{sessions: sessions, client: client}
+	if len(gate) > 0 {
+		v.gate = gate[0]
+	}
+	return v
 }
 
 func (v *SessionVerifier) VerifySession(ctx context.Context, connectionID string, generation int64, encrypted []byte) error {
 	if v == nil || v.sessions == nil || v.client == nil {
 		return errors.New("ACB session verifier is unavailable")
+	}
+	if v.gate != nil {
+		v.gate.Lock()
+		defer v.gate.Unlock()
 	}
 	if err := v.sessions.RestoreEnvelope(connectionID, generation, encrypted); err != nil {
 		return err

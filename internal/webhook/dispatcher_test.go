@@ -60,7 +60,7 @@ func TestDispatcherHappyPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dispatcher := NewDispatcher(store, ts.Client())
+	dispatcher := NewDispatcher(store, ts.Client()).SetSkipURLValidation(true)
 	processed, err := dispatcher.DispatchOne(ctx)
 	if err != nil || !processed {
 		t.Fatalf("dispatch failed: %v, processed=%v", err, processed)
@@ -113,7 +113,7 @@ func TestDispatcherRetryAndDeadLetter(t *testing.T) {
 
 	_, _ = store.EmitTransactionEvent(ctx, txn.TransactionID, "bank.transaction.credit", "acb", "ACB:101", map[string]any{"credit": 50000})
 
-	dispatcher := NewDispatcher(store, ts.Client())
+	dispatcher := NewDispatcher(store, ts.Client()).SetSkipURLValidation(true)
 	dispatcher.maxRetries = 2
 
 	// First attempt -> fail, reschedule
@@ -134,5 +134,66 @@ func TestDispatcherRetryAndDeadLetter(t *testing.T) {
 	summary, err := store.DeliverySummary(ctx)
 	if err != nil || summary.DeadLetter != 1 || summary.Pending != 0 {
 		t.Fatalf("expected 1 dead letter, got: %+v", summary)
+	}
+}
+
+func TestDispatcherEventDrivenWakeImmediate(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	store, err := storage.Open(ctx, filepath.Join(t.TempDir(), "gateway_wake.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	conn, _ := store.ConfigureConnection(ctx, "***1234")
+
+	deliveredCh := make(chan struct{}, 1)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		select {
+		case deliveredCh <- struct{}{}:
+		default:
+		}
+	}))
+	defer ts.Close()
+
+	ep, err := store.CreateEndpointWithSecret(ctx, "Wake Hook", ts.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = store.SetEndpointStatus(ctx, ep.ID, "ACTIVE")
+
+	dispatcher := NewDispatcher(store, ts.Client()).SetSkipURLValidation(true)
+	go dispatcher.Run(ctx)
+
+	// Create transaction and event/delivery
+	txn, _ := store.IngestTransaction(ctx, storage.TransactionInput{
+		ConnectionID:  conn.ID,
+		SemanticKey:   "ACB:9999",
+		CanonicalHash: "hash9999",
+		TransactionAt: "2026-09-12",
+		EffectiveAt:   "2026-09-12",
+		Credit:        100000,
+		ParserVersion: "v1",
+	})
+	_, err = store.EmitTransactionEvent(ctx, txn.TransactionID, "bank.transaction.credit", "acb", "ACB:9999", map[string]any{"credit": 100000})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Trigger immediate wake
+	start := time.Now()
+	dispatcher.Wake()
+
+	select {
+	case <-deliveredCh:
+		elapsed := time.Since(start)
+		if elapsed > 1*time.Second {
+			t.Fatalf("wake took too long: %v", elapsed)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for immediate delivery after Wake()")
 	}
 }

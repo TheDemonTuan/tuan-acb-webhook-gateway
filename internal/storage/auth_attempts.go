@@ -81,3 +81,14 @@ func (s *Store) FinishAuthAttempt(ctx context.Context, attemptID, status string)
 		return err
 	})
 }
+
+// HasActiveAuthAttempt checks whether an interactive browser authentication attempt
+// is currently active and unexpired for the specified connection.
+func (s *Store) HasActiveAuthAttempt(ctx context.Context, connectionID string) (bool, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT count(*) FROM auth_attempts
+		WHERE connection_id = ? AND status IN ('STARTING', 'IN_PROGRESS', 'EXPORTING', 'VERIFYING') AND expires_at > ?
+	`, connectionID, now()).Scan(&count)
+	return count > 0, err
+}

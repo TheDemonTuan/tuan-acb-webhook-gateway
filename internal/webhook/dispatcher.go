@@ -7,11 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"time"
 
 	"github.com/thedemontuan/acb-transaction-webhook/internal/storage"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/telemetry"
 )
 
 var defaultBackoffs = []time.Duration{
@@ -26,26 +26,36 @@ var defaultBackoffs = []time.Duration{
 }
 
 type Dispatcher struct {
-	store      *storage.Store
-	httpClient *http.Client
-	maxRetries int
-	backoffs   []time.Duration
+	store             *storage.Store
+	httpClient        *http.Client
+	maxRetries        int
+	backoffs          []time.Duration
+	skipURLValidation bool
+	wakeCh            chan struct{}
+}
+
+func (d *Dispatcher) SetSkipURLValidation(skip bool) *Dispatcher {
+	d.skipURLValidation = skip
+	return d
+}
+
+func (d *Dispatcher) Wake() {
+	select {
+	case d.wakeCh <- struct{}{}:
+	default:
+	}
 }
 
 func NewDispatcher(store *storage.Store, client *http.Client) *Dispatcher {
 	if client == nil {
-		client = &http.Client{
-			Timeout: 10 * time.Second,
-			Transport: &http.Transport{
-				DialContext: PublicDialer{Dialer: net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}}.DialContext,
-			},
-		}
+		client = NewHTTPClient()
 	}
 	return &Dispatcher{
 		store:      store,
 		httpClient: client,
 		maxRetries: len(defaultBackoffs),
 		backoffs:   defaultBackoffs,
+		wakeCh:     make(chan struct{}, 1),
 	}
 }
 
@@ -63,13 +73,20 @@ func (d *Dispatcher) DispatchOne(ctx context.Context) (bool, error) {
 
 	targetURL, secret, err := d.store.EndpointDetails(ctx, delivery.EndpointID)
 	if err != nil {
-		_ = d.store.FailDelivery(ctx, delivery.ID, "ENDPOINT_UNAVAILABLE")
+		_ = d.store.FailDelivery(ctx, delivery.ID, delivery.ClaimToken, "ENDPOINT_UNAVAILABLE")
 		return true, fmt.Errorf("fetch endpoint details: %w", err)
+	}
+
+	if !d.skipURLValidation {
+		if _, err := ValidateURL(targetURL); err != nil {
+			_ = d.store.FailDelivery(ctx, delivery.ID, delivery.ClaimToken, "INVALID_ENDPOINT_URL")
+			return true, fmt.Errorf("invalid endpoint URL: %w", err)
+		}
 	}
 
 	payload, err := d.store.EventPayload(ctx, delivery.EventID)
 	if err != nil {
-		_ = d.store.FailDelivery(ctx, delivery.ID, "EVENT_PAYLOAD_UNAVAILABLE")
+		_ = d.store.FailDelivery(ctx, delivery.ID, delivery.ClaimToken, "EVENT_PAYLOAD_UNAVAILABLE")
 		return true, fmt.Errorf("fetch event payload: %w", err)
 	}
 
@@ -82,7 +99,7 @@ func (d *Dispatcher) DispatchOne(ctx context.Context) (bool, error) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(payload))
 	if err != nil {
-		_ = d.store.FailDelivery(ctx, delivery.ID, "INVALID_URL")
+		_ = d.store.FailDelivery(ctx, delivery.ID, delivery.ClaimToken, "INVALID_URL")
 		return true, err
 	}
 
@@ -109,6 +126,7 @@ func (d *Dispatcher) DispatchOne(ctx context.Context) (bool, error) {
 	_ = d.store.RecordAttempt(ctx, delivery.ID, delivery.Attempts, httpStatus, duration, errString)
 
 	success := reqErr == nil && httpStatus >= 200 && httpStatus < 300
+	telemetry.Default.RecordWebhook(time.Since(start), success)
 	if success {
 		err = d.store.CompleteDelivery(ctx, delivery, true, time.Time{})
 		return true, err
@@ -116,7 +134,7 @@ func (d *Dispatcher) DispatchOne(ctx context.Context) (bool, error) {
 
 	// Retry or dead-letter
 	if delivery.Attempts >= d.maxRetries {
-		err = d.store.FailDelivery(ctx, delivery.ID, fmt.Sprintf("EXHAUSTED_RETRIES_STATUS_%d", httpStatus))
+		err = d.store.FailDelivery(ctx, delivery.ID, delivery.ClaimToken, fmt.Sprintf("EXHAUSTED_RETRIES_STATUS_%d", httpStatus))
 		return true, err
 	}
 
@@ -134,23 +152,63 @@ func (d *Dispatcher) DispatchOne(ctx context.Context) (bool, error) {
 }
 
 func (d *Dispatcher) Run(ctx context.Context) {
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
+	const workers = 4
+	jobs := make(chan struct{}, workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			for range jobs {
+				d.drain(ctx)
+			}
+		}()
+	}
 
+	timer := time.NewTimer(0)
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
+			close(jobs)
 			return
-		case <-ticker.C:
-			for {
-				processed, err := d.DispatchOne(ctx)
-				if err != nil {
-					slog.Warn("webhook dispatch error", "error", err)
-				}
-				if !processed || err != nil {
-					break
-				}
+		case <-d.wakeCh:
+		case <-timer.C:
+		}
+		for i := 0; i < workers; i++ {
+			select {
+			case jobs <- struct{}{}:
+			default:
 			}
+		}
+		timer.Reset(d.nextWait(ctx))
+	}
+}
+
+func (d *Dispatcher) nextWait(ctx context.Context) time.Duration {
+	due, err := d.store.NextDeliveryDue(ctx)
+	if err != nil {
+		return 15 * time.Second
+	}
+	wait := time.Until(due)
+	if wait < 0 {
+		return 0
+	}
+	if wait > 15*time.Second {
+		return 15 * time.Second
+	}
+	return wait
+}
+
+func (d *Dispatcher) drain(ctx context.Context) {
+	const maxBurst = 50
+	for i := 0; i < maxBurst; i++ {
+		if ctx.Err() != nil {
+			return
+		}
+		processed, err := d.DispatchOne(ctx)
+		if err != nil {
+			slog.Warn("webhook dispatch error", "error", err)
+		}
+		if !processed || err != nil {
+			break
 		}
 	}
 }

@@ -12,15 +12,23 @@ import (
 type FileLock struct{ file *os.File }
 
 func Acquire(path string) (*FileLock, error) {
+	return acquire(path, windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY)
+}
+
+func AcquireShared(path string) (*FileLock, error) {
+	return acquire(path, windows.LOCKFILE_FAIL_IMMEDIATELY)
+}
+
+func acquire(path string, flags uint32) (*FileLock, error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
 	}
 	var overlapped windows.Overlapped
-	err = windows.LockFileEx(windows.Handle(f.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &overlapped)
+	err = windows.LockFileEx(windows.Handle(f.Fd()), flags, 0, 1, 0, &overlapped)
 	if err != nil {
 		_ = f.Close()
-		return nil, fmt.Errorf("another gateway instance holds %s: %w", path, err)
+		return nil, fmt.Errorf("gateway lock unavailable at %s: %w", path, err)
 	}
 	return &FileLock{file: f}, nil
 }

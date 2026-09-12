@@ -23,9 +23,8 @@ flock -n 9 || { printf 'Another deployment is active.\n' >&2; exit 1; }
 mkdir -p "$script_dir/data" "$script_dir/secrets"
 chmod 775 "$script_dir/data" || true
 
-# Stop and remove any containers from previous project names to free ports and clean up standalone connectors
-docker stop acb-transaction-gateway acb-transaction-gateway-tunnel tuan-bank-gateway tuan-bank-gateway-tunnel bank-event-gateway bank-gateway-auth-browser bank-gateway-cloudflared acb-cloudflared 2>/dev/null || true
-docker rm -f acb-transaction-gateway acb-transaction-gateway-tunnel tuan-bank-gateway tuan-bank-gateway-tunnel bank-event-gateway bank-gateway-auth-browser bank-gateway-cloudflared acb-cloudflared 2>/dev/null || true
+# Stop writers before checkpointing and backing up SQLite.
+docker stop acb-transaction-gateway bank-gateway-auth-browser 2>/dev/null || true
 
 # Ensure secrets/app_master_key file exists before Docker mounts it
 if [[ ! -f "$script_dir/secrets/app_master_key" ]]; then
@@ -44,14 +43,38 @@ if [[ ! -f "$script_dir/secrets/app_master_key" ]]; then
 fi
 chmod 600 "$script_dir/secrets/app_master_key"
 
+# 1. Execute pre-deployment offline backup
+if [[ -f "$script_dir/data/gateway.db" ]]; then
+  printf 'Executing pre-deployment backup with WAL checkpoint...\n'
+  DATABASE_PATH="$script_dir/data/gateway.db" BACKUP_DIR="$script_dir/data/backups" "$script_dir/backup.sh"
+fi
+
 docker compose --env-file "$env_file" -f "$compose_file" config --quiet
 gateway_current_file="$script_dir/.deployed-image"
 browser_current_file="$script_dir/.deployed-browser-image"
 gateway_current="$(cat "$gateway_current_file" 2>/dev/null || true)"
 browser_current="$(cat "$browser_current_file" 2>/dev/null || true)"
 
-if ! docker compose --env-file "$env_file" -f "$compose_file" pull gateway auth-browser || \
-   ! docker compose --env-file "$env_file" -f "$compose_file" up -d --remove-orphans --wait; then
+# 2. Pull images and execute migration-only gate
+if ! docker compose --env-file "$env_file" -f "$compose_file" pull gateway auth-browser; then
+  echo "Failed to pull deployment images." >&2
+  exit 1
+fi
+
+printf 'Executing database migration gate (--migrate-only)...\n'
+if ! docker compose --env-file "$env_file" -f "$compose_file" run --rm --no-deps gateway /gateway --migrate-only; then
+  echo "Database migration gate failed. Aborting deployment." >&2
+  exit 1
+fi
+
+printf 'Verifying database integrity before startup (--check)...\n'
+if ! docker compose --env-file "$env_file" -f "$compose_file" run --rm --no-deps gateway /gateway --check; then
+  echo "Database integrity check failed. Aborting deployment." >&2
+  exit 1
+fi
+
+# 3. Start services with health wait
+if ! docker compose --env-file "$env_file" -f "$compose_file" up -d --remove-orphans --wait; then
   echo "Docker compose deployment failed. Dumping container status and logs:" >&2
   docker compose --env-file "$env_file" -f "$compose_file" ps -a || true
   docker compose --env-file "$env_file" -f "$compose_file" logs --tail 50 gateway auth-browser || true

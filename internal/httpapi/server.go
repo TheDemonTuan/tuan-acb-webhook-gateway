@@ -20,10 +20,12 @@ import (
 	"github.com/thedemontuan/acb-transaction-webhook/internal/auth"
 	"github.com/thedemontuan/acb-transaction-webhook/internal/authbrowser"
 	"github.com/thedemontuan/acb-transaction-webhook/internal/config"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/eventhub"
 	"github.com/thedemontuan/acb-transaction-webhook/internal/httpui"
 	"github.com/thedemontuan/acb-transaction-webhook/internal/monitor"
 	"github.com/thedemontuan/acb-transaction-webhook/internal/security"
 	"github.com/thedemontuan/acb-transaction-webhook/internal/storage"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/telemetry"
 )
 
 type SyncRequester interface {
@@ -43,6 +45,7 @@ type Server struct {
 	browser       *authbrowser.Client
 	browserVNCURL string
 	keyring       *security.Keyring
+	eventHub      *eventhub.Hub
 	started       time.Time
 	handler       http.Handler
 }
@@ -56,7 +59,16 @@ func New(cfg config.Config, store *storage.Store) *Server {
 	if cfg.Production {
 		verifier = auth.NewCloudflareVerifier(cfg)
 	}
-	s := &Server{cfg: cfg, store: store, auth: auth.New(cfg, verifier), browser: authbrowser.NewClient(cfg.AuthBrowserURL), browserVNCURL: cfg.AuthBrowserVNCURL, keyring: keyring, started: time.Now().UTC()}
+	s := &Server{
+		cfg:           cfg,
+		store:         store,
+		auth:          auth.New(cfg, verifier),
+		browser:       authbrowser.NewClient(cfg.AuthBrowserURL),
+		browserVNCURL: cfg.AuthBrowserVNCURL,
+		keyring:       keyring,
+		eventHub:      eventhub.New(),
+		started:       time.Now().UTC(),
+	}
 	r := chi.NewRouter()
 	r.Use(requestID, securityHeaders, recoverer)
 	r.Get("/healthz", s.health)
@@ -73,6 +85,9 @@ func New(cfg config.Config, store *storage.Store) *Server {
 		api.Get("/deliveries", s.deliveries)
 		api.Get("/poll-runs", s.pollRuns)
 		api.Get("/audit", s.auditLogs)
+		api.Get("/events", s.eventsStream)
+		api.Get("/events/stream", s.eventsStream)
+		api.Get("/realtime/status", s.realtimeStatus)
 
 		api.With(s.auth.Require(auth.Owner)).Post("/connection/configure", s.configure)
 		api.With(s.auth.Require(auth.Owner, auth.Operator)).Post("/connection/{action:pause|resume|sync}", s.connectionAction)
@@ -94,6 +109,15 @@ func New(cfg config.Config, store *storage.Store) *Server {
 func (s *Server) WithAuthVerifier(verifier AuthVerifier) *Server {
 	s.authVerifier = verifier
 	return s
+}
+
+func (s *Server) WithEventHub(hub *eventhub.Hub) *Server {
+	s.eventHub = hub
+	return s
+}
+
+func (s *Server) EventHub() *eventhub.Hub {
+	return s.eventHub
 }
 
 func (s *Server) WithSyncRequester(requester SyncRequester) *Server {
@@ -131,6 +155,12 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"service": "HEALTHY", "version": "2.0.0-dev", "uptimeSeconds": int(time.Since(s.started).Seconds()), "acb": acb, "storage": map[string]string{"status": "READY"}, "webhooks": summary})
 }
+func (s *Server) realtimeStatus(w http.ResponseWriter, r *http.Request) {
+	if s.eventHub != nil {
+		telemetry.Default.SetConnectedClients(int64(s.eventHub.SubscriberCount()))
+	}
+	writeJSON(w, http.StatusOK, telemetry.Default.Report())
+}
 func (s *Server) connection(w http.ResponseWriter, r *http.Request) {
 	c, err := s.store.Connection(r.Context())
 	if errors.Is(err, storage.ErrNotFound) {
@@ -156,6 +186,7 @@ func (s *Server) configure(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	audit(s.store, r, "connection.configure", c.ID)
+	s.publishStateEvent("connection.changed", c.ID, c)
 	writeJSON(w, http.StatusCreated, c)
 }
 func (s *Server) connectionAction(w http.ResponseWriter, r *http.Request) {
@@ -195,6 +226,7 @@ func (s *Server) connectionAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	audit(s.store, r, "connection."+chi.URLParam(r, "action"), c.ID)
+	s.publishStateEvent("connection.changed", c.ID, c)
 	writeJSON(w, http.StatusAccepted, c)
 }
 func (s *Server) startAuth(w http.ResponseWriter, r *http.Request) {
@@ -219,6 +251,7 @@ func (s *Server) startAuth(w http.ResponseWriter, r *http.Request) {
 	}
 	session.ScreenURL = "/api/v1/connection/auth/" + attempt.ID + "/screen/vnc.html?autoconnect=true&resize=remote&path=api/v1/connection/auth/" + attempt.ID + "/screen/websockify"
 	audit(s.store, r, "auth.start", attempt.ID)
+	s.publishStateEvent("auth.changed", attempt.ID, map[string]any{"attemptId": attempt.ID, "status": "IN_PROGRESS"})
 	writeJSON(w, http.StatusCreated, session)
 }
 func (s *Server) cancelAuth(w http.ResponseWriter, r *http.Request) {
@@ -257,6 +290,7 @@ func (s *Server) cancelAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	audit(s.store, r, "auth.cancel", in.AttemptID)
+	s.publishStateEvent("auth.changed", in.AttemptID, map[string]any{"attemptId": in.AttemptID, "status": "CANCELLED"})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "CANCELLED"})
 }
 func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) {
@@ -410,6 +444,8 @@ func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("complete ACB browser handoff", "attempt_id", attemptID, "error", err)
 		}
 		audit(s.store, r, "auth.verified", completedConn.ID)
+		s.publishStateEvent("connection.changed", completedConn.ID, completedConn)
+		s.publishStateEvent("auth.changed", attemptID, map[string]any{"attemptId": attemptID, "status": "MONITORING"})
 		writeJSON(w, http.StatusOK, map[string]string{"status": "MONITORING"})
 		return
 	}
@@ -555,6 +591,7 @@ func (s *Server) createEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	audit(s.store, r, "webhook.create", e.ID)
+	s.publishStateEvent("webhook.changed", e.ID, map[string]any{"id": e.ID, "status": e.Status})
 	writeJSON(w, http.StatusCreated, e)
 }
 func (s *Server) endpointAction(w http.ResponseWriter, r *http.Request) {
@@ -572,6 +609,7 @@ func (s *Server) endpointAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	audit(s.store, r, "webhook."+strings.ToLower(status), chi.URLParam(r, "id"))
+	s.publishStateEvent("webhook.changed", chi.URLParam(r, "id"), map[string]any{"id": chi.URLParam(r, "id"), "status": status})
 	writeJSON(w, http.StatusOK, map[string]string{"status": status})
 }
 func audit(store *storage.Store, r *http.Request, action, target string) {

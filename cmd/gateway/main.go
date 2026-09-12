@@ -17,6 +17,7 @@ import (
 
 	"github.com/thedemontuan/acb-transaction-webhook/internal/acb"
 	"github.com/thedemontuan/acb-transaction-webhook/internal/config"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/eventhub"
 	"github.com/thedemontuan/acb-transaction-webhook/internal/httpapi"
 	"github.com/thedemontuan/acb-transaction-webhook/internal/lock"
 	"github.com/thedemontuan/acb-transaction-webhook/internal/monitor"
@@ -27,6 +28,8 @@ import (
 
 func main() {
 	healthcheck := flag.Bool("healthcheck", false, "verify server health via HTTP")
+	checkIntegrity := flag.Bool("check", false, "run read-only database integrity and inventory check")
+	migrateOnly := flag.Bool("migrate-only", false, "apply database migrations and exit")
 	flag.Parse()
 	if *healthcheck {
 		client := &http.Client{Timeout: 3 * time.Second}
@@ -57,7 +60,13 @@ func main() {
 		logger.Error("create data directory", "error", err)
 		os.Exit(1)
 	}
-	fileLock, err := lock.Acquire(filepath.Join(filepath.Dir(cfg.DatabasePath), "gateway.lock"))
+	lockPath := filepath.Join(filepath.Dir(cfg.DatabasePath), "gateway.lock")
+	var fileLock *lock.FileLock
+	if *checkIntegrity {
+		fileLock, err = lock.AcquireShared(lockPath)
+	} else {
+		fileLock, err = lock.Acquire(lockPath)
+	}
 	if err != nil {
 		logger.Error("gateway lock unavailable", "error", err)
 		os.Exit(1)
@@ -70,8 +79,40 @@ func main() {
 	}
 	defer store.Close()
 
-	dispatcher := webhook.NewDispatcher(store, nil)
-	go dispatcher.Run(ctx)
+	if *migrateOnly {
+		logger.Info("database migrations applied successfully", "database", cfg.DatabasePath)
+		return
+	}
+
+	if *checkIntegrity {
+		report, err := store.CheckIntegrity(ctx)
+		if err != nil {
+			logger.Error("database check failed", "error", err)
+			os.Exit(1)
+		}
+		logger.Info("database integrity report",
+			"integrityOk", report.IntegrityOK,
+			"integrityMessage", report.IntegrityMessage,
+			"migrationsApplied", report.MigrationsApplied,
+			"connectionsCount", report.ConnectionsCount,
+			"connectionState", report.ConnectionState,
+			"generation", report.Generation,
+			"transactionsCount", report.TransactionsCount,
+			"eventsCount", report.EventsCount,
+			"deliveriesPending", report.Deliveries.Pending,
+			"deliveriesInFlight", report.Deliveries.InFlight,
+			"deliveriesDelivered", report.Deliveries.Delivered,
+			"deliveriesDeadLetter", report.Deliveries.DeadLetter,
+			"endpointsCount", report.EndpointsCount,
+			"activeEndpoints", report.ActiveEndpoints,
+			"quarantinedCount", report.QuarantinedCount,
+			"orphanTransactions", report.OrphanTransactions,
+		)
+		if !report.IntegrityOK {
+			os.Exit(1)
+		}
+		return
+	}
 
 	var keyring *security.Keyring
 	if cfg.MasterKeyFile != "" {
@@ -80,13 +121,33 @@ func main() {
 			logger.Error("load session encryption key", "error", err)
 			os.Exit(1)
 		}
+		store.WithKeyring(keyring)
 	}
+
+	hub := eventhub.New()
+
+	dispatcher := webhook.NewDispatcher(store, nil)
+	go dispatcher.Run(ctx)
+
 	acbClient, err := acb.NewClient("https://online.acb.com.vn", nil)
 	if err != nil {
 		logger.Error("create ACB client", "error", err)
 		os.Exit(1)
 	}
 	bankMonitor := monitor.New(store, acbClient, cfg.PollMinInterval, cfg.PollMaxInterval)
+	bankMonitor.WithEventNotifier(func(events []storage.EventNotification) {
+		for _, ev := range events {
+			hub.Publish(eventhub.Event{
+				Seq:         ev.JournalSeq,
+				Epoch:       ev.Epoch,
+				EventType:   ev.EventType,
+				AggregateID: ev.TransactionID,
+				Payload:     ev.Payload,
+				CreatedAt:   ev.CreatedAt,
+			})
+		}
+		dispatcher.Wake()
+	})
 	var sessionLoader *monitor.SessionLoader
 	if keyring != nil {
 		sessionLoader = monitor.NewSessionLoader(store, keyring, acbClient)
@@ -102,7 +163,8 @@ func main() {
 		addresses = append(addresses, strings.TrimSuffix(primaryAddr, ":8080")+":8090")
 	}
 
-	server := httpapi.New(cfg, store).WithSyncRequester(bankMonitor)
+	server := httpapi.New(cfg, store).WithSyncRequester(bankMonitor).WithEventHub(hub)
+	go server.RunJournalRetention(ctx, 24*time.Hour)
 	if keyring != nil {
 		verifierClient, verifierErr := acb.NewClient("https://online.acb.com.vn", nil)
 		if verifierErr != nil {
@@ -110,7 +172,7 @@ func main() {
 			os.Exit(1)
 		}
 		verifierLoader := monitor.NewSessionLoader(store, keyring, verifierClient)
-		server.WithAuthVerifier(monitor.NewSessionVerifier(verifierLoader, verifierClient))
+		server.WithAuthVerifier(monitor.NewSessionVerifier(verifierLoader, verifierClient, bankMonitor.UpstreamGate()))
 	}
 	handler := server.Handler()
 	var servers []*http.Server

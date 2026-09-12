@@ -467,6 +467,66 @@ func TestRequestSyncCoalescing(t *testing.T) {
 	}
 }
 
+func TestMonitorCircuitBreakerAndBrowserHandoff(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.Open(ctx, filepath.Join(t.TempDir(), "test_cb_handoff.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	conn, _ := store.ConfigureConnection(ctx, "***1234")
+	_, _ = store.DB().ExecContext(ctx, "UPDATE connections SET state='MONITORING'")
+
+	var callCount atomic.Int32
+	mock := &mockBankClient{
+		getResp: acb.Response{
+			StatusCode: 429,
+			Kind:       acb.UnknownPage,
+			Body:       "Too Many Requests",
+		},
+	}
+
+	m := New(store, mock, 10*time.Second, 10*time.Second)
+
+	// 1. First poll hits 429
+	_ = m.PollOnce(ctx)
+	runs, _ := store.ListPollRuns(ctx, 5)
+	if len(runs) != 1 || runs[0].Error != "ACB_RATE_LIMITED" {
+		t.Fatalf("expected ACB_RATE_LIMITED, got: %+v", runs)
+	}
+
+	// 2. Second poll immediately is skipped by circuit breaker backoff (mock not called)
+	initialCalls := callCount.Load()
+	_ = m.PollOnce(ctx)
+	runsAfter, _ := store.ListPollRuns(ctx, 5)
+	if len(runsAfter) != 1 {
+		t.Fatalf("expected second poll skipped by circuit breaker, got runs: %d", len(runsAfter))
+	}
+	_ = initialCalls
+
+	// 3. Reset backoff
+	m.backoffUntil = time.Time{}
+
+	// 4. Start active auth attempt -> browser handoff should skip polling
+	_, err = store.StartAuthAttempt(ctx, "owner@example.com", 5*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Set connection back to MONITORING to test HasActiveAuthAttempt guard
+	_, _ = store.DB().ExecContext(ctx, "UPDATE connections SET state='MONITORING' WHERE id = ?", conn.ID)
+
+	err = m.PollOnce(ctx)
+	if err != nil {
+		t.Fatalf("expected nil error on skipped poll, got %v", err)
+	}
+	runsHandoff, _ := store.ListPollRuns(ctx, 5)
+	if len(runsHandoff) != 1 {
+		t.Fatalf("expected poll skipped during active browser auth attempt, got runs: %d", len(runsHandoff))
+	}
+}
+
 func TestRequestSyncConcurrentNormalPoll(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

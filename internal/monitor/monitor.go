@@ -11,6 +11,7 @@ import (
 
 	"github.com/thedemontuan/acb-transaction-webhook/internal/acb"
 	"github.com/thedemontuan/acb-transaction-webhook/internal/storage"
+	"github.com/thedemontuan/acb-transaction-webhook/internal/telemetry"
 )
 
 type BankClient interface {
@@ -36,6 +37,17 @@ type Monitor struct {
 	syncMu          sync.Mutex
 	syncReq         *syncRequest
 	syncCh          chan struct{}
+	onNewEvents     func([]storage.EventNotification)
+	backoffUntil    time.Time
+}
+
+func (m *Monitor) WithEventNotifier(fn func([]storage.EventNotification)) *Monitor {
+	m.onNewEvents = fn
+	return m
+}
+
+func (m *Monitor) UpstreamGate() *sync.Mutex {
+	return &m.mu
 }
 
 func New(store *storage.Store, client BankClient, minInterval, maxInterval time.Duration) *Monitor {
@@ -123,6 +135,18 @@ func (m *Monitor) pollOnce(ctx context.Context, expected *syncRequest) error {
 	if conn.State != "MONITORING" {
 		return nil // Not in active monitoring state
 	}
+
+	if time.Now().Before(m.backoffUntil) {
+		slog.Info("skipping poll: circuit breaker backoff active", "until", m.backoffUntil)
+		return nil
+	}
+
+	hasActiveAttempt, err := m.store.HasActiveAuthAttempt(ctx, conn.ID)
+	if err == nil && hasActiveAttempt {
+		slog.Info("skipping poll: browser authentication in progress", "connection_id", conn.ID)
+		return nil
+	}
+
 	if expected != nil {
 		if conn.ID != expected.connectionID || conn.Generation != expected.generation {
 			return nil // Stale sync skipped
@@ -169,10 +193,23 @@ func (m *Monitor) pollOnce(ctx context.Context, expected *syncRequest) error {
 		return nil
 	}
 
+	if resp.StatusCode == 429 {
+		poll.Status = "FAILED"
+		poll.Error = "ACB_RATE_LIMITED"
+		m.backoffUntil = time.Now().Add(60 * time.Second)
+		telemetry.Default.SetCircuitBreaker(true)
+		_ = m.store.FinishPoll(ctx, poll)
+		slog.Warn("ACB rate limit detected (429); backoff for 60s")
+		return nil
+	}
+
 	if resp.Kind == acb.MaintenancePage {
 		poll.Status = "FAILED"
 		poll.Error = "ACB_MAINTENANCE"
+		m.backoffUntil = time.Now().Add(60 * time.Second)
+		telemetry.Default.SetCircuitBreaker(true)
 		_ = m.store.FinishPoll(ctx, poll)
+		slog.Warn("ACB maintenance detected; backoff for 60s")
 		return nil
 	}
 
@@ -245,52 +282,48 @@ func (m *Monitor) pollOnce(ctx context.Context, expected *syncRequest) error {
 	poll.RowsSeen = len(txns)
 	poll.Pages = 1
 
-	// Ingest transactions and emit credit events
-	for _, txn := range txns {
-		semanticKey := fmt.Sprintf("ACB:%s", txn.Number)
-		canonicalHash := fmt.Sprintf("%s:%d:%d:%s", txn.Number, txn.Credit, txn.Debit, txn.TransactionAt)
-
-		ingestRes, err := m.store.IngestTransaction(ctx, storage.TransactionInput{
-			ConnectionID:  conn.ID,
-			SemanticKey:   semanticKey,
-			CanonicalHash: canonicalHash,
+	// Ingest transactions and emit credit events atomically in a single batch transaction
+	batchItems := make([]storage.BatchTransactionItem, len(txns))
+	for i, txn := range txns {
+		batchItems[i] = storage.BatchTransactionItem{
+			Number:        txn.Number,
+			Credit:        txn.Credit,
+			Debit:         txn.Debit,
+			Balance:       txn.Balance,
 			TransactionAt: txn.TransactionAt,
 			EffectiveAt:   txn.EffectiveDate,
-			Debit:         txn.Debit,
-			Credit:        txn.Credit,
-			Balance:       txn.Balance,
-			Description:   []byte(txn.Description),
-			ParserVersion: "v1",
-		})
-		if err != nil {
-			slog.Error("failed to ingest transaction", "error", err, "key", semanticKey)
-			continue
-		}
-
-		// Emit event for new credit transactions
-		if ingestRes.Inserted && txn.Credit > 0 {
-			eventData := map[string]any{
-				"bank":              "ACB",
-				"accountMasked":     conn.AccountMasked,
-				"transactionNumber": txn.Number,
-				"credit":            fmt.Sprintf("%d", txn.Credit),
-				"debit":             fmt.Sprintf("%d", txn.Debit),
-				"currency":          "VND",
-				"transactionDate":   txn.TransactionAt,
-				"description":       txn.Description,
-				"detectedAt":        time.Now().UTC().Format(time.RFC3339),
-			}
-			if txn.Balance != nil {
-				eventData["balance"] = fmt.Sprintf("%d", *txn.Balance)
-			}
-
-			_, _ = m.store.EmitTransactionEvent(ctx, ingestRes.TransactionID, "bank.transaction.credit", "acb", semanticKey, eventData)
+			Description:   txn.Description,
 		}
 	}
 
+	startIngest := time.Now()
+	batchRes, err := m.store.IngestTransactionsBatch(ctx, conn.ID, conn.Generation, conn.AccountMasked, batchItems, false)
+	telemetry.Default.RecordIngest(time.Since(startIngest))
+	telemetry.Default.SetLastACBPollAt(time.Now())
+	if err != nil {
+		if errors.Is(err, storage.ErrGenerationFenceMismatch) {
+			slog.Warn("ingest rejected by generation fence", "error", err)
+			poll.Status = "FAILED"
+			poll.Error = err.Error()
+			_ = m.store.FinishPoll(ctx, poll)
+			return err
+		}
+		slog.Error("batch ingest failed", "error", err)
+		poll.Status = "FAILED"
+		poll.Error = err.Error()
+		_ = m.store.FinishPoll(ctx, poll)
+		return err
+	}
+
 	poll.Status = "SUCCEEDED"
+	m.backoffUntil = time.Time{}
+	telemetry.Default.SetCircuitBreaker(false)
 	if err := m.store.FinishPoll(ctx, poll); err != nil {
 		return err
+	}
+
+	if len(batchRes.NewEvents) > 0 && m.onNewEvents != nil {
+		m.onNewEvents(batchRes.NewEvents)
 	}
 	if m.sessions != nil {
 		if err := m.sessions.Persist(ctx, conn.ID, conn.Generation); err != nil {

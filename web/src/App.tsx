@@ -18,6 +18,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { api, isTerminalAuthError } from './api';
+import { useRealtime } from './useRealtime';
 
 type Status = {
   service: string;
@@ -89,6 +90,17 @@ type AuditLog = {
   createdAt: string;
 };
 
+type RealtimeMetricsReport = {
+  connectedClients: number;
+  circuitBreakerOpen: boolean;
+  lastAcbPollAt?: string;
+  p95IngestMs: number;
+  p95SseMs: number;
+  p95WebhookMs: number;
+  totalIngested: number;
+  totalWebhooksSent: number;
+};
+
 type PageResponse<T> = { items: T[]; nextCursor?: string };
 
 const nav = ['Tổng quan', 'Kết nối ACB', 'Giao dịch', 'Webhooks', 'Phân phối', 'Polling', 'Chẩn đoán', 'Audit'];
@@ -157,6 +169,7 @@ export default function App() {
   const [deliveries, setDeliveries] = useState<Delivery[]>([]);
   const [pollRuns, setPollRuns] = useState<PollRun[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [realtimeMetrics, setRealtimeMetrics] = useState<RealtimeMetricsReport | null>(null);
   const [nextCursors, setNextCursors] = useState<Record<string, string | undefined>>({});
   const [pageLoading, setPageLoading] = useState(false);
 
@@ -295,6 +308,15 @@ export default function App() {
       } catch {
         // ignore
       }
+    } else if (active === 'Chẩn đoán') {
+      try {
+        const mRes = await api<RealtimeMetricsReport>('/realtime/status');
+        if (seq === loadSeq.current) {
+          setRealtimeMetrics(mRes);
+        }
+      } catch {
+        // ignore
+      }
     }
   };
 
@@ -320,10 +342,33 @@ export default function App() {
     }
   };
 
+  const realtime = useRealtime({
+    onEvent: (type, raw) => {
+      const data = raw as Record<string, unknown>;
+      if (type === 'bank.transaction.credit') {
+        const newTx: Transaction = {
+          id: data.transactionId ? String(data.transactionId) : `txn_${data.transactionNumber ?? Date.now()}`,
+          semanticKey: `ACB:${data.transactionNumber ?? ''}`,
+          transactionDate: String(data.transactionDate ?? ''),
+          effectiveDate: String(data.transactionDate ?? ''),
+          debit: Number(data.debit ?? 0),
+          credit: Number(data.credit ?? 0),
+          balance: data.balance !== undefined ? Number(data.balance) : undefined,
+          description: String(data.description ?? ''),
+          firstSeenAt: String(data.detectedAt ?? new Date().toISOString()),
+        };
+        setTransactions((current) => current.some((item) => item.id === newTx.id || item.semanticKey === newTx.semanticKey)
+          ? current
+          : [newTx, ...current]);
+      } else {
+        void load();
+      }
+    },
+    onResetState: () => void load(),
+  });
+
   useEffect(() => {
     void load();
-    const timer = window.setInterval(() => void load(), 5_000);
-    return () => window.clearInterval(timer);
   }, [active]);
 
   useEffect(() => {
@@ -390,9 +435,11 @@ export default function App() {
   }, [activeAttempt?.id]);
 
   const mutate = async (path: string, body?: unknown) => {
+    const csrfResponse = await api<{ token: string }>('/csrf');
+    setCsrf(csrfResponse.token);
     const res = await api(path, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfResponse.token },
       body: body ? JSON.stringify(body) : '{}',
     });
     await load();
@@ -1194,6 +1241,34 @@ export default function App() {
               </strong>
               <div style={{ fontSize: '0.8rem', color: '#8da1bd', marginTop: 4 }}>Durable transactional outbox</div>
             </div>
+            <div style={{ padding: 16, border: '1px solid #263750', borderRadius: 8, background: '#0a1424' }}>
+              <div style={{ color: '#7ec4ff', fontSize: '0.85rem' }}>Độ trễ Ingest p95 (SLO &lt; 20ms)</div>
+              <strong style={{ fontSize: '1.2rem', display: 'block', marginTop: 6 }}>
+                {realtimeMetrics?.totalIngested ? `${realtimeMetrics.p95IngestMs.toFixed(1)} ms` : 'Chưa có mẫu'}
+              </strong>
+              <div style={{ fontSize: '0.8rem', color: '#8da1bd', marginTop: 4 }}>Batch Atomic DB Commit</div>
+            </div>
+            <div style={{ padding: 16, border: '1px solid #263750', borderRadius: 8, background: '#0a1424' }}>
+              <div style={{ color: '#7ec4ff', fontSize: '0.85rem' }}>Độ trễ SSE Browser p95 (SLO &lt; 50ms)</div>
+              <strong style={{ fontSize: '1.2rem', display: 'block', marginTop: 6 }}>
+                {realtimeMetrics?.p95SseMs ? `${realtimeMetrics.p95SseMs.toFixed(1)} ms` : 'Chưa có mẫu'}
+              </strong>
+              <div style={{ fontSize: '0.8rem', color: '#8da1bd', marginTop: 4 }}>{realtimeMetrics?.connectedClients ?? 0} client kết nối trực tiếp</div>
+            </div>
+            <div style={{ padding: 16, border: '1px solid #263750', borderRadius: 8, background: '#0a1424' }}>
+              <div style={{ color: '#7ec4ff', fontSize: '0.85rem' }}>Độ trễ Webhook p95 (SLO &lt; 100ms)</div>
+              <strong style={{ fontSize: '1.2rem', display: 'block', marginTop: 6 }}>
+                {realtimeMetrics?.totalWebhooksSent ? `${realtimeMetrics.p95WebhookMs.toFixed(1)} ms` : 'Chưa có mẫu'}
+              </strong>
+              <div style={{ fontSize: '0.8rem', color: '#8da1bd', marginTop: 4 }}>Postcommit Coalesced Wake</div>
+            </div>
+            <div style={{ padding: 16, border: '1px solid #263750', borderRadius: 8, background: '#0a1424' }}>
+              <div style={{ color: '#7ec4ff', fontSize: '0.85rem' }}>Upstream Circuit Breaker</div>
+              <strong style={{ fontSize: '1.2rem', display: 'block', marginTop: 6, color: realtimeMetrics?.circuitBreakerOpen ? '#f59e0b' : '#10b981' }}>
+                {realtimeMetrics?.circuitBreakerOpen ? 'ĐANG BACKOFF' : 'HOẠT ĐỘNG TỐT'}
+              </strong>
+              <div style={{ fontSize: '0.8rem', color: '#8da1bd', marginTop: 4 }}>Tự động chống Rate-Limit 429</div>
+            </div>
           </div>
         </section>
       );
@@ -1276,7 +1351,17 @@ export default function App() {
           <h1>ACB Transaction Webhook</h1>
           <p className="muted">Cổng theo dõi giao dịch ACB độc lập và phân phối webhook bảo mật.</p>
         </div>
-        <div className="badge">{status?.service ?? 'UNREACHABLE'}</div>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <div className="badge realtime-badge">
+            <span className={`dot ${realtime.status.toLowerCase()}`} />
+            {realtime.status === 'CONNECTED'
+              ? 'Realtime: Đã kết nối'
+              : realtime.status === 'RECONNECTING'
+              ? 'Realtime: Đang kết nối lại'
+              : 'Realtime: Đang kết nối'}
+          </div>
+          <div className="badge">{status?.service ?? 'UNREACHABLE'}</div>
+        </div>
       </header>
 
       {notice && (

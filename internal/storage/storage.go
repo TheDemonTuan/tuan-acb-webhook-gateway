@@ -7,12 +7,23 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
+	"github.com/thedemontuan/acb-transaction-webhook/internal/security"
 	_ "modernc.org/sqlite"
 )
 
-type Store struct{ db *sql.DB }
+type Store struct {
+	db      *sql.DB
+	keyring *security.Keyring
+	writeMu sync.Mutex
+}
+
+func (s *Store) WithKeyring(k *security.Keyring) *Store {
+	s.keyring = k
+	return s
+}
 
 func Open(ctx context.Context, path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
@@ -63,6 +74,9 @@ func (s *Store) Migrate(ctx context.Context) error {
 	})
 }
 func (s *Store) withTx(ctx context.Context, fn func(*sql.Tx) error) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{})
 	if err != nil {
 		return err
@@ -109,4 +123,19 @@ CREATE INDEX IF NOT EXISTS idx_transactions_page ON transactions(first_seen_at D
 CREATE INDEX IF NOT EXISTS idx_deliveries_page ON deliveries(created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_poll_runs_page ON poll_runs(started_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_page ON audit_logs(created_at DESC, id DESC);
+`}, {4, "2026-09-12-event-journal-and-leasing", `
+CREATE TABLE IF NOT EXISTS event_journal (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    epoch TEXT NOT NULL DEFAULT 'ep1',
+    event_type TEXT NOT NULL,
+    aggregate_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_event_journal_seq ON event_journal(seq);
+CREATE INDEX IF NOT EXISTS idx_event_journal_epoch_seq ON event_journal(epoch, seq);
+CREATE INDEX IF NOT EXISTS idx_event_journal_created ON event_journal(created_at);
+CREATE INDEX IF NOT EXISTS idx_deliveries_claim_order ON deliveries(status, next_attempt_at, id);
+CREATE INDEX IF NOT EXISTS idx_deliveries_claim_lease ON deliveries(endpoint_id, status, next_attempt_at, lease_until);
+ALTER TABLE endpoint_secrets ADD COLUMN encoding_version TEXT NOT NULL DEFAULT 'legacy-hex';
 `}}
