@@ -85,7 +85,7 @@ func TestBootstrapOverridesCapturedMonthFilter(t *testing.T) {
 	if posted.Get("dse_nextEventName") != "byDate" || posted.Get("activeDatetimeYN") != "N" {
 		t.Fatalf("wrong search mode: %v", posted)
 	}
-	if posted.Get("FromDate") != "11/09/2026" || posted.Get("ToDate") != "12/09/2026" {
+	if posted.Get("FromDate") != "12/09/2026" || posted.Get("ToDate") != "12/09/2026" {
 		t.Fatalf("wrong upstream range: %v", posted)
 	}
 	if posted.Has("MonthCurr") || posted.Has("YearCurr") || posted.Has("activeDatetimeByMonth") {

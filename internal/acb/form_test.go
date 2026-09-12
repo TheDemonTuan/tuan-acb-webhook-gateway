@@ -26,7 +26,7 @@ func TestPrepareHistoryFieldsOverridesStaleMonthFilter(t *testing.T) {
 	if fields["dse_nextEventName"] != "byDate" || fields["activeDatetimeYN"] != "N" {
 		t.Fatalf("wrong search mode: %#v", fields)
 	}
-	if fields["FromDate"] != "11/09/2026" || fields["ToDate"] != "12/09/2026" {
+	if fields["FromDate"] != "12/09/2026" || fields["ToDate"] != "12/09/2026" {
 		t.Fatalf("wrong date range: %#v", fields)
 	}
 	if fields["CheckRef"] != "false" || fields["CheckDoiUng"] != "false" {
@@ -48,7 +48,7 @@ func TestPrepareHistoryFieldsUsesVietnamCalendarAcrossUTCDate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fields["FromDate"] != "31/12/2026" || fields["ToDate"] != "01/01/2027" {
+	if fields["FromDate"] != "01/01/2027" || fields["ToDate"] != "01/01/2027" {
 		t.Fatalf("wrong Vietnam date range: %#v", fields)
 	}
 }

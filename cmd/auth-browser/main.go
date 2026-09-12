@@ -231,12 +231,17 @@ func (s *server) start(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	if s.session != nil {
-		if terminalStatus(s.session.Status) {
+		if terminalStatus(s.session.Status) || time.Now().UTC().After(s.session.ExpiresAt) {
 			oldSession := s.session
 			s.session = nil
 			s.mu.Unlock()
 			s.reapSession(oldSession, 5*time.Second)
 			s.mu.Lock()
+		} else if s.session.AttemptID == input.AttemptID {
+			resp := sessionResponse(s.session)
+			s.mu.Unlock()
+			writeJSON(w, http.StatusOK, resp)
+			return
 		} else {
 			s.mu.Unlock()
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "an ACB browser session is already active"})

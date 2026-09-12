@@ -43,7 +43,7 @@ func PrepareHistoryFields(fields map[string]string, now time.Time, location *tim
 		return nil, errors.New("ACB history timezone is required")
 	}
 	today := now.In(location)
-	fromDate := today.AddDate(0, 0, -1).Format(historyDateLayout)
+	fromDate := today.Format(historyDateLayout)
 	toDate := today.Format(historyDateLayout)
 	if fields != nil && fields["_explicitRange"] == "true" && fields["FromDate"] != "" && fields["ToDate"] != "" {
 		fromDate = fields["FromDate"]

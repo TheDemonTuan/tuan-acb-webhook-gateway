@@ -129,7 +129,7 @@ func (c *Client) sessionResponse(request *http.Request, expected int, operation 
 		return Session{}, fmt.Errorf("%s ACB browser: %w", operation, err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode != expected {
+	if response.StatusCode != expected && !(expected == http.StatusCreated && response.StatusCode == http.StatusOK) {
 		return Session{}, responseError(response)
 	}
 	var session Session

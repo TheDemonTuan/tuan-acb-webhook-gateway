@@ -25,6 +25,8 @@ export const BankConnectionPage: React.FC = () => {
     startAuth,
     cancelAuth,
     sync,
+    reloadScreen,
+    screenKey,
     isStartingAuth,
     isCancelling,
     isSyncing,
@@ -205,21 +207,33 @@ export const BankConnectionPage: React.FC = () => {
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 text-xs font-medium text-emerald-700">
                 <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                <span>Trình duyệt ACB đã sẵn sàng.</span>
+                <span>Trình duyệt ACB đã sẵn sàng. Bạn có thể thao tác qua VNC bên dưới.</span>
               </div>
-              <button
-                type="button"
-                onClick={cancelAuth}
-                disabled={isCancelling}
-                className="px-3 py-1.5 rounded-lg text-xs font-medium bg-rose-50 text-rose-700 hover:bg-rose-100 transition cursor-pointer"
-              >
-                Hủy phiên đăng nhập
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={reloadScreen}
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium bg-stone-100 text-stone-700 hover:bg-stone-200 transition cursor-pointer inline-flex items-center gap-1.5"
+                  title="Tải lại kết nối màn hình VNC nếu bị ngắt kết nối"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Tải lại VNC</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={cancelAuth}
+                  disabled={isCancelling}
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium bg-rose-50 text-rose-700 hover:bg-rose-100 transition cursor-pointer"
+                >
+                  Hủy phiên đăng nhập
+                </button>
+              </div>
             </div>
 
             {activeAttempt.screenUrl && (
               <div className="rounded-xl overflow-hidden border border-stone-200 bg-white aspect-video max-h-[500px] w-full">
                 <iframe
+                  key={screenKey}
                   title="Đăng nhập ACB"
                   src={activeAttempt.screenUrl}
                   className="w-full h-full border-0"

@@ -19,11 +19,13 @@ var (
 )
 
 type SynthesizeRequest struct {
-	Text      string `json:"text"`
-	Voice     string `json:"voice,omitempty"`
-	Rate      string `json:"rate,omitempty"`
-	Pitch     string `json:"pitch,omitempty"`
-	Cacheable bool   `json:"cacheable"`
+	Text          string `json:"text"`
+	Voice         string `json:"voice,omitempty"`
+	Rate          string `json:"rate,omitempty"`
+	Pitch         string `json:"pitch,omitempty"`
+	Cacheable     bool   `json:"cacheable"`
+	AllowFallback *bool  `json:"allow_fallback,omitempty"`
+	ProviderMode  string `json:"provider_mode,omitempty"`
 }
 
 type SynthesizeResult struct {

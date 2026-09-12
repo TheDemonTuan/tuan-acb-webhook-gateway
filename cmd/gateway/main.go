@@ -80,6 +80,9 @@ func main() {
 		os.Exit(1)
 	}
 	defer store.Close()
+	if n, err := store.ExpireStaleAuthAttempts(ctx); err == nil && n > 0 {
+		logger.Info("reaped stale auth attempts on startup", "count", n)
+	}
 
 	if *migrateOnly {
 		logger.Info("database migrations applied successfully", "database", cfg.DatabasePath)
@@ -209,6 +212,18 @@ func main() {
 
 	server := httpapi.New(cfg, store).WithSyncRequester(bankMonitor).WithHistoryEnsurer(bankMonitor).WithMonitorNotifier(bankMonitor).WithEventHub(hub)
 	go server.RunJournalRetention(ctx, 24*time.Hour)
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				_, _ = store.ExpireStaleAuthAttempts(ctx)
+			}
+		}
+	}()
 	if keyring != nil {
 		verifierClient, verifierErr := acb.NewClient("https://online.acb.com.vn", nil)
 		if verifierErr != nil {

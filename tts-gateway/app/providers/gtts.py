@@ -26,7 +26,14 @@ class GTTSProvider:
             tts.write_to_fp(fp)
             return fp.getvalue()
 
-        data = await asyncio.to_thread(_run_gtts)
+        try:
+            data = await asyncio.wait_for(
+                asyncio.to_thread(_run_gtts),
+                timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            raise TimeoutError(f"GTTS_TIMEOUT: synthesis timed out after {timeout_seconds}s")
+
         if not data:
             raise ValueError("GTTS_NO_AUDIO: empty audio received")
         return data

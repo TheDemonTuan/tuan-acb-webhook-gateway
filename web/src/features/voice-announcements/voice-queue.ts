@@ -45,6 +45,10 @@ export class VoiceQueue {
 
     try {
       await this.engine.speak(message);
+      if (this.operationId !== currentOp) {
+        message.onError?.(new Error('VOICE_CANCELLED'));
+        return;
+      }
       message.onSuccess?.();
     } catch (err) {
       message.onError?.(err);

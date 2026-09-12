@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import {
   cancelAuthSession,
   checkAuthStatus,
+  fetchCurrentAuthSession,
   sendConnectionAction,
   startAuthSession,
 } from '../../shared/api/queries';
@@ -17,6 +18,8 @@ export interface BankConnectionContextValue {
   startAuth: () => Promise<void>;
   cancelAuth: () => Promise<void>;
   sync: () => Promise<void>;
+  reloadScreen: () => void;
+  screenKey: number;
   isStartingAuth: boolean;
   isCancelling: boolean;
   isSyncing: boolean;
@@ -27,10 +30,35 @@ const BankConnectionContext = createContext<BankConnectionContextValue | null>(n
 export const BankConnectionProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const queryClient = useQueryClient();
   const [activeAttempt, setActiveAttempt] = useState<{ id: string; screenUrl: string } | null>(null);
+  const [screenKey, setScreenKey] = useState(0);
   const [globalNotice, setGlobalNotice] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
   const [isStartingAuth, setIsStartingAuth] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+
+  const reloadScreen = () => {
+    setScreenKey((prev) => prev + 1);
+  };
+
+  // Recover active auth session on mount across reloads
+  useEffect(() => {
+    let cancelled = false;
+    fetchCurrentAuthSession()
+      .then((res) => {
+        if (!cancelled && res?.attempt) {
+          setActiveAttempt({
+            id: res.attempt.attemptId,
+            screenUrl: res.attempt.screenUrl,
+          });
+        }
+      })
+      .catch(() => {
+        // Silently ignore if not configured or unauthenticated
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const startAuth = async () => {
     setIsStartingAuth(true);
@@ -174,11 +202,13 @@ export const BankConnectionProvider: React.FC<{ children: React.ReactNode }> = (
       startAuth,
       cancelAuth,
       sync,
+      reloadScreen,
+      screenKey,
       isStartingAuth,
       isCancelling,
       isSyncing,
     }),
-    [activeAttempt, globalNotice, isStartingAuth, isCancelling, isSyncing]
+    [activeAttempt, globalNotice, isStartingAuth, isCancelling, isSyncing, screenKey]
   );
 
   return (

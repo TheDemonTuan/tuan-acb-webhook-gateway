@@ -38,6 +38,11 @@ cache = TTSCache(
 def verify_token(x_internal_tts_token: Optional[str]):
     expected = config.get_token()
     if not expected:
+        if config.require_auth:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Internal TTS token required by configuration but not found",
+            )
         return
     if not x_internal_tts_token or not secrets.compare_digest(x_internal_tts_token, expected):
         raise HTTPException(
@@ -92,8 +97,10 @@ async def synthesize(
     rate = req.rate or "+0%"
     pitch = req.pitch or "+0Hz"
     is_cacheable = bool(req.cacheable)
+    provider_mode = req.provider_mode or "ONLINE_AUTO"
+    allow_fallback = bool(req.allow_fallback) and provider_mode == "ONLINE_AUTO"
 
-    cache_key = cache.make_key(text, voice, rate, pitch)
+    cache_key = cache.make_key(text, voice, rate, pitch, allow_fallback, provider_mode)
 
     if is_cacheable:
         cached = await cache.get(cache_key)
@@ -123,10 +130,20 @@ async def synthesize(
             except Exception as e:
                 logger.warning(f"Edge TTS synthesis failed, recording circuit failure: {e}")
                 edge_circuit.record_failure()
+                if not allow_fallback or provider_mode == "EDGE_ONLY":
+                    raise HTTPException(
+                        status_code=status.HTTP_502_BAD_GATEWAY,
+                        detail="TTS_EDGE_ONLY_FAILED: Edge TTS failed and fallback is disabled",
+                    )
         else:
-            logger.info("Edge circuit is OPEN, bypassing Edge directly to gTTS")
+            logger.info("Edge circuit is OPEN")
+            if not allow_fallback or provider_mode == "EDGE_ONLY":
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="TTS_EDGE_CIRCUIT_OPEN: Edge TTS circuit open and fallback is disabled",
+                )
 
-        # 2. Fallback to gTTS
+        # 2. Fallback to gTTS if permitted
         try:
             logger.info("Synthesizing using gTTS fallback")
             audio = await gtts_provider.synthesize(

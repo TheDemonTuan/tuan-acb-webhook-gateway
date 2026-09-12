@@ -31,6 +31,7 @@ services:
       AUTH_BROWSER_URL: http://auth-browser:8181
       AUTH_BROWSER_VNC_URL: http://auth-browser:6080
       TTS_GATEWAY_URL: http://tts-gateway:8081
+      TTS_INTERNAL_TOKEN_FILE: /run/secrets/tts_internal_token
     expose:
       - "8090"
     networks:
@@ -41,6 +42,7 @@ services:
     volumes:
       - gateway_data:/data:rw
       - ./secrets/app_master_key:/run/secrets/app_master_key:ro
+      - ./secrets/tts_internal_token:/run/secrets/tts_internal_token:ro
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,size=64m
     healthcheck:
@@ -102,10 +104,14 @@ services:
       TTS_HOST: 0.0.0.0
       TTS_PORT: 8081
       TZ: Asia/Ho_Chi_Minh
+      TTS_INTERNAL_TOKEN_FILE: /run/secrets/tts_internal_token
+      TTS_REQUIRE_AUTH: "true"
     expose:
       - "8081"
     networks:
       default:
+    volumes:
+      - ./secrets/tts_internal_token:/run/secrets/tts_internal_token:ro
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,size=32m
     healthcheck:

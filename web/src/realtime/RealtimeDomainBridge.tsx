@@ -25,7 +25,8 @@ export const RealtimeDomainBridge: React.FC = () => {
         // Trigger voice announcement
         handleCreditEvent(envelope);
 
-        // Optimistically prepend transaction to cache
+        // Optimistically prepend transaction to matching caches (unfiltered or credit-only, matching date bounds)
+        const txDay = data.transactionDay || (data.transactionDate ? data.transactionDate.substring(0, 10) : '');
         const newTx: Transaction = {
           id: data.transactionId,
           semanticKey: `ACB:${data.transactionNumber}`,
@@ -40,9 +41,18 @@ export const RealtimeDomainBridge: React.FC = () => {
           source: data.source || 'REALTIME',
         };
 
-        // Optimistically prepend transaction to matching caches (unfiltered or credit-only)
         queryClient.setQueriesData<PageResponse<Transaction>>(
-          { queryKey: ['transactions'], exact: false },
+          {
+            predicate: (query) => {
+              const [key, params] = query.queryKey as [string, Record<string, any> | undefined];
+              if (key !== 'transactions') return false;
+              if (params?.direction && params.direction === 'debit') return false;
+              if (params?.from && txDay && txDay < String(params.from)) return false;
+              if (params?.to && txDay && txDay > String(params.to)) return false;
+              if (params?.query || params?.q) return false;
+              return true;
+            },
+          },
           (old) => {
             if (!old) {
               return { items: [newTx] };
@@ -64,25 +74,6 @@ export const RealtimeDomainBridge: React.FC = () => {
             };
           }
         );
-
-        // For queries with complex search/debit filters, invalidate so they stay consistent
-        queryClient.invalidateQueries({
-          predicate: (query) => {
-            const [key, params] = query.queryKey as [
-              string,
-              Record<string, unknown> | undefined
-            ];
-            return (
-              key === 'transactions' &&
-              Boolean(
-                params?.query ||
-                  params?.q ||
-                  (params?.direction && params.direction !== 'all') ||
-                  (params?.type && params.type !== 'all')
-              )
-            );
-          },
-        });
 
         // Invalidate status & overview metrics
         queryClient.invalidateQueries({ queryKey: queryKeys.status });

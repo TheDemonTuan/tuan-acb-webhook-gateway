@@ -4,8 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 )
+
+var ErrAuthAttemptActive = errors.New("an auth attempt is already active")
 
 type AuthAttempt struct {
 	ID           string `json:"id"`
@@ -14,17 +17,112 @@ type AuthAttempt struct {
 	Status       string `json:"status"`
 	ExpiresAt    string `json:"expiresAt"`
 	CreatedAt    string `json:"createdAt"`
+	OwnerSubject string `json:"ownerSubject,omitempty"`
+}
+
+// ExpireStaleAuthAttempts marks any active auth attempts whose TTL has elapsed as EXPIRED,
+// and resets connection state to AUTH_REQUIRED if it was still in AUTH_STARTING for that generation.
+func (s *Store) ExpireStaleAuthAttempts(ctx context.Context) (int64, error) {
+	nowStr := time.Now().UTC().Format(time.RFC3339Nano)
+	var expiredCount int64
+	err := s.withTx(ctx, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `
+			SELECT id, connection_id, generation FROM auth_attempts
+			WHERE status IN ('STARTING','IN_PROGRESS','EXPORTING','VERIFYING') AND expires_at <= ?
+		`, nowStr)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		type staleAttempt struct {
+			id           string
+			connectionID string
+			generation   int64
+		}
+		var stale []staleAttempt
+		for rows.Next() {
+			var it staleAttempt
+			if err := rows.Scan(&it.id, &it.connectionID, &it.generation); err != nil {
+				return err
+			}
+			stale = append(stale, it)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+
+		for _, it := range stale {
+			_, err = tx.ExecContext(ctx, `UPDATE auth_attempts SET status='EXPIRED', finished_at=? WHERE id=?`, now(), it.id)
+			if err != nil {
+				return err
+			}
+			_, _ = tx.ExecContext(ctx, `
+				UPDATE connections SET state='AUTH_REQUIRED', generation=generation+1, updated_at=?
+				WHERE id=? AND generation=? AND state='AUTH_STARTING'
+			`, now(), it.connectionID, it.generation)
+			expiredCount++
+		}
+		return nil
+	})
+	return expiredCount, err
+}
+
+// ActiveAuthAttemptForOwner returns the current non-expired active auth attempt for the connection, if any.
+func (s *Store) ActiveAuthAttemptForOwner(ctx context.Context, owner string) (AuthAttempt, bool, error) {
+	connection, err := s.Connection(ctx)
+	if err != nil {
+		return AuthAttempt{}, false, err
+	}
+	nowStr := time.Now().UTC().Format(time.RFC3339Nano)
+	var attempt AuthAttempt
+	err = s.db.QueryRowContext(ctx, `
+		SELECT id, connection_id, generation, COALESCE(owner_subject, ''), status, expires_at, created_at
+		FROM auth_attempts
+		WHERE connection_id=? AND status IN ('STARTING','IN_PROGRESS','EXPORTING','VERIFYING')
+		  AND owner_subject=? AND expires_at>?
+		ORDER BY created_at DESC LIMIT 1
+	`, connection.ID, owner, nowStr).Scan(
+		&attempt.ID, &attempt.ConnectionID, &attempt.Generation,
+		&attempt.OwnerSubject, &attempt.Status, &attempt.ExpiresAt, &attempt.CreatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return AuthAttempt{}, false, nil
+		}
+		return AuthAttempt{}, false, err
+	}
+	return attempt, true, nil
 }
 
 func (s *Store) StartAuthAttempt(ctx context.Context, owner string, ttl time.Duration) (AuthAttempt, error) {
 	if ttl <= 0 {
 		return AuthAttempt{}, errors.New("auth attempt TTL must be positive")
 	}
+	// Expire stale attempts first to prevent stale locks
+	_, _ = s.ExpireStaleAuthAttempts(ctx)
+
 	connection, err := s.Connection(ctx)
 	if err != nil {
 		return AuthAttempt{}, err
 	}
-	attempt := AuthAttempt{ID: id("auth"), ConnectionID: connection.ID, Generation: connection.Generation + 1, Status: "STARTING", ExpiresAt: time.Now().UTC().Add(ttl).Format(time.RFC3339Nano), CreatedAt: now()}
+
+	// Check if an active attempt already exists
+	hasActive, err := s.HasActiveAuthAttempt(ctx, connection.ID)
+	if err == nil && hasActive {
+		return AuthAttempt{}, ErrAuthAttemptActive
+	}
+
+	attempt := AuthAttempt{
+		ID:           id("auth"),
+		ConnectionID: connection.ID,
+		Generation:   connection.Generation + 1,
+		Status:       "STARTING",
+		ExpiresAt:    time.Now().UTC().Add(ttl).Format(time.RFC3339Nano),
+		CreatedAt:    now(),
+		OwnerSubject: owner,
+	}
+
 	err = s.withTx(ctx, func(tx *sql.Tx) error {
 		result, err := tx.ExecContext(ctx, `UPDATE connections SET state='AUTH_STARTING',generation=?,updated_at=? WHERE id=? AND generation=?`, attempt.Generation, now(), connection.ID, connection.Generation)
 		if err != nil {
@@ -35,7 +133,13 @@ func (s *Store) StartAuthAttempt(ctx context.Context, owner string, ttl time.Dur
 			return sql.ErrNoRows
 		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO auth_attempts(id,connection_id,generation,owner_subject,status,expires_at,created_at) VALUES(?,?,?,?,?,?,?)`, attempt.ID, attempt.ConnectionID, attempt.Generation, owner, attempt.Status, attempt.ExpiresAt, attempt.CreatedAt)
-		return err
+		if err != nil {
+			if strings.Contains(err.Error(), "UNIQUE constraint failed") || strings.Contains(err.Error(), "one_active_auth_attempt") {
+				return ErrAuthAttemptActive
+			}
+			return err
+		}
+		return nil
 	})
 	return attempt, err
 }
@@ -66,7 +170,7 @@ func (s *Store) FinishAuthAttempt(ctx context.Context, attemptID, status string)
 	return s.withTx(ctx, func(tx *sql.Tx) error {
 		var connectionID string
 		var generation int64
-		err := tx.QueryRowContext(ctx, `SELECT connection_id,generation FROM auth_attempts WHERE id=? AND status IN ('STARTING','IN_PROGRESS')`, attemptID).Scan(&connectionID, &generation)
+		err := tx.QueryRowContext(ctx, `SELECT connection_id,generation FROM auth_attempts WHERE id=? AND status IN ('STARTING','IN_PROGRESS','EXPORTING','VERIFYING')`, attemptID).Scan(&connectionID, &generation)
 		if err != nil {
 			return err
 		}
@@ -83,12 +187,12 @@ func (s *Store) FinishAuthAttempt(ctx context.Context, attemptID, status string)
 }
 
 // HasActiveAuthAttempt checks whether an interactive browser authentication attempt
-// is currently active and unexpired for the specified connection.
+// is currently pending, in progress, or exporting.
 func (s *Store) HasActiveAuthAttempt(ctx context.Context, connectionID string) (bool, error) {
 	var count int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT count(*) FROM auth_attempts
 		WHERE connection_id = ? AND status IN ('STARTING', 'IN_PROGRESS', 'EXPORTING', 'VERIFYING') AND expires_at > ?
-	`, connectionID, now()).Scan(&count)
+	`, connectionID, time.Now().UTC().Format(time.RFC3339Nano)).Scan(&count)
 	return count > 0, err
 }

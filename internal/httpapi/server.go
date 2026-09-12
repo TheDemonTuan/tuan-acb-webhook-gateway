@@ -132,6 +132,7 @@ func New(cfg config.Config, store *storage.Store) *Server {
 		api.With(s.auth.Require(auth.Owner)).Post("/connection/configure", s.configure)
 		api.With(s.auth.Require(auth.Owner, auth.Operator)).Post("/connection/{action:pause|resume|sync}", s.connectionAction)
 		api.With(s.auth.Require(auth.Owner)).Post("/connection/auth/start", s.startAuth)
+		api.With(s.auth.Require(auth.Owner)).Get("/connection/auth/current", s.currentAuth)
 		api.With(s.auth.Require(auth.Owner)).Post("/connection/auth/cancel", s.cancelAuth)
 		api.With(s.auth.Require(auth.Owner)).Get("/connection/auth/{attemptID}/status", s.authStatus)
 		api.With(s.auth.Require(auth.Owner)).Handle("/connection/auth/{attemptID}/screen/*", http.HandlerFunc(s.browserScreen))
@@ -293,10 +294,82 @@ func (s *Server) connectionAction(w http.ResponseWriter, r *http.Request) {
 	s.publishStateEvent("connection.changed", c.ID, c)
 	writeJSON(w, http.StatusAccepted, c)
 }
+func isTerminalAuthStatus(status string) bool {
+	return status == "FAILED" || status == "EXPIRED" || status == "CANCELLED" || status == "VERIFIED"
+}
+
+func (s *Server) currentAuth(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	identity, _ := auth.FromContext(r.Context())
+	_, _ = s.store.ExpireStaleAuthAttempts(r.Context())
+
+	activeAttempt, found, err := s.store.ActiveAuthAttemptForOwner(r.Context(), identity.Email)
+	if err != nil || !found {
+		writeJSON(w, http.StatusOK, map[string]any{"attempt": nil})
+		return
+	}
+
+	session, err := s.browser.Status(r.Context(), activeAttempt.ID)
+	if err != nil {
+		if authbrowser.IsHTTPStatus(err, http.StatusNotFound) {
+			_ = s.store.FinishAuthAttempt(r.Context(), activeAttempt.ID, "FAILED")
+			writeJSON(w, http.StatusOK, map[string]any{"attempt": nil})
+			return
+		}
+		screenURL := "/api/v1/connection/auth/" + activeAttempt.ID + "/screen/vnc.html?autoconnect=true&resize=remote&path=api/v1/connection/auth/" + activeAttempt.ID + "/screen/websockify"
+		writeJSON(w, http.StatusOK, map[string]any{
+			"attempt": map[string]any{
+				"attemptId":          activeAttempt.ID,
+				"status":             activeAttempt.Status,
+				"screenUrl":          screenURL,
+				"expiresAt":          activeAttempt.ExpiresAt,
+				"browserUnavailable": true,
+			},
+		})
+		return
+	}
+
+	if isTerminalAuthStatus(session.Status) {
+		_ = s.store.FinishAuthAttempt(r.Context(), activeAttempt.ID, session.Status)
+		writeJSON(w, http.StatusOK, map[string]any{"attempt": nil})
+		return
+	}
+
+	screenURL := "/api/v1/connection/auth/" + activeAttempt.ID + "/screen/vnc.html?autoconnect=true&resize=remote&path=api/v1/connection/auth/" + activeAttempt.ID + "/screen/websockify"
+	writeJSON(w, http.StatusOK, map[string]any{
+		"attempt": map[string]any{
+			"attemptId": activeAttempt.ID,
+			"status":    activeAttempt.Status,
+			"screenUrl": screenURL,
+			"expiresAt": activeAttempt.ExpiresAt,
+		},
+	})
+}
+
 func (s *Server) startAuth(w http.ResponseWriter, r *http.Request) {
 	identity, _ := auth.FromContext(r.Context())
+	_, _ = s.store.ExpireStaleAuthAttempts(r.Context())
+
+	// If there is already an active attempt for this owner, resume it if browser is still alive
+	activeAttempt, found, err := s.store.ActiveAuthAttemptForOwner(r.Context(), identity.Email)
+	if err == nil && found {
+		session, err := s.browser.Status(r.Context(), activeAttempt.ID)
+		if err == nil && !isTerminalAuthStatus(session.Status) {
+			session.ScreenURL = "/api/v1/connection/auth/" + activeAttempt.ID + "/screen/vnc.html?autoconnect=true&resize=remote&path=api/v1/connection/auth/" + activeAttempt.ID + "/screen/websockify"
+			audit(s.store, r, "auth.resume", activeAttempt.ID)
+			s.publishStateEvent("auth.changed", activeAttempt.ID, map[string]any{"attemptId": activeAttempt.ID, "status": activeAttempt.Status})
+			writeJSON(w, http.StatusOK, session)
+			return
+		}
+		_ = s.store.FinishAuthAttempt(r.Context(), activeAttempt.ID, "FAILED")
+	}
+
 	attempt, err := s.store.StartAuthAttempt(r.Context(), identity.Email, 15*time.Minute)
 	if err != nil {
+		if errors.Is(err, storage.ErrAuthAttemptActive) {
+			writeError(w, http.StatusConflict, "Một phiên đăng nhập ACB đang được thực hiện bởi quản trị viên khác.")
+			return
+		}
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -885,7 +958,11 @@ func (s *Server) uploadPaymentQR(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to store image file")
 		return
 	}
-	_ = os.Rename(tempPath, filePath)
+	if err := os.Rename(tempPath, filePath); err != nil {
+		_ = os.Remove(tempPath)
+		writeError(w, http.StatusInternalServerError, "failed to move image file")
+		return
+	}
 
 	existing, _ := s.store.GetPaymentQR(r.Context(), "")
 	qr := storage.PaymentQR{
@@ -905,12 +982,18 @@ func (s *Server) uploadPaymentQR(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if qr.AccountNumber == "" || qr.AccountName == "" {
+		if existing == nil || existing.ImagePath != filePath {
+			_ = os.Remove(filePath)
+		}
 		writeError(w, http.StatusBadRequest, "accountNumber and accountName are required")
 		return
 	}
 
 	saved, err := s.store.SavePaymentQR(r.Context(), qr)
 	if err != nil {
+		if existing == nil || existing.ImagePath != filePath {
+			_ = os.Remove(filePath)
+		}
 		writeError(w, http.StatusInternalServerError, "failed to save payment qr: "+err.Error())
 		return
 	}
@@ -984,7 +1067,11 @@ func (s *Server) generatePaymentQR(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to save generated QR image")
 		return
 	}
-	_ = os.Rename(tempPath, filePath)
+	if err := os.Rename(tempPath, filePath); err != nil {
+		_ = os.Remove(tempPath)
+		writeError(w, http.StatusInternalServerError, "failed to move generated QR image")
+		return
+	}
 
 	qr := storage.PaymentQR{
 		AccountNumber:    input.AccountNumber,
@@ -996,6 +1083,7 @@ func (s *Server) generatePaymentQR(w http.ResponseWriter, r *http.Request) {
 	}
 	saved, err := s.store.SavePaymentQR(r.Context(), qr)
 	if err != nil {
+		_ = os.Remove(filePath)
 		writeError(w, http.StatusInternalServerError, "failed to save qr: "+err.Error())
 		return
 	}

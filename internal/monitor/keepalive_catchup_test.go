@@ -114,6 +114,15 @@ func TestCatchUpIngestsTransactionsWithCatchUpSourceAndWebhooks(t *testing.T) {
 		t.Fatalf("expected 2 new events emitted on catchup, got %d", len(receivedEvents))
 	}
 
+	// Verify checkpoint was updated
+	cp, err := store.GetCheckpoint(ctx, connID)
+	if err != nil || cp == nil {
+		t.Fatalf("expected checkpoint to be recorded, got err=%v, cp=%+v", err, cp)
+	}
+	if cp.CoverageTo == "" {
+		t.Errorf("expected checkpoint CoverageTo not empty")
+	}
+
 	// Transactions A and B should be ingested with source = 'CATCH_UP'
 	var sourceA, sourceB string
 	err = store.DB().QueryRowContext(ctx, `SELECT ingest_source FROM transactions WHERE semantic_key = 'ACB:TXN_A'`).Scan(&sourceA)

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { RealtimeClient } from './realtime.client';
 import type { RealtimeEnvelope, RealtimeEventType, RealtimeListener, RealtimeStatus } from './realtime.types';
 
@@ -63,16 +63,30 @@ export const RealtimeProvider: React.FC<RealtimeProviderProps> = ({
     };
   }, [client]);
 
+  const subscribe = useCallback(
+    <T = unknown>(type: RealtimeEventType, listener: RealtimeListener<T>) => {
+      return client.subscribe(type, listener);
+    },
+    [client]
+  );
+
+  const onAny = useCallback(
+    (listener: RealtimeListener<any>) => {
+      return client.onAny(listener);
+    },
+    [client]
+  );
+
   const value: RealtimeContextValue = useMemo(() => {
     return {
       status,
       lastEventAt,
       watermark,
-      subscribe: (type, listener) => client.subscribe(type, listener),
-      onAny: (listener) => client.onAny(listener),
+      subscribe,
+      onAny,
       client,
     };
-  }, [status, lastEventAt, watermark, client]);
+  }, [status, lastEventAt, watermark, client, subscribe, onAny]);
 
   return <RealtimeContext.Provider value={value}>{children}</RealtimeContext.Provider>;
 };

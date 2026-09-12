@@ -103,6 +103,89 @@ func TestScheduleOvernightWindow(t *testing.T) {
 	}
 }
 
+func TestScheduleOvernightWindowSingleWeekday(t *testing.T) {
+	loc, _ := time.LoadLocation("Asia/Ho_Chi_Minh")
+	// Window configured for Monday (1) only: 23:00 to 02:00
+	settings := &MonitorSettings{
+		Revision: 1,
+		Enabled:  true,
+		Timezone: "Asia/Ho_Chi_Minh",
+		DefaultProfile: Profile{
+			Mode:       ModePaused,
+			MinSeconds: 0,
+			MaxSeconds: 0,
+		},
+		Windows: []Window{
+			{
+				Name:       "Monday night shift",
+				DaysOfWeek: []int{1}, // Monday only
+				StartTime:  "23:00",
+				EndTime:    "02:00",
+				Profile: Profile{
+					Mode:       ModeRealtime,
+					MinSeconds: 5,
+					MaxSeconds: 15,
+				},
+			},
+		},
+	}
+
+	// 2026-09-14 is a Monday
+	// Monday 23:30 should match Monday night shift -> ModeRealtime
+	monEvening := time.Date(2026, 9, 14, 23, 30, 0, 0, loc)
+	resMon := ResolveSchedule(monEvening, settings)
+	if resMon.Mode != ModeRealtime {
+		t.Errorf("Monday 23:30 should match ModeRealtime, got %s", resMon.Mode)
+	}
+
+	// Tuesday 01:30 (next morning of Monday night shift) should match -> ModeRealtime
+	tueMorning := time.Date(2026, 9, 15, 1, 30, 0, 0, loc)
+	resTue := ResolveSchedule(tueMorning, settings)
+	if resTue.Mode != ModeRealtime {
+		t.Errorf("Tuesday 01:30 (spanning from Monday) should match ModeRealtime, got %s", resTue.Mode)
+	}
+
+	// Tuesday 03:00 (after 02:00) should NOT match -> ModePaused
+	tueAfter := time.Date(2026, 9, 15, 3, 0, 0, 0, loc)
+	resTueAfter := ResolveSchedule(tueAfter, settings)
+	if resTueAfter.Mode != ModePaused {
+		t.Errorf("Tuesday 03:00 should be ModePaused, got %s", resTueAfter.Mode)
+	}
+
+	// Monday 01:30 (morning before Monday evening) should NOT match (Sunday was not in DaysOfWeek) -> ModePaused
+	monEarlyMorning := time.Date(2026, 9, 14, 1, 30, 0, 0, loc)
+	resMonEarly := ResolveSchedule(monEarlyMorning, settings)
+	if resMonEarly.Mode != ModePaused {
+		t.Errorf("Monday 01:30 should be ModePaused, got %s", resMonEarly.Mode)
+	}
+}
+
+func TestScheduleValidationBounds(t *testing.T) {
+	// REALTIME minSeconds < 5 must fail
+	pRealtimeTooLow := Profile{Mode: ModeRealtime, MinSeconds: 4, MaxSeconds: 10}
+	if err := validateProfile(pRealtimeTooLow); err == nil {
+		t.Errorf("expected error for REALTIME minSeconds < 5")
+	}
+
+	// REALTIME maxSeconds > 300 must fail
+	pRealtimeTooHigh := Profile{Mode: ModeRealtime, MinSeconds: 5, MaxSeconds: 301}
+	if err := validateProfile(pRealtimeTooHigh); err == nil {
+		t.Errorf("expected error for REALTIME maxSeconds > 300")
+	}
+
+	// KEEPALIVE minSeconds < 60 must fail
+	pKeepaliveTooLow := Profile{Mode: ModeKeepaliveOnly, MinSeconds: 59, MaxSeconds: 120}
+	if err := validateProfile(pKeepaliveTooLow); err == nil {
+		t.Errorf("expected error for KEEPALIVE minSeconds < 60")
+	}
+
+	// KEEPALIVE maxSeconds > 1800 must fail
+	pKeepaliveTooHigh := Profile{Mode: ModeKeepaliveOnly, MinSeconds: 60, MaxSeconds: 1801}
+	if err := validateProfile(pKeepaliveTooHigh); err == nil {
+		t.Errorf("expected error for KEEPALIVE maxSeconds > 1800")
+	}
+}
+
 func TestSaveMonitorSettingsOptimisticLocking(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "test_mon_settings.db")

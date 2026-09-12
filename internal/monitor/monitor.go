@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"strconv"
 	"sync"
 	"time"
 
@@ -571,10 +572,24 @@ func (m *Monitor) catchUp(ctx context.Context) error {
 	}
 
 	nowInLoc := time.Now().In(acb.DefaultLocation)
-	yesterday := nowInLoc.AddDate(0, 0, -1).Format("2006-01-02")
 	today := nowInLoc.Format("2006-01-02")
+	fromDate := nowInLoc.AddDate(0, 0, -1).Format("2006-01-02") // default yesterday
 
-	slog.Info("running catch-up history sync before resuming realtime", "from", yesterday, "to", today)
+	// Determine catch-up start date from checkpoint or last coverage
+	if cp, err := m.store.GetCheckpoint(ctx, conn.ID); err == nil && cp != nil && cp.CoverageTo != "" {
+		fromDate = cp.CoverageTo
+	}
+
+	// Clamp max auto catch-up window to 7 days
+	sevenDaysAgo := nowInLoc.AddDate(0, 0, -7).Format("2006-01-02")
+	if fromDate < sevenDaysAgo {
+		fromDate = sevenDaysAgo
+	}
+	if fromDate > today {
+		fromDate = today
+	}
+
+	slog.Info("running catch-up history sync before resuming realtime", "from", fromDate, "to", today)
 
 	if m.client == nil {
 		return errors.New("bank client not configured")
@@ -601,7 +616,7 @@ func (m *Monitor) catchUp(ctx context.Context) error {
 		form.Fields["AccountNbr"] = conn.AccountMasked
 	}
 
-	fromT, _ := time.Parse("2006-01-02", yesterday)
+	fromT, _ := time.Parse("2006-01-02", fromDate)
 	toT, _ := time.Parse("2006-01-02", today)
 	form.Fields["FromDate"] = fromT.Format("02/01/2006")
 	form.Fields["ToDate"] = toT.Format("02/01/2006")
@@ -636,7 +651,17 @@ func (m *Monitor) catchUp(ctx context.Context) error {
 		return fmt.Errorf("catch-up ingest: %w", err)
 	}
 
-	_ = m.store.RecordCoverage(ctx, conn.ID, []string{yesterday, today}, len(txns))
+	var days []string
+	for cur := fromT; !cur.After(toT); cur = cur.AddDate(0, 0, 1) {
+		days = append(days, cur.Format("2006-01-02"))
+	}
+	_ = m.store.RecordCoverage(ctx, conn.ID, days, len(txns))
+	_ = m.store.SaveCheckpoint(ctx, storage.Checkpoint{
+		ConnectionID: conn.ID,
+		ScanID:       "scan_" + strconv.FormatInt(time.Now().Unix(), 10),
+		CoverageFrom: fromDate,
+		CoverageTo:   today,
+	})
 	if m.sessions != nil {
 		_ = m.sessions.Persist(ctx, conn.ID, conn.Generation)
 	}
@@ -667,19 +692,11 @@ func (m *Monitor) Run(ctx context.Context) {
 	for {
 		schedule := storage.ResolveSchedule(time.Now(), &m.cachedSettings)
 
-		// Transition check: transitioning into REALTIME triggers catch-up!
-		if (m.lastMode == storage.ModeKeepaliveOnly || m.lastMode == storage.ModePaused) && schedule.Mode == storage.ModeRealtime {
+		// Transition check: transitioning into REALTIME (including startup when lastMode is empty) triggers catch-up!
+		if (m.lastMode == storage.ModeKeepaliveOnly || m.lastMode == storage.ModePaused || m.lastMode == "") && schedule.Mode == storage.ModeRealtime {
 			m.catchUpPending = true
 		}
 		m.lastMode = schedule.Mode
-
-		if m.catchUpPending && schedule.Mode == storage.ModeRealtime {
-			if err := m.catchUp(ctx); err != nil {
-				slog.Warn("catch-up sync failed; will retry before realtime polling", "error", err)
-			} else {
-				m.catchUpPending = false
-			}
-		}
 
 		wait := m.nextInterval(schedule.MinInterval, schedule.MaxInterval)
 		if schedule.Mode == storage.ModePaused {

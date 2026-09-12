@@ -44,3 +44,19 @@ async def test_cache_single_flight():
     for data, provider, voice in results:
         assert data == b"computed_mp3"
         assert provider == "edge"
+
+@pytest.mark.asyncio
+async def test_cache_max_bytes_eviction():
+    # Cache with max 100 bytes
+    cache = TTSCache(max_items=10, max_bytes=100, ttl_seconds=60)
+    key1 = cache.make_key("t1", "v", "0", "0")
+    key2 = cache.make_key("t2", "v", "0", "0")
+
+    await cache.set(key1, b"x" * 60, "edge", "v")
+    assert await cache.get(key1) is not None
+
+    # Adding 60 more bytes exceeds 100 bytes, should evict key1
+    await cache.set(key2, b"y" * 60, "edge", "v")
+    assert await cache.get(key1) is None
+    assert await cache.get(key2) is not None
+

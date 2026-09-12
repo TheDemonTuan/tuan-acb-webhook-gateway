@@ -44,8 +44,13 @@ export const ReceivingQRModal: React.FC<{
   const [sessionCredits, setSessionCredits] = useState<LiveCreditAlert[]>([]);
   const [activeAlert, setActiveAlert] = useState<LiveCreditAlert | null>(null);
   const [nowTick, setNowTick] = useState<number>(Date.now());
+  const seenTxIdsRef = useRef<Set<string>>(new Set());
 
   const { subscribe } = useRealtimeContext();
+
+  const todayStr = useMemo(() => {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Ho_Chi_Minh' }).format(new Date());
+  }, [isOpen]);
 
   // Load Payment QR settings
   const { data: qrData } = useQuery({
@@ -54,14 +59,14 @@ export const ReceivingQRModal: React.FC<{
     enabled: isOpen,
   });
 
-  // Load recent credit transactions
+  // Load recent credit transactions for today
   const {
     data: txData,
     isLoading: loadingTx,
     refetch: refetchTx,
   } = useQuery({
-    queryKey: queryKeys.transactions({ direction: 'credit', limit: 20 }),
-    queryFn: () => fetchTransactions({ direction: 'credit', limit: 20 }),
+    queryKey: queryKeys.transactions({ direction: 'credit', from: todayStr, to: todayStr, limit: 20 }),
+    queryFn: () => fetchTransactions({ direction: 'credit', from: todayStr, to: todayStr, limit: 20 }),
     enabled: isOpen,
   });
 
@@ -76,6 +81,7 @@ export const ReceivingQRModal: React.FC<{
       setSessionCredits([]);
       setActiveAlert(null);
       setActiveTab('qr');
+      seenTxIdsRef.current.clear();
       refetchTx();
     }
   }, [isOpen, refetchTx]);
@@ -96,6 +102,18 @@ export const ReceivingQRModal: React.FC<{
       (envelope: RealtimeEnvelope<BankTransactionCreditData>) => {
         const d = envelope.data;
         if (!d) return;
+
+        // Strict source policy: ONLY REALTIME sources are live session credits
+        if (d.source !== 'REALTIME') return;
+
+        // Strict freshness policy: detected within last 120s and not before session opened
+        const detectedAtMs = d.detectedAt ? new Date(d.detectedAt).getTime() : Date.now();
+        if (Math.abs(Date.now() - detectedAtMs) > 120_000) return;
+        if (detectedAtMs < sessionOpenedAt - 5_000) return;
+
+        // Dedupe within this session
+        if (seenTxIdsRef.current.has(d.transactionId)) return;
+        seenTxIdsRef.current.add(d.transactionId);
 
         const creditVal = Number(d.credit || 0);
         if (creditVal > 0) {
@@ -121,7 +139,7 @@ export const ReceivingQRModal: React.FC<{
     );
 
     return () => unsub();
-  }, [isOpen, subscribe, queryClient]);
+  }, [isOpen, subscribe, queryClient, sessionOpenedAt]);
 
   // ESC key listener
   useEffect(() => {
@@ -176,7 +194,7 @@ export const ReceivingQRModal: React.FC<{
                 </h3>
                 <span className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">
                   <ShieldCheck className="w-3 h-3 text-emerald-600" />
-                  Xác thực tự động
+                  Theo dõi trực tiếp
                 </span>
               </div>
               <p className="text-[11px] text-stone-500 flex items-center gap-1.5 mt-0.5">

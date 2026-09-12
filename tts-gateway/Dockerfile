@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Copy dependencies
 COPY requirements.txt requirements.lock ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.lock
 
 # Create unprivileged user
 RUN groupadd -g 1000 appgroup && \

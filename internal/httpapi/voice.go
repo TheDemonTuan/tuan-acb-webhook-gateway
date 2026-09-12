@@ -14,12 +14,14 @@ import (
 )
 
 type voiceAudioRequest struct {
-	IncludeDescription bool `json:"includeDescription"`
+	IncludeDescription bool   `json:"includeDescription"`
+	VoiceID            string `json:"voiceId,omitempty"`
 }
 
 type voiceSummaryRequest struct {
 	TransactionIDs     []string `json:"transactionIds"`
 	IncludeDescription bool     `json:"includeDescription"`
+	VoiceID            string   `json:"voiceId,omitempty"`
 }
 
 type voiceTestRequest struct {
@@ -78,16 +80,23 @@ func (s *Server) testVoiceAudio(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&req)
 
 	settings, _ := s.store.GetVoiceSettings(r.Context())
+	if settings.ProviderMode == "BROWSER_ONLY" {
+		writeError(w, http.StatusUnprocessableEntity, "provider_mode_browser_only")
+		return
+	}
 	voice := settings.EdgeVoice
 	if req.VoiceID == "vi-VN-HoaiMyNeural" || req.VoiceID == "vi-VN-NamMinhNeural" {
 		voice = req.VoiceID
 	}
+	allowFallback := settings.OnlineFallback && settings.ProviderMode == "ONLINE_AUTO"
 
 	phrase := "Đã bật đọc giao dịch mới. Bạn vừa nhận được năm trăm nghìn đồng."
 	res, err := s.ttsClient.Synthesize(r.Context(), ttsclient.SynthesizeRequest{
-		Text:      phrase,
-		Voice:     voice,
-		Cacheable: true,
+		Text:          phrase,
+		Voice:         voice,
+		Cacheable:     true,
+		AllowFallback: &allowFallback,
+		ProviderMode:  settings.ProviderMode,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, fmt.Sprintf("tts_synthesis_failed: %v", err))
@@ -152,12 +161,24 @@ func (s *Server) synthesizeTransactionAudio(w http.ResponseWriter, r *http.Reque
 	}
 
 	settings, _ := s.store.GetVoiceSettings(r.Context())
+	if settings.ProviderMode == "BROWSER_ONLY" {
+		writeError(w, http.StatusUnprocessableEntity, "provider_mode_browser_only")
+		return
+	}
+	voice := settings.EdgeVoice
+	if req.VoiceID == "vi-VN-HoaiMyNeural" || req.VoiceID == "vi-VN-NamMinhNeural" {
+		voice = req.VoiceID
+	}
+	allowFallback := settings.OnlineFallback && settings.ProviderMode == "ONLINE_AUTO"
+
 	phrase := voicecopy.BuildCreditAnnouncement(item.Credit, item.Description, req.IncludeDescription)
 
 	res, err := s.ttsClient.Synthesize(r.Context(), ttsclient.SynthesizeRequest{
-		Text:      phrase,
-		Voice:     settings.EdgeVoice,
-		Cacheable: !req.IncludeDescription,
+		Text:          phrase,
+		Voice:         voice,
+		Cacheable:     !req.IncludeDescription,
+		AllowFallback: &allowFallback,
+		ProviderMode:  settings.ProviderMode,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, fmt.Sprintf("tts_synthesis_failed: %v", err))
@@ -212,12 +233,24 @@ func (s *Server) synthesizeSummaryAudio(w http.ResponseWriter, r *http.Request) 
 	}
 
 	settings, _ := s.store.GetVoiceSettings(r.Context())
+	if settings.ProviderMode == "BROWSER_ONLY" {
+		writeError(w, http.StatusUnprocessableEntity, "provider_mode_browser_only")
+		return
+	}
+	voice := settings.EdgeVoice
+	if req.VoiceID == "vi-VN-HoaiMyNeural" || req.VoiceID == "vi-VN-NamMinhNeural" {
+		voice = req.VoiceID
+	}
+	allowFallback := settings.OnlineFallback && settings.ProviderMode == "ONLINE_AUTO"
+
 	phrase := voicecopy.BuildBurstAnnouncement(validCount, totalCredit)
 
 	res, err := s.ttsClient.Synthesize(r.Context(), ttsclient.SynthesizeRequest{
-		Text:      phrase,
-		Voice:     settings.EdgeVoice,
-		Cacheable: true,
+		Text:          phrase,
+		Voice:         voice,
+		Cacheable:     true,
+		AllowFallback: &allowFallback,
+		ProviderMode:  settings.ProviderMode,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, fmt.Sprintf("tts_synthesis_failed: %v", err))
@@ -263,12 +296,24 @@ func (s *Server) replayTransactionAudio(w http.ResponseWriter, r *http.Request) 
 
 	// Manual replay: does not enforce realtime source or freshness
 	settings, _ := s.store.GetVoiceSettings(r.Context())
+	if settings.ProviderMode == "BROWSER_ONLY" {
+		writeError(w, http.StatusUnprocessableEntity, "provider_mode_browser_only")
+		return
+	}
+	voice := settings.EdgeVoice
+	if req.VoiceID == "vi-VN-HoaiMyNeural" || req.VoiceID == "vi-VN-NamMinhNeural" {
+		voice = req.VoiceID
+	}
+	allowFallback := settings.OnlineFallback && settings.ProviderMode == "ONLINE_AUTO"
+
 	phrase := voicecopy.BuildCreditAnnouncement(item.Credit, item.Description, req.IncludeDescription)
 
 	res, err := s.ttsClient.Synthesize(r.Context(), ttsclient.SynthesizeRequest{
-		Text:      phrase,
-		Voice:     settings.EdgeVoice,
-		Cacheable: !req.IncludeDescription,
+		Text:          phrase,
+		Voice:         voice,
+		Cacheable:     !req.IncludeDescription,
+		AllowFallback: &allowFallback,
+		ProviderMode:  settings.ProviderMode,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, fmt.Sprintf("tts_synthesis_failed: %v", err))

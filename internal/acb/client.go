@@ -169,7 +169,7 @@ func (c *Client) updateFormState(response Response) {
 
 func (c *Client) historyRange() (string, string) {
 	today := c.now().In(c.location)
-	return today.AddDate(0, 0, -1).Format(historyDateLayout), today.Format(historyDateLayout)
+	return today.Format(historyDateLayout), today.Format(historyDateLayout)
 }
 
 func cloneFields(fields map[string]string) map[string]string {

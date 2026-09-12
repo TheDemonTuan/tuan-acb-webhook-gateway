@@ -123,7 +123,10 @@ export const apiAudio = async (path: string, init?: RequestInit): Promise<AudioR
   let response: Response;
   try {
     response = await fetch(`/api/v1${path}`, { credentials: 'same-origin', ...init, headers });
-  } catch {
+  } catch (err: any) {
+    if ((err instanceof DOMException && err.name === 'AbortError') || err?.name === 'AbortError') {
+      throw err;
+    }
     throw new Error('Không thể kết nối máy chủ. Vui lòng kiểm tra kết nối và thử lại.');
   }
 

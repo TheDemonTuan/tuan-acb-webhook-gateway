@@ -113,17 +113,29 @@ func (s *MonitorSettings) Validate() error {
 
 func validateProfile(p Profile) error {
 	switch p.Mode {
-	case ModeRealtime, ModeKeepaliveOnly, ModePaused:
-	default:
-		return fmt.Errorf("unknown mode %q", p.Mode)
-	}
-	if p.Mode != ModePaused {
-		if p.MinSeconds <= 0 {
-			return errors.New("minSeconds must be positive")
+	case ModeRealtime:
+		if p.MinSeconds < 5 {
+			return errors.New("REALTIME minSeconds must be at least 5")
+		}
+		if p.MaxSeconds > 300 {
+			return errors.New("REALTIME maxSeconds must not exceed 300")
 		}
 		if p.MaxSeconds < p.MinSeconds {
 			return errors.New("maxSeconds must be >= minSeconds")
 		}
+	case ModeKeepaliveOnly:
+		if p.MinSeconds < 60 {
+			return errors.New("KEEPALIVE minSeconds must be at least 60")
+		}
+		if p.MaxSeconds > 1800 {
+			return errors.New("KEEPALIVE maxSeconds must not exceed 1800")
+		}
+		if p.MaxSeconds < p.MinSeconds {
+			return errors.New("maxSeconds must be >= minSeconds")
+		}
+	case ModePaused:
+	default:
+		return fmt.Errorf("unknown mode %q", p.Mode)
 	}
 	return nil
 }
@@ -160,19 +172,6 @@ func ResolveSchedule(now time.Time, s *MonitorSettings) ResolvedSchedule {
 
 	var matchedWindow *Window
 	for _, w := range s.Windows {
-		if len(w.DaysOfWeek) > 0 {
-			dayMatch := false
-			for _, d := range w.DaysOfWeek {
-				if d == nowWeekday {
-					dayMatch = true
-					break
-				}
-			}
-			if !dayMatch {
-				continue
-			}
-		}
-
 		startT, _ := time.Parse("15:04", w.StartTime)
 		endT, _ := time.Parse("15:04", w.EndTime)
 		startMin := startT.Hour()*60 + startT.Minute()
@@ -180,9 +179,36 @@ func ResolveSchedule(now time.Time, s *MonitorSettings) ResolvedSchedule {
 
 		isMatch := false
 		if startMin < endMin {
-			isMatch = nowMinutes >= startMin && nowMinutes < endMin
+			// Normal intraday window: must match today's weekday
+			dayMatch := len(w.DaysOfWeek) == 0
+			for _, d := range w.DaysOfWeek {
+				if d == nowWeekday {
+					dayMatch = true
+					break
+				}
+			}
+			if dayMatch && nowMinutes >= startMin && nowMinutes < endMin {
+				isMatch = true
+			}
 		} else {
-			isMatch = nowMinutes >= startMin || nowMinutes < endMin
+			// Overnight window across midnight (e.g. 23:00 -> 02:00)
+			// Matches either:
+			// 1. evening part (nowMinutes >= startMin) on window's starting day (nowWeekday)
+			// 2. morning part (nowMinutes < endMin) on window's ending day (which started on yesterday: (nowWeekday+6)%7)
+			yesterdayWeekday := (nowWeekday + 6) % 7
+			dayMatchEvening := len(w.DaysOfWeek) == 0
+			dayMatchMorning := len(w.DaysOfWeek) == 0
+			for _, d := range w.DaysOfWeek {
+				if d == nowWeekday {
+					dayMatchEvening = true
+				}
+				if d == yesterdayWeekday {
+					dayMatchMorning = true
+				}
+			}
+			if (dayMatchEvening && nowMinutes >= startMin) || (dayMatchMorning && nowMinutes < endMin) {
+				isMatch = true
+			}
 		}
 
 		if isMatch {

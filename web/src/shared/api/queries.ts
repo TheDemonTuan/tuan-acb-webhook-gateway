@@ -118,6 +118,18 @@ export const startAuthSession = async (): Promise<{
   });
 };
 
+export const fetchCurrentAuthSession = async (): Promise<{
+  attempt: {
+    attemptId: string;
+    status: string;
+    screenUrl: string;
+    expiresAt: string;
+    browserUnavailable?: boolean;
+  } | null;
+}> => {
+  return api('/connection/auth/current');
+};
+
 export const cancelAuthSession = async (attemptId: string): Promise<void> => {
   const csrf = await getCsrfToken();
   await api('/connection/auth/cancel', {

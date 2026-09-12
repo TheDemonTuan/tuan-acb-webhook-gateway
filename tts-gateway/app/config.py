@@ -7,8 +7,10 @@ class Config(BaseModel):
     port: int = int(os.getenv("TTS_PORT", "8081"))
     internal_token: str = os.getenv("TTS_INTERNAL_TOKEN", "")
     token_file: str = os.getenv("TTS_INTERNAL_TOKEN_FILE", "")
+    require_auth: bool = os.getenv("TTS_REQUIRE_AUTH", "").lower() in ("1", "true", "yes")
     max_text_length: int = 600
     cache_max_items: int = 256
+    cache_max_bytes: int = int(os.getenv("TTS_CACHE_MAX_BYTES", str(32 * 1024 * 1024)))  # 32MB default
     cache_ttl_seconds: int = 600  # 10 minutes
     edge_circuit_failure_threshold: int = 3
     edge_circuit_reset_timeout: float = 45.0  # seconds

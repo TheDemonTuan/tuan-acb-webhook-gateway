@@ -8,6 +8,8 @@ class SynthesizeRequest(BaseModel):
     rate: Optional[str] = Field("+0%")
     pitch: Optional[str] = Field("+0Hz")
     cacheable: Optional[bool] = Field(True)
+    allow_fallback: Optional[bool] = Field(True)
+    provider_mode: Optional[str] = Field("ONLINE_AUTO")
 
 class VoiceItem(BaseModel):
     id: str

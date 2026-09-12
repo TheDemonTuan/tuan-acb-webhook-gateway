@@ -463,3 +463,92 @@ func TestAuthBrowserStaleResponseSuperseded(t *testing.T) {
 		t.Fatalf("connection corrupted by stale response: %+v", connAfter)
 	}
 }
+
+func TestAuthBrowserCurrentAndResumeIdempotent(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.Open(ctx, filepath.Join(t.TempDir(), "gateway.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err = store.ConfigureConnection(ctx, "***1234"); err != nil {
+		t.Fatal(err)
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"attemptId": "auth_test_resume",
+				"status":    "AWAITING_USER_LOGIN",
+				"screenUrl": "/",
+				"expiresAt": time.Now().Add(15 * time.Minute).Format(time.RFC3339),
+			})
+			return
+		}
+		// GET status
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"attemptId": "auth_test_resume",
+			"status":    "AWAITING_USER_LOGIN",
+			"screenUrl": "/",
+			"expiresAt": time.Now().Add(15 * time.Minute).Format(time.RFC3339),
+		})
+	}))
+	defer upstream.Close()
+
+	server := New(config.Config{
+		Timezone:           time.UTC,
+		DevelopmentSubject: "owner",
+		AuthBrowserURL:     upstream.URL,
+	}, store)
+	h := server.Handler()
+
+	csrfReq := httptest.NewRequest(http.MethodGet, "http://example.test/api/v1/csrf", nil)
+	csrfRec := httptest.NewRecorder()
+	h.ServeHTTP(csrfRec, csrfReq)
+	cookie := csrfRec.Result().Cookies()[0]
+	var token struct{ Token string }
+	_ = json.NewDecoder(csrfRec.Result().Body).Decode(&token)
+
+	post := func(path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, "http://example.test"+path, strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Origin", "http://example.test")
+		r.Header.Set("X-CSRF-Token", token.Token)
+		r.AddCookie(cookie)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+
+	// 1. Initially, GET /current returns { "attempt": null }
+	wCurrent1 := httptest.NewRecorder()
+	h.ServeHTTP(wCurrent1, httptest.NewRequest(http.MethodGet, "http://example.test/api/v1/connection/auth/current", nil))
+	if wCurrent1.Code != http.StatusOK || !strings.Contains(wCurrent1.Body.String(), `"attempt":null`) {
+		t.Fatalf("expected attempt:null, got: %s", wCurrent1.Body.String())
+	}
+
+	// 2. Start an auth session -> 201 Created
+	wStart1 := post("/api/v1/connection/auth/start", `{}`)
+	if wStart1.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created, got %d: %s", wStart1.Code, wStart1.Body.String())
+	}
+
+	// 3. GET /current now recovers the active attempt and screenUrl!
+	wCurrent2 := httptest.NewRecorder()
+	h.ServeHTTP(wCurrent2, httptest.NewRequest(http.MethodGet, "http://example.test/api/v1/connection/auth/current", nil))
+	if wCurrent2.Code != http.StatusOK || !strings.Contains(wCurrent2.Body.String(), `vnc.html`) {
+		t.Fatalf("expected current attempt with vnc.html, got: %s", wCurrent2.Body.String())
+	}
+
+	// 4. Repeated POST /start while browser is active RESUMES existing session with 200 OK (no UNIQUE constraint failure!)
+	wStart2 := post("/api/v1/connection/auth/start", `{}`)
+	if wStart2.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on resume, got %d: %s", wStart2.Code, wStart2.Body.String())
+	}
+	if !strings.Contains(wStart2.Body.String(), `vnc.html`) {
+		t.Fatalf("expected screenUrl in resumed response, got: %s", wStart2.Body.String())
+	}
+}
+

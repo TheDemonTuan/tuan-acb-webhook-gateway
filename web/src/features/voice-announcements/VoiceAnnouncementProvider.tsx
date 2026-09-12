@@ -76,12 +76,45 @@ export const VoiceAnnouncementProvider: React.FC<VoiceAnnouncementProviderProps>
 
   const isSupported = useMemo(() => engine.isSupported(), [engine]);
 
-  // Load voices on mount
+  // Load voices on mount and persistently listen for voiceschanged
   useEffect(() => {
-    if (isSupported) {
+    if (!isSupported) return;
+    const refreshVoices = () => {
       engine.getVoices().then((v) => setVoices(v));
+    };
+    refreshVoices();
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.addEventListener('voiceschanged', refreshVoices);
+      return () => {
+        window.speechSynthesis.removeEventListener('voiceschanged', refreshVoices);
+      };
     }
   }, [engine, isSupported]);
+
+  // Sync settings across tabs via localStorage storage event
+  useEffect(() => {
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === 'acb.voice.settings.v1') {
+        const fresh = loadVoiceSettings();
+        setSettings(fresh);
+        if (fresh.enabled === false) {
+          for (const item of burstBufferRef.current) {
+            dedupe.release(item.dedupeOpts);
+          }
+          burstBufferRef.current = [];
+          if (burstTimerRef.current) {
+            clearTimeout(burstTimerRef.current);
+            burstTimerRef.current = null;
+          }
+          queue.cancel();
+        }
+      }
+    };
+    if (typeof window !== 'undefined') {
+      window.addEventListener('storage', handleStorage);
+      return () => window.removeEventListener('storage', handleStorage);
+    }
+  }, [dedupe, queue]);
 
   // Start leader manager on mount
   useEffect(() => {

@@ -123,3 +123,61 @@ func TestAuthAttemptLookupAndOwnership(t *testing.T) {
 		t.Fatalf("AuthAttemptStatusForOwner terminal failed: got=%+v, err=%v", gotTerminal, err)
 	}
 }
+
+func TestStaleAuthAttemptExpiryAndRecovery(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "gateway.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.ConfigureConnection(ctx, "***1234"); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Create an attempt with very short TTL
+	attempt, err := store.StartAuthAttempt(ctx, "admin@example.com", 20*time.Millisecond)
+	if err != nil {
+		t.Fatalf("start initial attempt: %v", err)
+	}
+
+	// Active attempt should be found
+	active, found, err := store.ActiveAuthAttemptForOwner(ctx, "admin@example.com")
+	if err != nil || !found || active.ID != attempt.ID {
+		t.Fatalf("expected active attempt %s, got %+v (found=%v, err=%v)", attempt.ID, active, found, err)
+	}
+
+	// Wait for TTL to elapse
+	time.Sleep(30 * time.Millisecond)
+
+	// Expire stale attempts
+	count, err := store.ExpireStaleAuthAttempts(ctx)
+	if err != nil {
+		t.Fatalf("expire stale attempts: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 expired attempt, got %d", count)
+	}
+
+	// Active attempt should now be false
+	_, found, err = store.ActiveAuthAttemptForOwner(ctx, "admin@example.com")
+	if err != nil || found {
+		t.Fatalf("expected no active attempt, got found=%v, err=%v", found, err)
+	}
+
+	// Connection should be back in AUTH_REQUIRED
+	conn, err := store.Connection(ctx)
+	if err != nil || conn.State != "AUTH_REQUIRED" {
+		t.Fatalf("expected connection to be AUTH_REQUIRED, got %+v, err=%v", conn, err)
+	}
+
+	// 2. Starting a new auth attempt should now succeed seamlessly without UNIQUE constraint failure
+	attempt2, err := store.StartAuthAttempt(ctx, "admin@example.com", time.Minute)
+	if err != nil {
+		t.Fatalf("start attempt after expiry failed: %v", err)
+	}
+	if attempt2.ID == attempt.ID {
+		t.Fatalf("expected new attempt ID, got %s", attempt2.ID)
+	}
+}
+

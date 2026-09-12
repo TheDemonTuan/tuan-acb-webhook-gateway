@@ -83,8 +83,15 @@ export class TransactionAudioEngine implements VoiceEngine {
     try {
       await this.speakOnline(message);
       return;
-    } catch (onlineError) {
-      // 2. Fallback to BrowserSpeechEngine with strict Vietnamese voice
+    } catch (onlineError: any) {
+      if (
+        (onlineError instanceof DOMException && onlineError.name === 'AbortError') ||
+        onlineError?.name === 'AbortError' ||
+        onlineError?.message === 'VOICE_CANCELLED'
+      ) {
+        throw new Error('VOICE_CANCELLED');
+      }
+      // 2. Fallback to BrowserSpeechEngine with strict Vietnamese voice ONLY if not cancelled
       try {
         await this.browserFallback.speak(message);
       } catch (browserError) {
@@ -100,12 +107,20 @@ export class TransactionAudioEngine implements VoiceEngine {
     let path = '';
     let body: any = null;
 
+    if (message.voiceURI && !message.voiceURI.startsWith('vi-VN-')) {
+      // Local browser voice selected directly
+      throw new Error('BROWSER_VOICE_SELECTED');
+    }
+
     if (message.isTest) {
       path = '/voice/test';
       body = { voiceId: message.voiceURI || 'vi-VN-HoaiMyNeural' };
     } else if (message.isReplay && message.transactionId) {
       path = `/voice/transactions/${encodeURIComponent(message.transactionId)}/replay`;
-      body = { includeDescription: Boolean(message.includeDescription) };
+      body = {
+        includeDescription: Boolean(message.includeDescription),
+        voiceId: message.voiceURI,
+      };
     } else if (
       message.summaryTransactionIds &&
       message.summaryTransactionIds.length >= 2
@@ -114,10 +129,14 @@ export class TransactionAudioEngine implements VoiceEngine {
       body = {
         transactionIds: message.summaryTransactionIds,
         includeDescription: false,
+        voiceId: message.voiceURI,
       };
     } else if (message.transactionId) {
       path = `/voice/transactions/${encodeURIComponent(message.transactionId)}`;
-      body = { includeDescription: Boolean(message.includeDescription) };
+      body = {
+        includeDescription: Boolean(message.includeDescription),
+        voiceId: message.voiceURI,
+      };
     } else {
       // If no transaction ID, fall back directly to browser speech
       throw new Error('NO_ONLINE_ROUTE');
