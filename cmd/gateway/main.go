@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -149,7 +150,20 @@ func main() {
 		}
 		dispatcher.Wake()
 	})
+	var pollStatusMu sync.Mutex
+	var lastPollStatus string
 	bankMonitor.WithPollNotifier(func(p storage.PollRun, insertedCount int) {
+		pollStatusMu.Lock()
+		statusChanged := p.Status != lastPollStatus
+		lastPollStatus = p.Status
+		pollStatusMu.Unlock()
+
+		// Only push to SSE when there are actually new transactions or when poll status changed.
+		// Suppress routine duplicate polls to avoid noisy repetitive SSE events.
+		if insertedCount == 0 && !statusChanged && p.Status == "SUCCEEDED" {
+			return
+		}
+
 		payload, err := json.Marshal(map[string]any{
 			"pollId":        p.ID,
 			"status":        p.Status,

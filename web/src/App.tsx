@@ -403,6 +403,14 @@ export default function App() {
   }, [active]);
 
   useEffect(() => {
+    if (active !== 'Polling') return;
+    const interval = setInterval(() => {
+      void load();
+    }, 30_000);
+    return () => clearInterval(interval);
+  }, [active]);
+
+  useEffect(() => {
     if (!activeAttempt) return;
     let cancelled = false;
     let checking = false;
