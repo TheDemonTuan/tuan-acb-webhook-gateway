@@ -1,6 +1,60 @@
 package acb
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
+
+func TestPrepareHistoryFieldsOverridesStaleMonthFilter(t *testing.T) {
+	location := time.FixedZone("Asia/Ho_Chi_Minh", 7*60*60)
+	fields, err := PrepareHistoryFields(map[string]string{
+		"dse_operationName":     "ibkacctDetailProc",
+		"dse_processorState":    "acctDetailPage",
+		"dse_nextEventName":     "byMonth",
+		"activeDatetimeYN":      "Y",
+		"activeDatetimeByMonth": "Y",
+		"MonthCurr":             "8",
+		"YearCurr":              "2026",
+		"FromDate":              "13/08/2026",
+		"ToDate":                "12/09/2026",
+		"CheckRef":              "true",
+		"CheckDoiUng":           "true",
+		"MajorTKXacNhanSoDu":    "1",
+		"MinorTKXacNhanSoDu":    "2",
+		"SoDuTKXacNhanSoDu":     "3",
+	}, time.Date(2026, 9, 12, 0, 30, 0, 0, location), location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fields["dse_nextEventName"] != "byDate" || fields["activeDatetimeYN"] != "N" {
+		t.Fatalf("wrong search mode: %#v", fields)
+	}
+	if fields["FromDate"] != "11/09/2026" || fields["ToDate"] != "12/09/2026" {
+		t.Fatalf("wrong date range: %#v", fields)
+	}
+	if fields["CheckRef"] != "false" || fields["CheckDoiUng"] != "false" {
+		t.Fatalf("unexpected optional filters: %#v", fields)
+	}
+	for _, name := range []string{"activeDatetimeByMonth", "MonthCurr", "YearCurr", "MajorTKXacNhanSoDu", "MinorTKXacNhanSoDu", "SoDuTKXacNhanSoDu"} {
+		if _, ok := fields[name]; ok {
+			t.Fatalf("month-only field %s was retained", name)
+		}
+	}
+}
+
+func TestPrepareHistoryFieldsUsesVietnamCalendarAcrossUTCDate(t *testing.T) {
+	location := time.FixedZone("Asia/Ho_Chi_Minh", 7*60*60)
+	fields, err := PrepareHistoryFields(map[string]string{
+		"dse_operationName":  "ibkacctDetailProc",
+		"dse_processorState": "acctDetailPage",
+	}, time.Date(2026, 12, 31, 18, 30, 0, 0, time.UTC), location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fields["FromDate"] != "31/12/2026" || fields["ToDate"] != "01/01/2027" {
+		t.Fatalf("wrong Vietnam date range: %#v", fields)
+	}
+}
 
 func TestExtractHistoryForm(t *testing.T) {
 	form, err := ExtractHistoryForm(`<form action="/acbib/Request"><input name="dse_operationName" value="ibkacctDetailProc"><input name="dse_processorState" value="fresh-state"><input name="dse_sessionId" value="rotated"></form>`)

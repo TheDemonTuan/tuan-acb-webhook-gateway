@@ -3,6 +3,7 @@ package acb
 import (
 	"errors"
 	"strings"
+	"time"
 
 	"golang.org/x/net/html"
 )
@@ -10,6 +11,37 @@ import (
 type FormState struct {
 	Action string
 	Fields map[string]string
+}
+
+const historyDateLayout = "02/01/2006"
+
+// PrepareHistoryFields converts the current ACB account-detail form into an
+// explicit by-date query for yesterday through today in the configured zone.
+func PrepareHistoryFields(fields map[string]string, now time.Time, location *time.Location) (map[string]string, error) {
+	if location == nil {
+		return nil, errors.New("ACB history timezone is required")
+	}
+	prepared := cloneFields(fields)
+	if prepared["dse_operationName"] == "" || prepared["dse_processorState"] == "" {
+		return nil, errors.New("ACB history request is missing current form state")
+	}
+	today := now.In(location)
+	prepared["dse_nextEventName"] = "byDate"
+	prepared["activeDatetimeYN"] = "N"
+	prepared["FromDate"] = today.AddDate(0, 0, -1).Format(historyDateLayout)
+	prepared["ToDate"] = today.Format(historyDateLayout)
+	prepared["CheckRef"] = "false"
+	prepared["CheckDoiUng"] = "false"
+
+	// These controls belong to mutually exclusive search modes or auxiliary
+	// balance-confirmation forms and must not survive a by-date submission.
+	for _, name := range []string{
+		"activeDatetimeByMonth", "MonthCurr", "YearCurr",
+		"MajorTKXacNhanSoDu", "MinorTKXacNhanSoDu", "SoDuTKXacNhanSoDu",
+	} {
+		delete(prepared, name)
+	}
+	return prepared, nil
 }
 
 // ExtractHistoryForm reads the current server-generated form state. It never

@@ -20,6 +20,36 @@ func TestParseHistory(t *testing.T) {
 	}
 }
 
+func TestParseHistorySkipsHeaderOnlyTableBeforeData(t *testing.T) {
+	html := `<table><tr><th>Ngày giao dịch</th><th>Số GD</th><th>Ghi nợ</th><th>Ghi có</th></tr></table>
+	<table><tr><th>Ngày giao dịch</th><th>Số GD</th><th>Ghi nợ</th><th>Ghi có</th></tr>
+	<tr><td>12/09/2026</td><td>123</td><td>-</td><td>50.000</td></tr></table>`
+	transactions, err := ParseHistory(html)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(transactions) != 1 || transactions[0].Number != "123" {
+		t.Fatalf("transactions=%+v", transactions)
+	}
+}
+
+func TestParseHistoryRejectsHeaderOnlyWithoutEmptyMarker(t *testing.T) {
+	_, err := ParseHistory(`<table><tr><th>Ngày giao dịch</th><th>Số GD</th><th>Ghi nợ</th><th>Ghi có</th></tr></table>`)
+	if err == nil {
+		t.Fatal("accepted ambiguous header-only history as empty")
+	}
+}
+
+func TestParseHistoryAcceptsRecognizedEmptyMarker(t *testing.T) {
+	transactions, err := ParseHistory(`<table><tr><th>Ngày giao dịch</th><th>Số GD</th><th>Ghi nợ</th><th>Ghi có</th></tr><tr><td colspan="4">Không có giao dịch</td></tr></table>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(transactions) != 0 {
+		t.Fatalf("transactions=%+v", transactions)
+	}
+}
+
 func TestParseHistoryACBTwoRowLayout(t *testing.T) {
 	html := `<table>
 		<tr><th>Ngày hiệu lực</th><th>Ngày giao dịch</th><th>Số GD</th><th>Ghi nợ</th><th>Ghi có</th><th>Số dư</th></tr>

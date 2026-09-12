@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -26,6 +27,8 @@ type Client struct {
 	bootstrapFields map[string]string
 	http            *http.Client
 	mu              sync.Mutex
+	now             func() time.Time
+	location        *time.Location
 }
 
 type Response struct {
@@ -47,7 +50,8 @@ func NewClient(base string, transport http.RoundTripper) (*Client, error) {
 	if transport == nil {
 		transport = http.DefaultTransport
 	}
-	return &Client{baseURL: parsed, http: &http.Client{Jar: jar, Timeout: DefaultClientTimeout, Transport: transport, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+	location := time.FixedZone("Asia/Ho_Chi_Minh", 7*60*60)
+	return &Client{baseURL: parsed, now: time.Now, location: location, http: &http.Client{Jar: jar, Timeout: DefaultClientTimeout, Transport: transport, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 10 {
 			return errors.New("stopped after 10 redirects")
 		}
@@ -163,6 +167,11 @@ func (c *Client) updateFormState(response Response) {
 	c.bootstrapFields = cloneFields(form.Fields)
 }
 
+func (c *Client) historyRange() (string, string) {
+	today := c.now().In(c.location)
+	return today.AddDate(0, 0, -1).Format(historyDateLayout), today.Format(historyDateLayout)
+}
+
 func cloneFields(fields map[string]string) map[string]string {
 	cloned := make(map[string]string, len(fields))
 	for key, value := range fields {
@@ -177,26 +186,12 @@ func (c *Client) Bootstrap(ctx context.Context) (Response, error) {
 	if c.bootstrap == nil || len(c.bootstrapFields) == 0 {
 		return Response{}, errors.New("ACB authenticated form state is unavailable")
 	}
-	fields := cloneFields(c.bootstrapFields)
-	if fields["dse_operationName"] == "ibkacctDetailProc" {
-		fields["dse_nextEventName"] = "byDate"
-		if fields["activeDatetimeYN"] == "" {
-			fields["activeDatetimeYN"] = "N"
-		}
-		if fields["CheckRef"] == "" {
-			fields["CheckRef"] = "false"
-		}
-		if fields["CheckDoiUng"] == "" {
-			fields["CheckDoiUng"] = "false"
-		}
-		nowVN := time.Now().UTC().Add(7 * time.Hour)
-		if fields["ToDate"] == "" {
-			fields["ToDate"] = nowVN.Format("02/01/2006")
-		}
-		if fields["FromDate"] == "" {
-			fields["FromDate"] = nowVN.AddDate(0, 0, -30).Format("02/01/2006")
-		}
+	fields, err := PrepareHistoryFields(c.bootstrapFields, c.now(), c.location)
+	if err != nil {
+		return Response{}, err
 	}
+	fromDate, toDate := c.historyRange()
+	slog.Debug("requesting ACB history", "from_date", fromDate, "to_date", toDate)
 	values := url.Values{}
 	for key, value := range fields {
 		values.Set(key, value)
@@ -212,19 +207,12 @@ func (c *Client) Bootstrap(ctx context.Context) (Response, error) {
 func (c *Client) History(ctx context.Context, endpoint string, fields map[string]string) (Response, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if fields["dse_operationName"] == "" || fields["dse_processorState"] == "" {
-		return Response{}, errors.New("ACB history request is missing current form state")
+	hFields, err := PrepareHistoryFields(fields, c.now(), c.location)
+	if err != nil {
+		return Response{}, err
 	}
-	hFields := cloneFields(fields)
-	if hFields["activeDatetimeYN"] == "" {
-		hFields["activeDatetimeYN"] = "N"
-	}
-	if hFields["CheckRef"] == "" {
-		hFields["CheckRef"] = "false"
-	}
-	if hFields["CheckDoiUng"] == "" {
-		hFields["CheckDoiUng"] = "false"
-	}
+	fromDate, toDate := c.historyRange()
+	slog.Debug("requesting ACB history", "from_date", fromDate, "to_date", toDate)
 	requestURL, err := c.endpoint(endpoint)
 	if err != nil {
 		return Response{}, err

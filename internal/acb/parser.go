@@ -33,17 +33,17 @@ func ParseHistory(markup string) ([]Transaction, error) {
 			tables = append(tables, node)
 		}
 	})
+	var recognized bool
+	var emptyHistory bool
 	for _, table := range tables {
 		rows := tableRows(table)
-		if len(rows) < 1 {
+		headerIndex, columns := historyHeader(rows)
+		if headerIndex < 0 {
 			continue
 		}
-		columns := columnIndexes(rows[0])
-		if !columns.valid() {
-			continue
-		}
-		transactions := make([]Transaction, 0, len(rows)-1)
-		for i := 1; i < len(rows); i++ {
+		recognized = true
+		transactions := make([]Transaction, 0, len(rows)-headerIndex-1)
+		for i := headerIndex + 1; i < len(rows); i++ {
 			row := rows[i]
 			if len(row) == 0 || allBlank(row) {
 				continue
@@ -65,6 +65,7 @@ func ParseHistory(markup string) ([]Transaction, error) {
 				}
 				rowText := strings.ToLower(strings.Join(row, " "))
 				if containsAny(rowText, "khong co giao dich", "không có giao dịch", "no transaction", "chua co giao dich", "chưa có giao dịch") {
+					emptyHistory = true
 					continue
 				}
 				return nil, err
@@ -89,9 +90,27 @@ func ParseHistory(markup string) ([]Transaction, error) {
 			}
 			transactions = append(transactions, transaction)
 		}
-		return transactions, nil
+		if len(transactions) > 0 {
+			return transactions, nil
+		}
+	}
+	if recognized && emptyHistory {
+		return []Transaction{}, nil
+	}
+	if recognized {
+		return nil, errors.New("ACB history table has no transactions and no recognized empty-state marker")
 	}
 	return nil, errors.New("ACB history table schema not recognized")
+}
+
+func historyHeader(rows [][]string) (int, columns) {
+	for i, row := range rows {
+		indexes := columnIndexes(row)
+		if indexes.valid() {
+			return i, indexes
+		}
+	}
+	return -1, columns{}
 }
 
 type columns struct{ number, effective, transaction, debit, credit, balance, description int }

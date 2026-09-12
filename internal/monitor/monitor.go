@@ -224,27 +224,6 @@ func (m *Monitor) pollOnce(ctx context.Context, expected *syncRequest) error {
 			return formErr
 		}
 
-		nowVN := time.Now().UTC().Add(7 * time.Hour)
-		if form.Fields["ToDate"] == "" {
-			form.Fields["ToDate"] = nowVN.Format("02/01/2006")
-		}
-		if form.Fields["FromDate"] == "" {
-			form.Fields["FromDate"] = nowVN.AddDate(0, 0, -30).Format("02/01/2006")
-		}
-		if form.Fields["AccountNbr"] == "" && conn.AccountMasked != "" {
-			form.Fields["AccountNbr"] = conn.AccountMasked
-		}
-		form.Fields["dse_nextEventName"] = "byDate"
-		if form.Fields["activeDatetimeYN"] == "" {
-			form.Fields["activeDatetimeYN"] = "N"
-		}
-		if form.Fields["CheckRef"] == "" {
-			form.Fields["CheckRef"] = "false"
-		}
-		if form.Fields["CheckDoiUng"] == "" {
-			form.Fields["CheckDoiUng"] = "false"
-		}
-
 		histResp, histErr := m.client.History(ctx, form.Action, form.Fields)
 		if histErr != nil {
 			poll.Status = "FAILED"
@@ -281,6 +260,7 @@ func (m *Monitor) pollOnce(ctx context.Context, expected *syncRequest) error {
 
 	poll.RowsSeen = len(txns)
 	poll.Pages = 1
+	slog.Info("ACB history parsed", "rows_seen", poll.RowsSeen, "pages", poll.Pages)
 
 	// Ingest transactions and emit credit events atomically in a single batch transaction
 	batchItems := make([]storage.BatchTransactionItem, len(txns))

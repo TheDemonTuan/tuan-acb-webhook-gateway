@@ -4,8 +4,10 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/thedemontuan/acb-transaction-webhook/internal/authbrowser"
 )
@@ -33,6 +35,61 @@ func TestClientClassifiesLoginPage(t *testing.T) {
 	}
 	if response.Kind != LoginPage {
 		t.Fatalf("got %s", response.Kind)
+	}
+}
+
+func TestBootstrapOverridesCapturedMonthFilter(t *testing.T) {
+	var posted url.Values
+	client, err := NewClient("https://online.acb.com.vn", roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body, readErr := io.ReadAll(r.Body)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		posted, readErr = url.ParseQuery(string(body))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		responseBody := `<form action="/acbib/Request"><input name="dse_operationName" value="ibkacctDetailProc"><input name="dse_processorState" value="next"><input name="dse_sessionId" value="next"><input name="AccountNbr" value="12345678"><input name="dse_nextEventName" value="byDate"></form><table><tr><th>Ngày giao dịch</th><th>Số GD</th><th>Ghi nợ</th><th>Ghi có</th></tr><tr><td colspan="4">Không có giao dịch</td></tr></table>`
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(responseBody)), Request: r}, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	location := time.FixedZone("Asia/Ho_Chi_Minh", 7*60*60)
+	client.now = func() time.Time { return time.Date(2026, 9, 12, 12, 0, 0, 0, location) }
+	client.location = location
+	if err := client.RestoreSession(authbrowser.Handoff{
+		Version: 1,
+		Action:  "https://online.acb.com.vn/acbib/Request",
+		Fields: map[string]string{
+			"dse_operationName":     "ibkacctDetailProc",
+			"dse_processorState":    "acctDetailPage",
+			"dse_sessionId":         "secret",
+			"dse_nextEventName":     "byMonth",
+			"activeDatetimeYN":      "Y",
+			"activeDatetimeByMonth": "Y",
+			"MonthCurr":             "8",
+			"YearCurr":              "2026",
+			"FromDate":              "13/08/2026",
+			"ToDate":                "12/09/2026",
+			"CheckRef":              "true",
+			"CheckDoiUng":           "true",
+		},
+		Cookies: []authbrowser.Cookie{{Name: "JSESSIONID", Value: "session", Domain: OfficialHost}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Bootstrap(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if posted.Get("dse_nextEventName") != "byDate" || posted.Get("activeDatetimeYN") != "N" {
+		t.Fatalf("wrong search mode: %v", posted)
+	}
+	if posted.Get("FromDate") != "11/09/2026" || posted.Get("ToDate") != "12/09/2026" {
+		t.Fatalf("wrong upstream range: %v", posted)
+	}
+	if posted.Has("MonthCurr") || posted.Has("YearCurr") || posted.Has("activeDatetimeByMonth") {
+		t.Fatalf("month filters were posted: %v", posted)
 	}
 }
 
