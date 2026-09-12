@@ -54,13 +54,17 @@ func TestParseHistorySkipsFooterBeforeRecognizedEmptyMarker(t *testing.T) {
 	}
 }
 
-func TestParseHistoryRejectsUnknownNonTransactionRow(t *testing.T) {
-	_, err := ParseHistory(`<table>
+func TestParseHistorySkipsBlankStructuralRowBeforeEmptyMarker(t *testing.T) {
+	transactions, err := ParseHistory(`<table>
 	<tr><th>Ngày giao dịch</th><th>Số GD</th><th>Ghi nợ</th><th>Ghi có</th></tr>
-	<tr><td colspan="4">Unexpected bank response</td></tr>
+	<tr><td></td><td></td><td></td><td></td><td>controls</td></tr>
+	<tr><td colspan="4">Không có giao dịch</td></tr>
 	</table>`)
-	if err == nil {
-		t.Fatal("accepted unknown non-transaction row")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(transactions) != 0 {
+		t.Fatalf("transactions=%+v", transactions)
 	}
 }
 

@@ -71,6 +71,9 @@ func ParseHistory(markup string) ([]Transaction, error) {
 				if isTableFooter(rowText) {
 					continue
 				}
+				if allTransactionColumnsBlank(row, columns) {
+					continue
+				}
 				return nil, err
 			}
 			if columns.description < 0 && i+1 < len(rows) {
@@ -116,10 +119,20 @@ func historyHeader(rows [][]string) (int, columns) {
 	return -1, columns{}
 }
 
+func allTransactionColumnsBlank(row []string, c columns) bool {
+	for _, index := range []int{c.number, c.effective, c.transaction, c.debit, c.credit, c.balance} {
+		if index >= 0 && index < len(row) && strings.TrimSpace(row[index]) != "" {
+			return false
+		}
+	}
+	return true
+}
+
 func isTableFooter(text string) bool {
 	return containsAny(text,
 		"trang truoc", "trang trước", "trang sau", "next", "previous",
 		"tong cong", "tổng cộng", "page", "export", "xuat excel", "xuất excel",
+		"first", "last", "dau", "đầu", "cuoi", "cuối", "go to", "goto",
 	)
 }
 
