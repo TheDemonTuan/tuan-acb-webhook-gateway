@@ -14,10 +14,11 @@ import (
 )
 
 type mockBankClient struct {
-	getResp     acb.Response
-	getErr      error
-	historyResp acb.Response
-	historyErr  error
+	getResp       acb.Response
+	getErr        error
+	historyResp   acb.Response
+	historyErr    error
+	historyFields map[string]string
 }
 
 func (m *mockBankClient) Bootstrap(ctx context.Context) (acb.Response, error) {
@@ -25,6 +26,10 @@ func (m *mockBankClient) Bootstrap(ctx context.Context) (acb.Response, error) {
 }
 
 func (m *mockBankClient) History(ctx context.Context, endpoint string, fields map[string]string) (acb.Response, error) {
+	m.historyFields = make(map[string]string, len(fields))
+	for key, value := range fields {
+		m.historyFields[key] = value
+	}
 	return m.historyResp, m.historyErr
 }
 
@@ -74,6 +79,36 @@ func TestTransportFailureKeepsMonitoringGeneration(t *testing.T) {
 	runs, err := store.ListPollRuns(ctx, 10)
 	if err != nil || len(runs) != 1 || runs[0].Status != "FAILED" {
 		t.Fatalf("unexpected poll records: %+v %v", runs, err)
+	}
+}
+
+func TestMonitorUsesConfiguredAccountWhenResponseOmitsAccountNbr(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.Open(ctx, filepath.Join(t.TempDir(), "gateway.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	_, _ = store.ConfigureConnection(ctx, "40478827")
+	_, _ = store.DB().ExecContext(ctx, `UPDATE connections SET state='MONITORING'`)
+
+	mock := &mockBankClient{
+		getResp: acb.Response{
+			StatusCode: 200,
+			Kind:       acb.AccountDetailPage,
+			Body: `<form action="/acbib/Request">
+				<input name="dse_operationName" value="ibkacctDetailProc">
+				<input name="dse_processorState" value="acctDetailPage">
+				<input name="dse_sessionId" value="session">
+			</form>`,
+		},
+		historyResp: acb.Response{StatusCode: 200, Kind: acb.HistoryPage, Body: mockHistoryHTML},
+	}
+	if err := New(store, mock, 5*time.Second, 5*time.Second).PollOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if mock.historyFields["AccountNbr"] != "40478827" {
+		t.Fatalf("AccountNbr=%q", mock.historyFields["AccountNbr"])
 	}
 }
 

@@ -224,6 +224,9 @@ func (m *Monitor) pollOnce(ctx context.Context, expected *syncRequest) error {
 			return formErr
 		}
 
+		if form.Fields["AccountNbr"] == "" && conn.AccountMasked != "" {
+			form.Fields["AccountNbr"] = conn.AccountMasked
+		}
 		histResp, histErr := m.client.History(ctx, form.Action, form.Fields)
 		if histErr != nil {
 			poll.Status = "FAILED"
