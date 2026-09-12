@@ -66,7 +66,7 @@ func (m *Monitor) UpstreamGate() *sync.Mutex {
 
 func New(store *storage.Store, client BankClient, minInterval, maxInterval time.Duration) *Monitor {
 	if minInterval < 2*time.Second {
-		minInterval = 10 * time.Second
+		minInterval = 5 * time.Second
 	}
 	if maxInterval < minInterval {
 		maxInterval = minInterval

@@ -39,11 +39,11 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("load timezone: %w", err)
 	}
-	pollMin, err := seconds("POLL_MIN_INTERVAL_SEC", 10, 5, 300)
+	pollMin, err := seconds("POLL_MIN_INTERVAL_SEC", 5, 2, 300)
 	if err != nil {
 		return Config{}, err
 	}
-	pollMax, err := seconds("POLL_MAX_INTERVAL_SEC", 30, 5, 300)
+	pollMax, err := seconds("POLL_MAX_INTERVAL_SEC", 15, 2, 300)
 	if err != nil {
 		return Config{}, err
 	}
