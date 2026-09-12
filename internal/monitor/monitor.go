@@ -38,12 +38,26 @@ type Monitor struct {
 	syncReq         *syncRequest
 	syncCh          chan struct{}
 	onNewEvents     func([]storage.EventNotification)
+	onPollFinished  func(poll storage.PollRun, insertedCount int)
 	backoffUntil    time.Time
 }
 
 func (m *Monitor) WithEventNotifier(fn func([]storage.EventNotification)) *Monitor {
 	m.onNewEvents = fn
 	return m
+}
+
+func (m *Monitor) WithPollNotifier(fn func(poll storage.PollRun, insertedCount int)) *Monitor {
+	m.onPollFinished = fn
+	return m
+}
+
+func (m *Monitor) finishPoll(ctx context.Context, poll storage.PollRun, insertedCount int) error {
+	err := m.store.FinishPoll(ctx, poll)
+	if m.onPollFinished != nil {
+		m.onPollFinished(poll, insertedCount)
+	}
+	return err
 }
 
 func (m *Monitor) UpstreamGate() *sync.Mutex {
@@ -171,7 +185,7 @@ func (m *Monitor) pollOnce(ctx context.Context, expected *syncRequest) error {
 	if err != nil {
 		poll.Status = "FAILED"
 		poll.Error = err.Error()
-		_ = m.store.FinishPoll(ctx, poll)
+		_ = m.finishPoll(ctx, poll, 0)
 		return err
 	}
 
@@ -181,14 +195,14 @@ func (m *Monitor) pollOnce(ctx context.Context, expected *syncRequest) error {
 	if resp.Kind == acb.LoginPage {
 		poll.Status = "AUTH_REQUIRED"
 		poll.Error = "SESSION_EXPIRED"
-		_ = m.store.FinishPoll(ctx, poll)
+		_ = m.finishPoll(ctx, poll, 0)
 		slog.Warn("ACB confirmed the session is no longer authenticated; transitioned to AUTH_REQUIRED")
 		return nil
 	}
 	if resp.Kind == acb.OTPChallenge || resp.Kind == acb.CaptchaPage {
 		poll.Status = "AUTH_REQUIRED"
 		poll.Error = string(resp.Kind)
-		_ = m.store.FinishPoll(ctx, poll)
+		_ = m.finishPoll(ctx, poll, 0)
 		slog.Warn("ACB requires interactive authentication", "challenge", resp.Kind)
 		return nil
 	}
@@ -198,7 +212,7 @@ func (m *Monitor) pollOnce(ctx context.Context, expected *syncRequest) error {
 		poll.Error = "ACB_RATE_LIMITED"
 		m.backoffUntil = time.Now().Add(60 * time.Second)
 		telemetry.Default.SetCircuitBreaker(true)
-		_ = m.store.FinishPoll(ctx, poll)
+		_ = m.finishPoll(ctx, poll, 0)
 		slog.Warn("ACB rate limit detected (429); backoff for 60s")
 		return nil
 	}
@@ -208,7 +222,7 @@ func (m *Monitor) pollOnce(ctx context.Context, expected *syncRequest) error {
 		poll.Error = "ACB_MAINTENANCE"
 		m.backoffUntil = time.Now().Add(60 * time.Second)
 		telemetry.Default.SetCircuitBreaker(true)
-		_ = m.store.FinishPoll(ctx, poll)
+		_ = m.finishPoll(ctx, poll, 0)
 		slog.Warn("ACB maintenance detected; backoff for 60s")
 		return nil
 	}
@@ -220,7 +234,7 @@ func (m *Monitor) pollOnce(ctx context.Context, expected *syncRequest) error {
 		if formErr != nil {
 			poll.Status = "FAILED"
 			poll.Error = formErr.Error()
-			_ = m.store.FinishPoll(ctx, poll)
+			_ = m.finishPoll(ctx, poll, 0)
 			return formErr
 		}
 
@@ -231,7 +245,7 @@ func (m *Monitor) pollOnce(ctx context.Context, expected *syncRequest) error {
 		if histErr != nil {
 			poll.Status = "FAILED"
 			poll.Error = histErr.Error()
-			_ = m.store.FinishPoll(ctx, poll)
+			_ = m.finishPoll(ctx, poll, 0)
 			return histErr
 		}
 		historyMarkup = histResp.Body
@@ -241,13 +255,13 @@ func (m *Monitor) pollOnce(ctx context.Context, expected *syncRequest) error {
 		if histResp.Kind == acb.LoginPage {
 			poll.Status = "AUTH_REQUIRED"
 			poll.Error = "SESSION_EXPIRED"
-			_ = m.store.FinishPoll(ctx, poll)
+			_ = m.finishPoll(ctx, poll, 0)
 			return nil
 		}
 		if histResp.Kind == acb.OTPChallenge || histResp.Kind == acb.CaptchaPage {
 			poll.Status = "AUTH_REQUIRED"
 			poll.Error = string(histResp.Kind)
-			_ = m.store.FinishPoll(ctx, poll)
+			_ = m.finishPoll(ctx, poll, 0)
 			return nil
 		}
 	}
@@ -257,7 +271,7 @@ func (m *Monitor) pollOnce(ctx context.Context, expected *syncRequest) error {
 	if parseErr != nil {
 		poll.Status = "FAILED"
 		poll.Error = parseErr.Error()
-		_ = m.store.FinishPoll(ctx, poll)
+		_ = m.finishPoll(ctx, poll, 0)
 		return parseErr
 	}
 
@@ -288,20 +302,20 @@ func (m *Monitor) pollOnce(ctx context.Context, expected *syncRequest) error {
 			slog.Warn("ingest rejected by generation fence", "error", err)
 			poll.Status = "FAILED"
 			poll.Error = err.Error()
-			_ = m.store.FinishPoll(ctx, poll)
+			_ = m.finishPoll(ctx, poll, 0)
 			return err
 		}
 		slog.Error("batch ingest failed", "error", err)
 		poll.Status = "FAILED"
 		poll.Error = err.Error()
-		_ = m.store.FinishPoll(ctx, poll)
+		_ = m.finishPoll(ctx, poll, 0)
 		return err
 	}
 
 	poll.Status = "SUCCEEDED"
 	m.backoffUntil = time.Time{}
 	telemetry.Default.SetCircuitBreaker(false)
-	if err := m.store.FinishPoll(ctx, poll); err != nil {
+	if err := m.finishPoll(ctx, poll, batchRes.InsertedCount); err != nil {
 		return err
 	}
 

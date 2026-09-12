@@ -176,6 +176,7 @@ func (s *Store) IngestTransactionsBatch(ctx context.Context, connectionID string
 				eventData := map[string]any{
 					"bank":              "ACB",
 					"accountMasked":     accountMasked,
+					"transactionId":     txnID,
 					"transactionNumber": item.Number,
 					"credit":            fmt.Sprintf("%d", item.Credit),
 					"debit":             fmt.Sprintf("%d", item.Debit),

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -147,6 +148,35 @@ func main() {
 			})
 		}
 		dispatcher.Wake()
+	})
+	bankMonitor.WithPollNotifier(func(p storage.PollRun, insertedCount int) {
+		payload, err := json.Marshal(map[string]any{
+			"pollId":        p.ID,
+			"status":        p.Status,
+			"classifier":    p.Classifier,
+			"httpStatus":    p.HTTPStatus,
+			"pages":         p.Pages,
+			"rowsSeen":      p.RowsSeen,
+			"insertedCount": insertedCount,
+			"error":         p.Error,
+			"startedAt":     p.StartedAt,
+			"finishedAt":    p.FinishedAt,
+		})
+		if err != nil {
+			return
+		}
+		seq, err := store.AppendJournalEvent(context.Background(), "ep1", "poll.completed", p.ID, payload)
+		if err != nil {
+			return
+		}
+		hub.Publish(eventhub.Event{
+			Seq:         seq,
+			Epoch:       "ep1",
+			EventType:   "poll.completed",
+			AggregateID: p.ID,
+			Payload:     payload,
+			CreatedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+		})
 	})
 	var sessionLoader *monitor.SessionLoader
 	if keyring != nil {

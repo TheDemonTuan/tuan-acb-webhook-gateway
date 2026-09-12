@@ -112,6 +112,55 @@ func TestMonitorUsesConfiguredAccountWhenResponseOmitsAccountNbr(t *testing.T) {
 	}
 }
 
+func TestMonitorPollNotifierFiresOnCompletion(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.Open(ctx, filepath.Join(t.TempDir(), "gateway.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	_, _ = store.ConfigureConnection(ctx, "***1234")
+	_, _ = store.DB().ExecContext(ctx, `UPDATE connections SET state='MONITORING'`)
+
+	mock := &mockBankClient{
+		getResp: acb.Response{
+			StatusCode: 200,
+			Kind:       acb.HistoryPage,
+			Body:       mockHistoryHTML,
+		},
+	}
+
+	m := New(store, mock, 5*time.Second, 5*time.Second)
+	var notifiedPoll storage.PollRun
+	var notifiedInserted int
+	m.WithPollNotifier(func(poll storage.PollRun, insertedCount int) {
+		notifiedPoll = poll
+		notifiedInserted = insertedCount
+	})
+
+	err = m.PollOnce(ctx)
+	if err != nil {
+		t.Fatalf("poll failed: %v", err)
+	}
+
+	if notifiedPoll.ID == "" || notifiedPoll.Status != "SUCCEEDED" || notifiedPoll.RowsSeen != 1 {
+		t.Fatalf("unexpected notified poll: %+v", notifiedPoll)
+	}
+	if notifiedInserted != 1 {
+		t.Fatalf("expected 1 inserted transaction, got %d", notifiedInserted)
+	}
+
+	// Second poll deduplicates -> notifiedInserted should be 0
+	err = m.PollOnce(ctx)
+	if err != nil {
+		t.Fatalf("second poll failed: %v", err)
+	}
+	if notifiedInserted != 0 {
+		t.Fatalf("expected 0 inserted on dedup poll, got %d", notifiedInserted)
+	}
+}
+
 func TestMonitorPollHappyPath(t *testing.T) {
 	ctx := context.Background()
 	store, err := storage.Open(ctx, filepath.Join(t.TempDir(), "gateway.db"))

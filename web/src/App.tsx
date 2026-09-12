@@ -364,6 +364,33 @@ export default function App() {
         setTransactions((current) => current.some((item) => item.id === newTx.id || item.semanticKey === newTx.semanticKey)
           ? current
           : [newTx, ...current]);
+        void load();
+      } else if (type === 'poll.completed') {
+        const p = data as Record<string, unknown>;
+        if (p.pollId) {
+          const run: PollRun = {
+            id: String(p.pollId),
+            connectionId: String(p.connectionId ?? ''),
+            generation: Number(p.generation ?? 0),
+            status: String(p.status ?? 'SUCCEEDED'),
+            classifier: p.classifier ? String(p.classifier) : undefined,
+            httpStatus: p.httpStatus ? Number(p.httpStatus) : undefined,
+            pages: Number(p.pages ?? 1),
+            rowsSeen: Number(p.rowsSeen ?? 0),
+            error: p.error ? String(p.error) : undefined,
+            startedAt: String(p.startedAt ?? new Date().toISOString()),
+            finishedAt: p.finishedAt ? String(p.finishedAt) : undefined,
+          };
+          setPollRuns((current) => [run, ...current.filter((item) => item.id !== run.id)]);
+        }
+        if (p.insertedCount && Number(p.insertedCount) > 0) {
+          api<PageResponse<Transaction>>('/transactions?limit=50').then((txRes) => {
+            setTransactions((current) => current.length > 50
+              ? [...txRes.items, ...current.filter((item) => !txRes.items.some((fresh) => fresh.id === item.id))]
+              : txRes.items);
+          }).catch(() => {});
+        }
+        void load();
       } else {
         void load();
       }
