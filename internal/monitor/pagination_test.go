@@ -287,3 +287,160 @@ func TestRealtimePollPartialOnPage2Failure(t *testing.T) {
 		t.Fatalf("expected 1 row seen from page 1, got %d", finishedPoll.RowsSeen)
 	}
 }
+
+type multiDayFailMockClient struct {
+	failOnDate string
+}
+
+func (m *multiDayFailMockClient) Bootstrap(ctx context.Context) (acb.Response, error) {
+	body := `<form action="/history" method="POST">
+		<input type="hidden" name="dse_operationName" value="op1" />
+		<input type="hidden" name="dse_processorState" value="ps1" />
+		<input type="hidden" name="AccountNbr" value="123456" />
+	</form>`
+	return acb.Response{StatusCode: 200, Body: body, Kind: acb.AccountDetailPage}, nil
+}
+
+func (m *multiDayFailMockClient) History(ctx context.Context, endpoint string, fields map[string]string) (acb.Response, error) {
+	date := fields["FromDate"]
+	if m.failOnDate != "" && date == m.failOnDate {
+		return acb.Response{StatusCode: 500}, context.DeadlineExceeded
+	}
+	body := `<form action="/history" method="POST">
+		<input type="hidden" name="dse_operationName" value="op1" />
+		<input type="hidden" name="dse_processorState" value="ps1" />
+		<input type="hidden" name="AccountNbr" value="123456" />
+	</form>
+	<table>
+		<tr><th>Số GD</th><th>Ngày giao dịch</th><th>Ghi nợ</th><th>Ghi có</th></tr>
+		<tr><td>TX_` + date + `</td><td>` + date + `</td><td>0</td><td>10.000</td></tr>
+	</table>`
+	return acb.Response{StatusCode: 200, Body: body, Kind: acb.HistoryPage}, nil
+}
+
+func TestProgressiveCatchUpAdvancesCheckpointPerDay(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.Open(ctx, filepath.Join(t.TempDir(), "test_prog_catchup.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	connID := "conn_prog_catchup"
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO connections(id, state, generation, account_masked, created_at, updated_at)
+		VALUES(?, 'MONITORING', 1, '123456', '2026-09-12T00:00:00Z', '2026-09-12T00:00:00Z')
+	`, connID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Initial checkpoint: CoverageTo = 2026-09-10
+	if err := store.SaveCheckpoint(ctx, storage.Checkpoint{
+		ConnectionID: connID,
+		ScanID:       "init",
+		CoverageFrom: "2026-09-08",
+		CoverageTo:   "2026-09-10",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 12/09/2026 fails (today), but 11/09/2026 succeeds!
+	client := &multiDayFailMockClient{failOnDate: "12/09/2026"}
+	mon := New(store, client, 5*time.Second, 15*time.Second)
+
+	err = mon.catchUp(ctx)
+	if err == nil {
+		t.Fatal("expected catchUp to fail on 12/09/2026")
+	}
+
+	// Verify that 2026-09-11 WAS completed and checkpoint was progressively advanced to 2026-09-11!
+	cp, err := store.GetCheckpoint(ctx, connID)
+	if err != nil || cp == nil {
+		t.Fatalf("expected checkpoint to exist, err=%v", err)
+	}
+	if cp.CoverageTo != "2026-09-11" {
+		t.Fatalf("expected checkpoint to progressively advance to 2026-09-11, got: %s", cp.CoverageTo)
+	}
+
+	// Verify coverage was recorded for 2026-09-11
+	covered, err := store.CheckRangeCoverage(ctx, connID, "2026-09-11", "2026-09-11")
+	if err != nil || !covered {
+		t.Fatalf("expected 2026-09-11 to be covered, got covered=%v, err=%v", covered, err)
+	}
+
+	// Now fix 12/09/2026 and run catchUp again
+	client.failOnDate = ""
+	err = mon.catchUp(ctx)
+	if err != nil {
+		t.Fatalf("expected second catchUp to succeed, got: %v", err)
+	}
+
+	// Verify checkpoint advanced to 2026-09-12 (today) and catchUpPending is false
+	cpAfter, err := store.GetCheckpoint(ctx, connID)
+	if err != nil || cpAfter == nil {
+		t.Fatalf("expected checkpoint to exist, err=%v", err)
+	}
+	if cpAfter.CoverageTo != "2026-09-12" {
+		t.Fatalf("expected checkpoint to reach 2026-09-12, got: %s", cpAfter.CoverageTo)
+	}
+	if mon.catchUpPending {
+		t.Fatal("expected catchUpPending to be false after complete catchUp")
+	}
+}
+
+type emptyNavMockClient struct{}
+
+func (m *emptyNavMockClient) Bootstrap(ctx context.Context) (acb.Response, error) {
+	body := `<form action="/history" method="POST">
+		<input type="hidden" name="dse_operationName" value="op1" />
+		<input type="hidden" name="dse_processorState" value="ps1" />
+		<input type="hidden" name="AccountNbr" value="123456" />
+	</form>`
+	return acb.Response{StatusCode: 200, Body: body, Kind: acb.AccountDetailPage}, nil
+}
+
+func (m *emptyNavMockClient) History(ctx context.Context, endpoint string, fields map[string]string) (acb.Response, error) {
+	body := `<table>
+		<tr><th>Số GD</th><th>Ngày giao dịch</th><th>Ghi nợ</th><th>Ghi có</th></tr>
+		<tr><td>TX_EMPTY_NAV</td><td>12/09/2026</td><td>0</td><td>10.000</td></tr>
+		<tr><td colspan="4"><a href="javascript:void(0)" onclick="someNav()">Trang sau</a></td></tr>
+	</table>`
+	return acb.Response{StatusCode: 200, Body: body, Kind: acb.HistoryPage}, nil
+}
+
+func TestRealtimePollPartialWhenHasNextWithEmptyNavigation(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.Open(ctx, filepath.Join(t.TempDir(), "test_realtime_empty_nav.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	connID := "conn_empty_nav"
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO connections(id, state, generation, account_masked, created_at, updated_at)
+		VALUES(?, 'MONITORING', 1, '123456', '2026-09-12T00:00:00Z', '2026-09-12T00:00:00Z')
+	`, connID); err != nil {
+		t.Fatal(err)
+	}
+
+	client := &emptyNavMockClient{}
+	mon := New(store, client, 5*time.Second, 15*time.Second)
+
+	var finishedPoll storage.PollRun
+	mon.WithPollNotifier(func(poll storage.PollRun, insertedCount int) {
+		finishedPoll = poll
+	})
+
+	err = mon.pollOnce(ctx, nil)
+	if err != nil {
+		t.Fatalf("expected pollOnce to succeed ingesting current transactions, got: %v", err)
+	}
+
+	if finishedPoll.Status != "PARTIAL" {
+		t.Fatalf("expected poll status PARTIAL when navigation is empty, got %s", finishedPoll.Status)
+	}
+	if finishedPoll.RowsSeen != 1 {
+		t.Fatalf("expected 1 row seen, got %d", finishedPoll.RowsSeen)
+	}
+}

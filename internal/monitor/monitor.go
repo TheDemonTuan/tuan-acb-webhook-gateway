@@ -234,6 +234,10 @@ func (m *Monitor) fetchHistoryRange(ctx context.Context, conn *storage.Connectio
 
 		if pageResult.TotalRows > maxTotalRowsSeen {
 			maxTotalRowsSeen = pageResult.TotalRows
+			neededPages := (maxTotalRowsSeen / 10) + 2
+			if neededPages > maxPages && neededPages <= 50 {
+				maxPages = neededPages
+			}
 		}
 
 		if !pageResult.HasNext {
@@ -533,39 +537,51 @@ func (m *Monitor) pollOnce(ctx context.Context, expected *syncRequest) error {
 	isPartial := false
 
 	// If page has next, fetch up to 5 pages for realtime poll
-	if pageResult.HasNext && (pageResult.NextAction != "" || len(pageResult.NextFields) > 0) {
-		curAction := pageResult.NextAction
-		curFields := pageResult.NextFields
-		for pagesCount < 5 {
-			if curFields == nil {
-				curFields = make(map[string]string)
-			}
-			curFields["_raw"] = "true"
-			nextResp, nextErr := m.client.History(ctx, curAction, curFields)
-			if nextErr != nil {
-				slog.Warn("realtime poll next page fetch error", "page", pagesCount+1, "error", nextErr)
-				isPartial = true
-				pollErr = nextErr
-				break
-			}
-			pagesCount++
-			nextPage, err := acb.ParseHistoryPage(nextResp.Body)
-			if err != nil {
-				slog.Warn("realtime poll next page parse error", "page", pagesCount, "error", err)
-				isPartial = true
-				pollErr = err
-				break
-			}
-			allTxns = append(allTxns, nextPage.Transactions...)
-			if !nextPage.HasNext || (nextPage.NextAction == "" && len(nextPage.NextFields) == 0) {
-				break
-			}
-			curAction = nextPage.NextAction
-			curFields = nextPage.NextFields
-			if pagesCount >= 5 && nextPage.HasNext {
-				slog.Warn("realtime poll reached page budget while more pages remain", "pages", pagesCount)
-				isPartial = true
-				break
+	if pageResult.HasNext {
+		if pageResult.NextAction == "" && len(pageResult.NextFields) == 0 {
+			slog.Warn("realtime poll page indicates next page exists but no navigation available")
+			isPartial = true
+			pollErr = errors.New("pagination unavailable: next page exists but navigation action and fields are empty")
+		} else {
+			curAction := pageResult.NextAction
+			curFields := pageResult.NextFields
+			for pagesCount < 5 {
+				if curFields == nil {
+					curFields = make(map[string]string)
+				}
+				curFields["_raw"] = "true"
+				nextResp, nextErr := m.client.History(ctx, curAction, curFields)
+				if nextErr != nil {
+					slog.Warn("realtime poll next page fetch error", "page", pagesCount+1, "error", nextErr)
+					isPartial = true
+					pollErr = nextErr
+					break
+				}
+				pagesCount++
+				nextPage, err := acb.ParseHistoryPage(nextResp.Body)
+				if err != nil {
+					slog.Warn("realtime poll next page parse error", "page", pagesCount, "error", err)
+					isPartial = true
+					pollErr = err
+					break
+				}
+				allTxns = append(allTxns, nextPage.Transactions...)
+				if !nextPage.HasNext {
+					break
+				}
+				if nextPage.NextAction == "" && len(nextPage.NextFields) == 0 {
+					slog.Warn("realtime poll reached page with HasNext but no navigation available", "page", pagesCount)
+					isPartial = true
+					pollErr = errors.New("pagination unavailable: next page exists but navigation action and fields are empty")
+					break
+				}
+				curAction = nextPage.NextAction
+				curFields = nextPage.NextFields
+				if pagesCount >= 5 && nextPage.HasNext {
+					slog.Warn("realtime poll reached page budget while more pages remain", "pages", pagesCount)
+					isPartial = true
+					break
+				}
 			}
 		}
 	}
@@ -770,61 +786,78 @@ func (m *Monitor) catchUp(ctx context.Context) error {
 	fromT, _ := time.Parse("2006-01-02", fromDate)
 	toT, _ := time.Parse("2006-01-02", today)
 
-	fetchRes, fetchErr := m.fetchHistoryRange(ctx, &conn, resp, fromDate, today, 10)
-	if fetchErr != nil {
-		m.catchUpPending = true
-		return fmt.Errorf("catch-up fetch: %w", fetchErr)
-	}
+	currentResp := resp
+	totalInserted := 0
+	totalSkipped := 0
+	totalEmitted := 0
 
-	// Ingest with CATCH_UP source:
-	// New credit transactions enqueue webhooks (no missed payments!), but voice is suppressed!
-	res, err := m.store.IngestTransactionsBatchWithSource(ctx, conn.ID, conn.Generation, conn.AccountMasked, fetchRes.Transactions, false, "CATCH_UP")
-	if err != nil {
-		return fmt.Errorf("catch-up ingest: %w", err)
-	}
+	for curDay := fromT; !curDay.After(toT); curDay = curDay.AddDate(0, 0, 1) {
+		dayStr := curDay.Format("2006-01-02")
 
-	if !fetchRes.Complete {
-		slog.Warn("catch-up range incomplete; withholding coverage checkpoint to force resync on next cycle", "pages", fetchRes.PagesFetched, "rows", len(fetchRes.Transactions))
-		m.catchUpPending = true
-		if m.onNewEvents != nil && len(res.NewEvents) > 0 {
-			m.onNewEvents(res.NewEvents)
-		}
-		return ErrCatchUpIncomplete
-	}
-
-	dayCounts := make(map[string]int)
-	for cur := fromT; !cur.After(toT); cur = cur.AddDate(0, 0, 1) {
-		dayCounts[cur.Format("2006-01-02")] = 0
-	}
-	for _, item := range fetchRes.Transactions {
-		day := item.TransactionAt
-		if len(day) >= 10 {
-			if t, err := time.Parse("02/01/2006", day[:10]); err == nil {
-				day = t.Format("2006-01-02")
+		// If historical day (before today) is already covered, we can safely advance checkpoint to dayStr
+		if curDay.Before(toT) {
+			if covered, err := m.store.CheckRangeCoverage(ctx, conn.ID, dayStr, dayStr); err == nil && covered {
+				_ = m.store.SaveCheckpoint(ctx, storage.Checkpoint{
+					ConnectionID: conn.ID,
+					ScanID:       "scan_" + strconv.FormatInt(time.Now().Unix(), 10),
+					CoverageFrom: fromDate,
+					CoverageTo:   dayStr,
+				})
+				continue
 			}
 		}
-		if _, exists := dayCounts[day]; exists {
-			dayCounts[day]++
+
+		fetchRes, fetchErr := m.fetchHistoryRange(ctx, &conn, currentResp, dayStr, dayStr, 20)
+		if fetchErr != nil {
+			m.catchUpPending = true
+			return fmt.Errorf("catch-up fetch for %s: %w", dayStr, fetchErr)
+		}
+		if fetchRes.LastResponse.Body != "" {
+			if _, err := acb.ExtractHistoryForm(fetchRes.LastResponse.Body); err == nil {
+				currentResp = fetchRes.LastResponse
+			}
+		}
+
+		// Ingest with CATCH_UP source:
+		// New credit transactions enqueue webhooks (no missed payments!), but voice is suppressed!
+		res, err := m.store.IngestTransactionsBatchWithSource(ctx, conn.ID, conn.Generation, conn.AccountMasked, fetchRes.Transactions, false, "CATCH_UP")
+		if err != nil {
+			m.catchUpPending = true
+			return fmt.Errorf("catch-up ingest for %s: %w", dayStr, err)
+		}
+		totalInserted += res.InsertedCount
+		totalSkipped += res.SkippedCount
+		if m.onNewEvents != nil && len(res.NewEvents) > 0 {
+			m.onNewEvents(res.NewEvents)
+			totalEmitted += len(res.NewEvents)
+		}
+
+		if !fetchRes.Complete {
+			slog.Warn("catch-up for day incomplete; withholding checkpoint advancement to force retry", "day", dayStr, "pages", fetchRes.PagesFetched, "rows", len(fetchRes.Transactions))
+			m.catchUpPending = true
+			return ErrCatchUpIncomplete
+		}
+
+		// Mark this day's coverage as COMPLETE
+		_ = m.store.RecordCoveragePerDay(ctx, conn.ID, map[string]int{dayStr: len(fetchRes.Transactions)})
+
+		// Progressively advance checkpoint to this completed day
+		if err := m.store.SaveCheckpoint(ctx, storage.Checkpoint{
+			ConnectionID: conn.ID,
+			ScanID:       "scan_" + strconv.FormatInt(time.Now().Unix(), 10),
+			CoverageFrom: fromDate,
+			CoverageTo:   dayStr,
+		}); err != nil {
+			slog.Warn("failed to save catch-up checkpoint", "day", dayStr, "error", err)
 		}
 	}
-	_ = m.store.RecordCoveragePerDay(ctx, conn.ID, dayCounts)
-	if err := m.store.SaveCheckpoint(ctx, storage.Checkpoint{
-		ConnectionID: conn.ID,
-		ScanID:       "scan_" + strconv.FormatInt(time.Now().Unix(), 10),
-		CoverageFrom: fromDate,
-		CoverageTo:   today,
-	}); err != nil {
-		slog.Warn("failed to save catch-up checkpoint", "error", err)
-	}
+
 	m.catchUpPending = false
 	if m.sessions != nil {
 		_ = m.sessions.Persist(ctx, conn.ID, conn.Generation)
 	}
-	if m.onNewEvents != nil && len(res.NewEvents) > 0 {
-		m.onNewEvents(res.NewEvents)
-	}
 
-	slog.Info("catch-up completed", "inserted", res.InsertedCount, "skipped", res.SkippedCount, "pages", fetchRes.PagesFetched)
+	slog.Info("catch-up completed", "from", fromDate, "to", today, "inserted", totalInserted, "skipped", totalSkipped, "emitted", totalEmitted)
 	return nil
 }
 

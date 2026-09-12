@@ -65,8 +65,8 @@ ensure_secret_permissions() {
   cur_uid="$(stat -c '%u' "$target_path" 2>/dev/null || stat -f '%u' "$target_path" 2>/dev/null || echo "")"
   if [[ "$cur_uid" != "1000" ]]; then
     if ! chown 1000:1000 "$target_path" 2>/dev/null; then
-      if command -v docker >/dev/null 2>&1; then
-        docker run --rm -v "$(dirname "$target_path"):/sec" --entrypoint /bin/sh "$image_ref" -c "chown 1000:1000 /sec/$(basename "$target_path")" 2>/dev/null || true
+      if command -v docker >/dev/null 2>&1 && [[ -n "${tts_image_ref:-}" ]]; then
+        docker run --rm --user 0:0 -v "$(dirname "$target_path"):/sec" --entrypoint /bin/sh "$tts_image_ref" -c "chown 1000:1000 /sec/$(basename "$target_path")" 2>/dev/null || true
       fi
     fi
   fi
@@ -76,15 +76,15 @@ ensure_secret_permissions() {
 # Clean up any stale directory created by Docker bind-mount on previous deploys
 if [[ -d "$script_dir/secrets/app_master_key" ]]; then
   rmdir "$script_dir/secrets/app_master_key" 2>/dev/null || rm -rf "$script_dir/secrets/app_master_key" 2>/dev/null || true
-  if [[ -d "$script_dir/secrets/app_master_key" ]] && command -v docker >/dev/null 2>&1; then
-    docker run --rm -v "$script_dir/secrets:/sec" --entrypoint /bin/sh "$image_ref" -c "rm -rf /sec/app_master_key" 2>/dev/null || true
+  if [[ -d "$script_dir/secrets/app_master_key" ]] && command -v docker >/dev/null 2>&1 && [[ -n "${tts_image_ref:-}" ]]; then
+    docker run --rm --user 0:0 -v "$script_dir/secrets:/sec" --entrypoint /bin/sh "$tts_image_ref" -c "rm -rf /sec/app_master_key" 2>/dev/null || true
   fi
 fi
 
 if [[ -d "$script_dir/secrets/tts_internal_token" ]]; then
   rmdir "$script_dir/secrets/tts_internal_token" 2>/dev/null || rm -rf "$script_dir/secrets/tts_internal_token" 2>/dev/null || true
-  if [[ -d "$script_dir/secrets/tts_internal_token" ]] && command -v docker >/dev/null 2>&1; then
-    docker run --rm -v "$script_dir/secrets:/sec" --entrypoint /bin/sh "$image_ref" -c "rm -rf /sec/tts_internal_token" 2>/dev/null || true
+  if [[ -d "$script_dir/secrets/tts_internal_token" ]] && command -v docker >/dev/null 2>&1 && [[ -n "${tts_image_ref:-}" ]]; then
+    docker run --rm --user 0:0 -v "$script_dir/secrets:/sec" --entrypoint /bin/sh "$tts_image_ref" -c "rm -rf /sec/tts_internal_token" 2>/dev/null || true
   fi
 fi
 
