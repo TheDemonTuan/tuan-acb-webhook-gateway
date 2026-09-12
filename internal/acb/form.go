@@ -33,12 +33,8 @@ func PrepareHistoryFields(fields map[string]string, now time.Time, location *tim
 	prepared["CheckRef"] = "false"
 	prepared["CheckDoiUng"] = "false"
 
-	// These controls belong to mutually exclusive search modes or auxiliary
-	// balance-confirmation forms and must not survive a by-date submission.
-	for _, name := range []string{
-		"activeDatetimeByMonth", "MonthCurr", "YearCurr",
-		"MajorTKXacNhanSoDu", "MinorTKXacNhanSoDu", "SoDuTKXacNhanSoDu",
-	} {
+	// These controls belong to the mutually exclusive by-month query.
+	for _, name := range []string{"activeDatetimeByMonth", "MonthCurr", "YearCurr"} {
 		delete(prepared, name)
 	}
 	return prepared, nil

@@ -19,9 +19,6 @@ func TestPrepareHistoryFieldsOverridesStaleMonthFilter(t *testing.T) {
 		"ToDate":                "12/09/2026",
 		"CheckRef":              "true",
 		"CheckDoiUng":           "true",
-		"MajorTKXacNhanSoDu":    "1",
-		"MinorTKXacNhanSoDu":    "2",
-		"SoDuTKXacNhanSoDu":     "3",
 	}, time.Date(2026, 9, 12, 0, 30, 0, 0, location), location)
 	if err != nil {
 		t.Fatal(err)
@@ -35,7 +32,7 @@ func TestPrepareHistoryFieldsOverridesStaleMonthFilter(t *testing.T) {
 	if fields["CheckRef"] != "false" || fields["CheckDoiUng"] != "false" {
 		t.Fatalf("unexpected optional filters: %#v", fields)
 	}
-	for _, name := range []string{"activeDatetimeByMonth", "MonthCurr", "YearCurr", "MajorTKXacNhanSoDu", "MinorTKXacNhanSoDu", "SoDuTKXacNhanSoDu"} {
+	for _, name := range []string{"activeDatetimeByMonth", "MonthCurr", "YearCurr"} {
 		if _, ok := fields[name]; ok {
 			t.Fatalf("month-only field %s was retained", name)
 		}
