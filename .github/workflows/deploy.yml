@@ -222,7 +222,7 @@ jobs:
           browser_image="${{ needs.build-auth-browser-image.outputs.image }}@${{ needs.build-auth-browser-image.outputs.digest }}"
           owner="$(printf '%s' "$DASHBOARD_OWNER_EMAIL" | tr '[:upper:]' '[:lower:]')"
           ssh -i ~/.ssh/id_ed25519 -p "$VPS_PORT" -o BatchMode=yes \
-            "$VPS_USER@$VPS_HOST" "DEPLOY_PATH='$DEPLOY_PATH' OWNER='$owner' IMAGE='$image' BROWSER_IMAGE='$browser_image' bash -s" <<'REMOTE'
+            "$VPS_USER@$VPS_HOST" "DEPLOY_PATH='$DEPLOY_PATH' OWNER='$owner' IMAGE='$image' BROWSER_IMAGE='$browser_image' TTS_IMAGE='$tts_image' bash -s" <<'REMOTE'
           set -Eeuo pipefail
           env_file="$DEPLOY_PATH/.env.production"
           [[ -f "$env_file" ]] || { printf 'Missing production env file: %s\n' "$env_file" >&2; exit 1; }
