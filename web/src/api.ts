@@ -14,6 +14,8 @@ export class ApiError extends Error {
 export const AUTH_CODE_SUPERSEDED = 'AUTH_SESSION_SUPERSEDED';
 export const AUTH_CODE_NOT_FOUND = 'AUTH_SESSION_NOT_FOUND';
 export const AUTH_CODE_UNAVAILABLE = 'AUTH_SESSION_UNAVAILABLE';
+export const CSRF_CODE_ORIGIN_MISMATCH = 'ORIGIN_MISMATCH';
+export const CSRF_CODE_TOKEN_INVALID = 'CSRF_TOKEN_INVALID';
 
 export const TERMINAL_AUTH_CODES = [AUTH_CODE_SUPERSEDED, AUTH_CODE_NOT_FOUND] as const;
 export type TerminalAuthCode = (typeof TERMINAL_AUTH_CODES)[number];
@@ -42,6 +44,12 @@ export const parseApiError = async (response: Response): Promise<ApiError> => {
     }
   }
 
+  if (code === CSRF_CODE_ORIGIN_MISMATCH) {
+    message = 'Xác thực bảo mật Origin không khớp với cấu hình máy chủ. Vui lòng kiểm tra PUBLIC_ORIGIN.';
+  } else if (code === CSRF_CODE_TOKEN_INVALID) {
+    message = 'Phiên bảo mật (CSRF) không hợp lệ hoặc đã hết hạn. Vui lòng thử lại.';
+  }
+
   return new ApiError(message, response.status, code);
 };
 
@@ -65,4 +73,30 @@ export const api = async <T,>(path: string, init?: RequestInit): Promise<T> => {
   } catch {
     throw new Error('Máy chủ trả về dữ liệu không hợp lệ. Vui lòng thử lại.');
   }
+};
+
+let cachedCsrfToken: string | null = null;
+let csrfPromise: Promise<string> | null = null;
+
+export const getCsrfToken = async (forceRefresh = false): Promise<string> => {
+  if (!forceRefresh && cachedCsrfToken) {
+    return cachedCsrfToken;
+  }
+  if (csrfPromise) {
+    return csrfPromise;
+  }
+  csrfPromise = (async () => {
+    try {
+      const res = await api<{ token: string }>('/csrf');
+      cachedCsrfToken = res.token;
+      return res.token;
+    } finally {
+      csrfPromise = null;
+    }
+  })();
+  return csrfPromise;
+};
+
+export const invalidateCsrfToken = () => {
+  cachedCsrfToken = null;
 };

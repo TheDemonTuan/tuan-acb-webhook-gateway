@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -72,9 +73,14 @@ func (m *Middleware) Require(roles ...Role) func(http.Handler) http.Handler {
 				return
 			}
 			if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
-				if !sameOrigin(r) || !csrfValid(r) {
-					slog.Warn("csrf rejected", "method", r.Method, "path", r.URL.Path)
-					writeAuthError(w, http.StatusForbidden, "csrf validation failed")
+				if !m.sameOrigin(r) {
+					slog.Warn("csrf rejected: origin mismatch", "method", r.Method, "path", r.URL.Path, "origin", r.Header.Get("Origin"), "expected", m.publicOriginURL(r).String())
+					writeAuthErrorWithCode(w, http.StatusForbidden, "csrf validation failed: origin mismatch", "ORIGIN_MISMATCH")
+					return
+				}
+				if !csrfValid(r) {
+					slog.Warn("csrf rejected: invalid token", "method", r.Method, "path", r.URL.Path)
+					writeAuthErrorWithCode(w, http.StatusForbidden, "csrf validation failed: invalid token", "CSRF_TOKEN_INVALID")
 					return
 				}
 			}
@@ -96,10 +102,18 @@ func extractToken(r *http.Request) string {
 	return ""
 }
 
-func writeAuthError(w http.ResponseWriter, code int, message string) {
+func writeAuthErrorWithCode(w http.ResponseWriter, code int, message string, errCode string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
+	resp := map[string]string{"error": message}
+	if errCode != "" {
+		resp["code"] = errCode
+	}
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func writeAuthError(w http.ResponseWriter, code int, message string) {
+	writeAuthErrorWithCode(w, code, message, "")
 }
 
 func (m *Middleware) identity(r *http.Request) (Identity, error) {
@@ -161,32 +175,114 @@ func allows(actual Role, required []Role) bool {
 }
 func CSRF(w http.ResponseWriter, r *http.Request) {
 	encoded := ""
-	if existing, err := r.Cookie("tbg_csrf"); err == nil {
+	if existing, err := r.Cookie("tbg_csrf"); err == nil && len(existing.Value) >= 16 {
 		encoded = existing.Value
 	}
 	if encoded == "" {
 		token := make([]byte, 32)
 		_, _ = rand.Read(token)
 		encoded = base64.RawURLEncoding.EncodeToString(token)
-		http.SetCookie(w, &http.Cookie{Name: "tbg_csrf", Value: encoded, Path: "/api/v1", Secure: publicOrigin(r).Scheme == "https", SameSite: http.SameSiteStrictMode, MaxAge: 3600, HttpOnly: true})
+		secure := isSecureRequest(r)
+		http.SetCookie(w, &http.Cookie{
+			Name:     "tbg_csrf",
+			Value:    encoded,
+			Path:     "/api/v1",
+			Secure:   secure,
+			SameSite: http.SameSiteStrictMode,
+			MaxAge:   3600,
+			HttpOnly: true,
+		})
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"token":"` + encoded + `"}`))
 }
+
 func csrfValid(r *http.Request) bool {
 	cookie, err := r.Cookie("tbg_csrf")
 	if err != nil || cookie.Value == "" {
 		return false
 	}
-	return subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(r.Header.Get("X-CSRF-Token"))) == 1
+	token := strings.TrimSpace(r.Header.Get("X-CSRF-Token"))
+	if token == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(token)) == 1
 }
-func sameOrigin(r *http.Request) bool {
-	origin := r.Header.Get("Origin")
+
+func (m *Middleware) sameOrigin(r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
 	if origin == "" {
 		return false
 	}
-	return strings.TrimSuffix(origin, "/") == publicOrigin(r).String()
+
+	// 1. Check configured PublicOrigin
+	if pub := m.publicOriginURL(r); pub != nil && matchOrigin(origin, pub) {
+		return true
+	}
+
+	// 2. Check effective request origin (TLS / X-Forwarded-Proto + Host)
+	if eff := effectiveRequestOrigin(r); eff != nil && matchOrigin(origin, eff) {
+		return true
+	}
+
+	return false
+}
+
+func sameOrigin(r *http.Request) bool {
+	var m *Middleware
+	return m.sameOrigin(r)
+}
+
+func matchOrigin(origin string, expected *url.URL) bool {
+	if expected == nil || origin == "" {
+		return false
+	}
+	parsed, err := url.Parse(strings.TrimSpace(origin))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return false
+	}
+	if !strings.EqualFold(parsed.Scheme, expected.Scheme) {
+		return false
+	}
+	return strings.EqualFold(parsed.Host, expected.Host)
+}
+
+func effectiveRequestOrigin(r *http.Request) *url.URL {
+	scheme := "http"
+	if proto := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto"))); proto == "https" || proto == "http" {
+		scheme = proto
+	} else if r.TLS != nil {
+		scheme = "https"
+	}
+
+	host := strings.TrimSpace(r.Host)
+	if fHost := strings.TrimSpace(r.Header.Get("X-Forwarded-Host")); fHost != "" {
+		if idx := strings.IndexByte(fHost, ','); idx != -1 {
+			fHost = strings.TrimSpace(fHost[:idx])
+		}
+		if fHost != "" {
+			host = fHost
+		}
+	}
+	if host == "" {
+		return nil
+	}
+	if (scheme == "https" && strings.HasSuffix(host, ":443")) || (scheme == "http" && strings.HasSuffix(host, ":80")) {
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+	}
+	return &url.URL{Scheme: scheme, Host: host}
+}
+
+func (m *Middleware) publicOriginURL(r *http.Request) *url.URL {
+	if m != nil && m.cfg.PublicOrigin != "" {
+		if parsed, err := url.Parse(m.cfg.PublicOrigin); err == nil && parsed.Scheme != "" && parsed.Host != "" {
+			return &url.URL{Scheme: parsed.Scheme, Host: parsed.Host}
+		}
+	}
+	return publicOrigin(r)
 }
 
 // publicOrigin is configured at deployment because Cloudflare terminates TLS
@@ -198,8 +294,23 @@ func publicOrigin(r *http.Request) *url.URL {
 		}
 	}
 	scheme := "http"
-	if r.TLS != nil {
+	if proto := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto"))); proto == "https" {
+		scheme = "https"
+	} else if r.TLS != nil {
 		scheme = "https"
 	}
 	return &url.URL{Scheme: scheme, Host: r.Host}
+}
+
+func isSecureRequest(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	if strings.ToLower(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto"))) == "https" {
+		return true
+	}
+	if pub := publicOrigin(r); pub != nil && strings.EqualFold(pub.Scheme, "https") {
+		return true
+	}
+	return false
 }

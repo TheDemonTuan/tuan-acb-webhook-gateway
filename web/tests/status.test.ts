@@ -4,6 +4,8 @@ import {
   AUTH_CODE_NOT_FOUND,
   AUTH_CODE_SUPERSEDED,
   AUTH_CODE_UNAVAILABLE,
+  CSRF_CODE_ORIGIN_MISMATCH,
+  CSRF_CODE_TOKEN_INVALID,
   apiErrorMessage,
   isTerminalAuthError,
   parseApiError,
@@ -102,4 +104,30 @@ test('does not treat AUTH_SESSION_UNAVAILABLE or generic 409 as terminal', async
 
   const nonApiError = new Error('Random error');
   expect(isTerminalAuthError(nonApiError)).toBe(false);
+});
+
+test('parses ApiError for ORIGIN_MISMATCH and CSRF_TOKEN_INVALID with clear messages', async () => {
+  const originResponse = new Response(
+    JSON.stringify({
+      code: CSRF_CODE_ORIGIN_MISMATCH,
+      error: 'csrf validation failed: origin mismatch',
+    }),
+    { status: 403, headers: { 'Content-Type': 'application/json' } }
+  );
+  const originError = await parseApiError(originResponse);
+  expect(originError.status).toBe(403);
+  expect(originError.code).toBe('ORIGIN_MISMATCH');
+  expect(originError.message).toContain('PUBLIC_ORIGIN');
+
+  const tokenResponse = new Response(
+    JSON.stringify({
+      code: CSRF_CODE_TOKEN_INVALID,
+      error: 'csrf validation failed: invalid token',
+    }),
+    { status: 403, headers: { 'Content-Type': 'application/json' } }
+  );
+  const tokenError = await parseApiError(tokenResponse);
+  expect(tokenError.status).toBe(403);
+  expect(tokenError.code).toBe('CSRF_TOKEN_INVALID');
+  expect(tokenError.message).toContain('CSRF');
 });

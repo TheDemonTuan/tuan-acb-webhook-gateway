@@ -2,11 +2,12 @@ package auth
 
 import (
 	"context"
-
-	"github.com/thedemontuan/acb-transaction-webhook/internal/config"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/thedemontuan/acb-transaction-webhook/internal/config"
 )
 
 func TestDevelopmentRolesAndCSRF(t *testing.T) {
@@ -120,5 +121,85 @@ func TestDevelopmentRejectsBadCSRF(t *testing.T) {
 	h.ServeHTTP(rec, r)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("%d", rec.Code)
+	}
+}
+
+func TestCSRFOriginMismatchReturnsCode(t *testing.T) {
+	m := New(config.Config{DevelopmentSubject: "alice", PublicOrigin: "https://bank.tuannguyenviet.site"}, nil)
+	h := m.Require(Owner)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+
+	csrfReq := httptest.NewRequest(http.MethodGet, "https://bank.tuannguyenviet.site/api/v1/csrf", nil)
+	csrfRec := httptest.NewRecorder()
+	CSRF(csrfRec, csrfReq)
+	cookie := csrfRec.Result().Cookies()[0]
+
+	post := httptest.NewRequest(http.MethodPost, "https://bank.tuannguyenviet.site/api/v1/connection/auth/start", nil)
+	post.Header.Set("Origin", "https://evil-attacker.com")
+	post.Header.Set("X-CSRF-Token", cookie.Value)
+	post.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, post)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rec.Code)
+	}
+	var resp map[string]string
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	if resp["code"] != "ORIGIN_MISMATCH" {
+		t.Fatalf("expected ORIGIN_MISMATCH code, got %v", resp)
+	}
+}
+
+func TestCSRFBehindReverseProxyWithForwardedProtoAndHost(t *testing.T) {
+	m := New(config.Config{DevelopmentSubject: "alice"}, nil)
+	h := m.Require(Owner)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+
+	csrfReq := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8090/api/v1/csrf", nil)
+	csrfReq.Header.Set("X-Forwarded-Proto", "https")
+	csrfReq.Host = "bank.tuannguyenviet.site"
+	csrfRec := httptest.NewRecorder()
+	CSRF(csrfRec, csrfReq)
+	cookie := csrfRec.Result().Cookies()[0]
+	if !cookie.Secure {
+		t.Fatal("expected secure cookie behind https reverse proxy")
+	}
+
+	post := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8090/api/v1/connection/auth/start", nil)
+	post.Header.Set("X-Forwarded-Proto", "https")
+	post.Host = "bank.tuannguyenviet.site"
+	post.Header.Set("Origin", "https://bank.tuannguyenviet.site")
+	post.Header.Set("X-CSRF-Token", cookie.Value)
+	post.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, post)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCSRFTokenMismatchReturnsCode(t *testing.T) {
+	m := New(config.Config{DevelopmentSubject: "alice", PublicOrigin: "https://bank.tuannguyenviet.site"}, nil)
+	h := m.Require(Owner)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+
+	csrfReq := httptest.NewRequest(http.MethodGet, "https://bank.tuannguyenviet.site/api/v1/csrf", nil)
+	csrfRec := httptest.NewRecorder()
+	CSRF(csrfRec, csrfReq)
+	cookie := csrfRec.Result().Cookies()[0]
+
+	post := httptest.NewRequest(http.MethodPost, "https://bank.tuannguyenviet.site/api/v1/connection/auth/start", nil)
+	post.Header.Set("Origin", "https://bank.tuannguyenviet.site")
+	post.Header.Set("X-CSRF-Token", "wrong-token")
+	post.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, post)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rec.Code)
+	}
+	var resp map[string]string
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	if resp["code"] != "CSRF_TOKEN_INVALID" {
+		t.Fatalf("expected CSRF_TOKEN_INVALID code, got %v", resp)
 	}
 }

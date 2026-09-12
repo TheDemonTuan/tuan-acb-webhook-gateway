@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -28,6 +29,7 @@ type Config struct {
 	Roles              RoleSubjects
 	DevelopmentSubject string
 	Production         bool
+	PublicOrigin       string
 	AuthBrowserURL     string
 	AuthBrowserVNCURL  string
 }
@@ -80,6 +82,13 @@ func Load() (Config, error) {
 		}
 	}
 
+	publicOrigin := strings.TrimSpace(os.Getenv("PUBLIC_ORIGIN"))
+	if publicOrigin != "" {
+		if u, err := url.Parse(publicOrigin); err == nil && u.Scheme != "" && u.Host != "" {
+			publicOrigin = strings.TrimSuffix(fmt.Sprintf("%s://%s", strings.ToLower(u.Scheme), u.Host), "/")
+		}
+	}
+
 	cfg := Config{
 		Address:            value("LISTEN_ADDR", "0.0.0.0:"+value("PORT", "8090")),
 		DatabasePath:       value("DATABASE_PATH", filepath.Join(dataDir, "gateway.db")),
@@ -97,6 +106,7 @@ func Load() (Config, error) {
 		},
 		DevelopmentSubject: value("DEVELOPMENT_SUBJECT", "local-owner"),
 		Production:         production,
+		PublicOrigin:       publicOrigin,
 		AuthBrowserURL:     value("AUTH_BROWSER_URL", "http://auth-browser:8181"),
 		AuthBrowserVNCURL:  value("AUTH_BROWSER_VNC_URL", "http://auth-browser:6080"),
 	}

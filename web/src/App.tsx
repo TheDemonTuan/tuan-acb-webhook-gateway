@@ -17,7 +17,14 @@ import {
   Webhook,
   XCircle,
 } from 'lucide-react';
-import { api, isTerminalAuthError } from './api';
+import {
+  api,
+  isTerminalAuthError,
+  getCsrfToken,
+  invalidateCsrfToken,
+  CSRF_CODE_TOKEN_INVALID,
+  ApiError,
+} from './api';
 import { useRealtime } from './useRealtime';
 
 type Status = {
@@ -219,7 +226,6 @@ export default function App() {
     return { totalCredit: credit, totalDebit: debit };
   }, [filteredTransactions]);
 
-  const [csrf, setCsrf] = useState('');
   const [accountMasked, setAccountMasked] = useState('');
   const [endpointName, setEndpointName] = useState('');
   const [endpointURL, setEndpointURL] = useState('');
@@ -245,11 +251,10 @@ export default function App() {
 
   const load = async () => {
     const seq = ++loadSeq.current;
-    const [statusRes, connRes, epsRes, csrfRes] = await Promise.allSettled([
+    const [statusRes, connRes, epsRes] = await Promise.allSettled([
       api<Status>('/status'),
       api<Connection>('/connection'),
       api<{ items: Endpoint[] }>('/webhooks'),
-      api<{ token: string }>('/csrf'),
     ]);
 
     if (seq !== loadSeq.current) return;
@@ -257,7 +262,6 @@ export default function App() {
     if (statusRes.status === 'fulfilled') setStatus(statusRes.value);
     if (connRes.status === 'fulfilled') setConnection(connRes.value);
     if (epsRes.status === 'fulfilled') setEndpoints(epsRes.value.items);
-    if (csrfRes.status === 'fulfilled') setCsrf(csrfRes.value.token);
 
     // Fetch tab-specific data
     if (active === 'Giao dịch' || active === 'Tổng quan') {
@@ -435,15 +439,29 @@ export default function App() {
   }, [activeAttempt?.id]);
 
   const mutate = async (path: string, body?: unknown) => {
-    const csrfResponse = await api<{ token: string }>('/csrf');
-    setCsrf(csrfResponse.token);
-    const res = await api(path, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfResponse.token },
-      body: body ? JSON.stringify(body) : '{}',
-    });
-    await load();
-    return res;
+    let token = await getCsrfToken();
+    try {
+      const res = await api(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
+        body: body ? JSON.stringify(body) : '{}',
+      });
+      await load();
+      return res;
+    } catch (error) {
+      if (error instanceof ApiError && error.code === CSRF_CODE_TOKEN_INVALID) {
+        invalidateCsrfToken();
+        token = await getCsrfToken(true);
+        const res = await api(path, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
+          body: body ? JSON.stringify(body) : '{}',
+        });
+        await load();
+        return res;
+      }
+      throw error;
+    }
   };
 
   const configure = async (event: FormEvent) => {
