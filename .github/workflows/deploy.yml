@@ -247,6 +247,12 @@ jobs:
           printf 'OWNER_SUBJECTS=%s\n' "$OWNER" >> "$tmp"
           chmod 600 "$tmp"
           mv "$tmp" "$env_file"
+          if [[ -d "$DEPLOY_PATH/secrets/tts_internal_token" ]]; then
+            rmdir "$DEPLOY_PATH/secrets/tts_internal_token" 2>/dev/null || rm -rf "$DEPLOY_PATH/secrets/tts_internal_token" 2>/dev/null || docker run --rm -v "$DEPLOY_PATH/secrets:/s" --entrypoint /bin/sh "$IMAGE" -c 'rm -rf /s/tts_internal_token' 2>/dev/null || true
+          fi
+          if [[ -d "$DEPLOY_PATH/secrets/app_master_key" ]]; then
+            rmdir "$DEPLOY_PATH/secrets/app_master_key" 2>/dev/null || rm -rf "$DEPLOY_PATH/secrets/app_master_key" 2>/dev/null || docker run --rm -v "$DEPLOY_PATH/secrets:/s" --entrypoint /bin/sh "$IMAGE" -c 'rm -rf /s/app_master_key' 2>/dev/null || true
+          fi
           cd "$DEPLOY_PATH"
           export IMAGE_REF="$IMAGE"
           export AUTH_BROWSER_IMAGE_REF="$BROWSER_IMAGE"

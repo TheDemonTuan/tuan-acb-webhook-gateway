@@ -77,6 +77,7 @@ export const POLL_STATUS_MAP: Record<string, { label: string; tone: Tone }> = {
   FAILED: { label: 'Thất bại', tone: 'danger' },
   AUTH_REQUIRED: { label: 'Cần xác thực ACB', tone: 'warning' },
   PROTOCOL_CHANGED: { label: 'Giao thức ACB thay đổi', tone: 'warning' },
+  PARTIAL: { label: 'Đồng bộ một phần', tone: 'warning' },
 };
 
 export function getPollStatus(status?: string): { label: string; tone: Tone } {

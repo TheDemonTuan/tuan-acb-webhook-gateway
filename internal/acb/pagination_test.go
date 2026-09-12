@@ -71,7 +71,7 @@ func TestParseHistoryPageTruncationDetection(t *testing.T) {
 	if res.TotalRows != 100 {
 		t.Fatalf("expected TotalRows=100, got %d", res.TotalRows)
 	}
-	if !res.Truncated {
-		t.Fatal("expected Truncated=true when row count is less than TotalRows without next link")
+	if res.HasNext {
+		t.Fatal("expected HasNext=false when no next page link is present")
 	}
 }

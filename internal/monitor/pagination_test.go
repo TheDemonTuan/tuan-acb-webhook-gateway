@@ -175,3 +175,115 @@ func TestCatchUpIncompleteWithholdsCheckpoint(t *testing.T) {
 		t.Fatal("catchUpPending must remain true after incomplete catch-up")
 	}
 }
+
+type globalTotalMockClient struct {
+	calls atomic.Int32
+}
+
+func (m *globalTotalMockClient) Bootstrap(ctx context.Context) (acb.Response, error) {
+	body := `<form action="/history" method="POST">
+		<input type="hidden" name="dse_operationName" value="op1" />
+		<input type="hidden" name="dse_processorState" value="ps1" />
+		<input type="hidden" name="AccountNbr" value="123456" />
+	</form>`
+	return acb.Response{StatusCode: 200, Body: body, Kind: acb.AccountDetailPage}, nil
+}
+
+func (m *globalTotalMockClient) History(ctx context.Context, endpoint string, fields map[string]string) (acb.Response, error) {
+	call := m.calls.Add(1)
+	if call == 1 {
+		body := `<form action="/history" method="POST">
+			<input type="hidden" name="dse_operationName" value="op1" />
+			<input type="hidden" name="dse_processorState" value="ps2" />
+		</form>
+		<table>
+			<tr><th>Số GD</th><th>Ngày giao dịch</th><th>Ghi nợ</th><th>Ghi có</th></tr>
+			<tr><td>GLOBAL_TX1</td><td>12/09/2026</td><td>0</td><td>10.000</td></tr>
+			<tr><td colspan="4"><a href="/history?page=2" onclick="submitEvent('nextPage')">Trang sau</a></td></tr>
+		</table>
+		<div>Tổng số dòng: 2</div>`
+		return acb.Response{StatusCode: 200, Body: body, Kind: acb.HistoryPage}, nil
+	}
+
+	body := `<form action="/history" method="POST">
+		<input type="hidden" name="dse_operationName" value="op1" />
+		<input type="hidden" name="dse_processorState" value="last" />
+	</form>
+	<table>
+		<tr><th>Số GD</th><th>Ngày giao dịch</th><th>Ghi nợ</th><th>Ghi có</th></tr>
+		<tr><td>GLOBAL_TX2</td><td>12/09/2026</td><td>0</td><td>20.000</td></tr>
+		<tr><td colspan="4"><span class="disabled">Trang sau</span></td></tr>
+	</table>
+	<div>Tổng số dòng: 2</div>`
+	return acb.Response{StatusCode: 200, Body: body, Kind: acb.HistoryPage}, nil
+}
+
+func TestEnsureHistoryGlobalTotalRowsNotTruncated(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.Open(ctx, filepath.Join(t.TempDir(), "test_global_total.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	connID := "conn_global_total"
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO connections(id, state, generation, account_masked, created_at, updated_at)
+		VALUES(?, 'MONITORING', 1, '123456', '2026-09-12T00:00:00Z', '2026-09-12T00:00:00Z')
+	`, connID); err != nil {
+		t.Fatal(err)
+	}
+
+	client := &globalTotalMockClient{}
+	mon := New(store, client, 5*time.Second, 15*time.Second)
+
+	count, err := mon.EnsureHistory(ctx, "2026-09-12", "2026-09-12")
+	if err != nil {
+		t.Fatalf("expected EnsureHistory to succeed when cumulative rows == global total, got err: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("expected 2 transactions, got %d", count)
+	}
+
+	covered, err := store.CheckRangeCoverage(ctx, connID, "2026-09-12", "2026-09-12")
+	if err != nil || !covered {
+		t.Fatalf("expected range to be marked covered: covered=%v, err=%v", covered, err)
+	}
+}
+
+func TestRealtimePollPartialOnPage2Failure(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.Open(ctx, filepath.Join(t.TempDir(), "test_realtime_partial.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	connID := "conn_realtime_partial"
+	if _, err := store.DB().ExecContext(ctx, `
+		INSERT INTO connections(id, state, generation, account_masked, created_at, updated_at)
+		VALUES(?, 'MONITORING', 1, '123456', '2026-09-12T00:00:00Z', '2026-09-12T00:00:00Z')
+	`, connID); err != nil {
+		t.Fatal(err)
+	}
+
+	client := &pagedMockClient{failOnPage2: true}
+	mon := New(store, client, 5*time.Second, 15*time.Second)
+
+	var finishedPoll storage.PollRun
+	mon.WithPollNotifier(func(poll storage.PollRun, insertedCount int) {
+		finishedPoll = poll
+	})
+
+	err = mon.pollOnce(ctx, nil)
+	if err != nil {
+		t.Fatalf("expected pollOnce to succeed ingesting page 1, got: %v", err)
+	}
+
+	if finishedPoll.Status != "PARTIAL" {
+		t.Fatalf("expected poll status PARTIAL when page 2 fails, got %s", finishedPoll.Status)
+	}
+	if finishedPoll.RowsSeen != 1 {
+		t.Fatalf("expected 1 row seen from page 1, got %d", finishedPoll.RowsSeen)
+	}
+}

@@ -20,7 +20,10 @@ type BankClient interface {
 	History(ctx context.Context, endpoint string, fields map[string]string) (acb.Response, error)
 }
 
-var ErrSyncUnavailable = errors.New("sync unavailable")
+var (
+	ErrSyncUnavailable   = errors.New("sync unavailable")
+	ErrCatchUpIncomplete = errors.New("catch-up history sync incomplete")
+)
 
 type syncRequest struct {
 	connectionID string
@@ -184,6 +187,7 @@ func (m *Monitor) fetchHistoryRange(ctx context.Context, conn *storage.Connectio
 	seenTxnNumbers := make(map[string]struct{})
 	var allBatchItems []storage.BatchTransactionItem
 	pagesFetched := 0
+	maxTotalRowsSeen := 0
 	complete := false
 	truncated := false
 	var lastResp acb.Response
@@ -228,15 +232,18 @@ func (m *Monitor) fetchHistoryRange(ctx context.Context, conn *storage.Connectio
 			}
 		}
 
-		if pageResult.Truncated {
-			truncated = true
-			complete = false
-			slog.Warn("ACB history indicates truncated rows without next navigation", "page", pagesFetched, "rows_seen", len(allBatchItems), "total_expected", pageResult.TotalRows)
-			break
+		if pageResult.TotalRows > maxTotalRowsSeen {
+			maxTotalRowsSeen = pageResult.TotalRows
 		}
 
 		if !pageResult.HasNext {
-			complete = true
+			if maxTotalRowsSeen > 0 && len(allBatchItems) < maxTotalRowsSeen {
+				truncated = true
+				complete = false
+				slog.Warn("ACB history indicates truncated rows without next navigation", "page", pagesFetched, "cumulative_rows_seen", len(allBatchItems), "total_expected", maxTotalRowsSeen)
+			} else {
+				complete = true
+			}
 			break
 		}
 
@@ -522,23 +529,31 @@ func (m *Monitor) pollOnce(ctx context.Context, expected *syncRequest) error {
 
 	allTxns := pageResult.Transactions
 	pagesCount := 1
+	var pollErr error
+	isPartial := false
 
-	// If page has next, fetch up to 3 pages for realtime poll
+	// If page has next, fetch up to 5 pages for realtime poll
 	if pageResult.HasNext && (pageResult.NextAction != "" || len(pageResult.NextFields) > 0) {
 		curAction := pageResult.NextAction
 		curFields := pageResult.NextFields
-		for pagesCount < 3 {
+		for pagesCount < 5 {
 			if curFields == nil {
 				curFields = make(map[string]string)
 			}
 			curFields["_raw"] = "true"
 			nextResp, nextErr := m.client.History(ctx, curAction, curFields)
 			if nextErr != nil {
+				slog.Warn("realtime poll next page fetch error", "page", pagesCount+1, "error", nextErr)
+				isPartial = true
+				pollErr = nextErr
 				break
 			}
 			pagesCount++
 			nextPage, err := acb.ParseHistoryPage(nextResp.Body)
 			if err != nil {
+				slog.Warn("realtime poll next page parse error", "page", pagesCount, "error", err)
+				isPartial = true
+				pollErr = err
 				break
 			}
 			allTxns = append(allTxns, nextPage.Transactions...)
@@ -547,12 +562,17 @@ func (m *Monitor) pollOnce(ctx context.Context, expected *syncRequest) error {
 			}
 			curAction = nextPage.NextAction
 			curFields = nextPage.NextFields
+			if pagesCount >= 5 && nextPage.HasNext {
+				slog.Warn("realtime poll reached page budget while more pages remain", "pages", pagesCount)
+				isPartial = true
+				break
+			}
 		}
 	}
 
 	poll.RowsSeen = len(allTxns)
 	poll.Pages = pagesCount
-	slog.Info("ACB history parsed", "rows_seen", poll.RowsSeen, "pages", poll.Pages)
+	slog.Info("ACB history parsed", "rows_seen", poll.RowsSeen, "pages", poll.Pages, "partial", isPartial)
 
 	// Ingest transactions and emit credit events atomically in a single batch transaction
 	batchItems := make([]storage.BatchTransactionItem, len(allTxns))
@@ -587,7 +607,16 @@ func (m *Monitor) pollOnce(ctx context.Context, expected *syncRequest) error {
 		return err
 	}
 
-	poll.Status = "SUCCEEDED"
+	if isPartial {
+		poll.Status = "PARTIAL"
+		if pollErr != nil {
+			poll.Error = pollErr.Error()
+		} else {
+			poll.Error = "PARTIAL_PAGE_BUDGET_REACHED"
+		}
+	} else {
+		poll.Status = "SUCCEEDED"
+	}
 	m.backoffUntil = time.Time{}
 	telemetry.Default.SetCircuitBreaker(false)
 	if err := m.finishPoll(ctx, poll, batchRes.InsertedCount); err != nil {
@@ -760,7 +789,7 @@ func (m *Monitor) catchUp(ctx context.Context) error {
 		if m.onNewEvents != nil && len(res.NewEvents) > 0 {
 			m.onNewEvents(res.NewEvents)
 		}
-		return nil
+		return ErrCatchUpIncomplete
 	}
 
 	dayCounts := make(map[string]int)
@@ -872,7 +901,11 @@ func (m *Monitor) Run(ctx context.Context) {
 		case <-timer.C:
 			if m.catchUpPending && schedule.Mode == storage.ModeRealtime {
 				if err := m.catchUp(ctx); err != nil {
-					slog.Warn("catch-up sync failed; retrying before realtime polling", "error", err)
+					if errors.Is(err, ErrCatchUpIncomplete) {
+						slog.Warn("catch-up sync incomplete; retaining pending status for next cycle")
+					} else {
+						slog.Warn("catch-up sync failed; retrying before realtime polling", "error", err)
+					}
 					continue
 				}
 				m.catchUpPending = false

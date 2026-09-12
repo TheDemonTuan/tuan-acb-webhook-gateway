@@ -34,7 +34,7 @@ func (s *Store) StartPoll(ctx context.Context) (PollRun, error) {
 }
 
 func (s *Store) FinishPoll(ctx context.Context, poll PollRun) error {
-	if poll.Status != "SUCCEEDED" && poll.Status != "FAILED" && poll.Status != "AUTH_REQUIRED" && poll.Status != "PROTOCOL_CHANGED" {
+	if poll.Status != "SUCCEEDED" && poll.Status != "FAILED" && poll.Status != "AUTH_REQUIRED" && poll.Status != "PROTOCOL_CHANGED" && poll.Status != "PARTIAL" {
 		return errors.New("invalid poll status")
 	}
 	return s.withTx(ctx, func(tx *sql.Tx) error {

@@ -58,6 +58,36 @@ fi
 # Stop writers before checkpointing and backing up SQLite.
 docker stop acb-transaction-gateway acb-auth-browser 2>/dev/null || true
 
+ensure_secret_permissions() {
+  local target_path="$1"
+  local name="$2"
+  local cur_uid
+  cur_uid="$(stat -c '%u' "$target_path" 2>/dev/null || stat -f '%u' "$target_path" 2>/dev/null || echo "")"
+  if [[ "$cur_uid" != "1000" ]]; then
+    if ! chown 1000:1000 "$target_path" 2>/dev/null; then
+      if command -v docker >/dev/null 2>&1; then
+        docker run --rm -v "$(dirname "$target_path"):/sec" --entrypoint /bin/sh "$image_ref" -c "chown 1000:1000 /sec/$(basename "$target_path")" 2>/dev/null || true
+      fi
+    fi
+  fi
+  chmod 600 "$target_path"
+}
+
+# Clean up any stale directory created by Docker bind-mount on previous deploys
+if [[ -d "$script_dir/secrets/app_master_key" ]]; then
+  rmdir "$script_dir/secrets/app_master_key" 2>/dev/null || rm -rf "$script_dir/secrets/app_master_key" 2>/dev/null || true
+  if [[ -d "$script_dir/secrets/app_master_key" ]] && command -v docker >/dev/null 2>&1; then
+    docker run --rm -v "$script_dir/secrets:/sec" --entrypoint /bin/sh "$image_ref" -c "rm -rf /sec/app_master_key" 2>/dev/null || true
+  fi
+fi
+
+if [[ -d "$script_dir/secrets/tts_internal_token" ]]; then
+  rmdir "$script_dir/secrets/tts_internal_token" 2>/dev/null || rm -rf "$script_dir/secrets/tts_internal_token" 2>/dev/null || true
+  if [[ -d "$script_dir/secrets/tts_internal_token" ]] && command -v docker >/dev/null 2>&1; then
+    docker run --rm -v "$script_dir/secrets:/sec" --entrypoint /bin/sh "$image_ref" -c "rm -rf /sec/tts_internal_token" 2>/dev/null || true
+  fi
+fi
+
 # Ensure secrets/app_master_key file exists before Docker mounts it
 if [[ ! -f "$script_dir/secrets/app_master_key" ]]; then
   if [[ -n "${APP_MASTER_KEY:-}" ]]; then
@@ -73,11 +103,7 @@ if [[ ! -f "$script_dir/secrets/app_master_key" ]]; then
     openssl rand -hex 32 > "$script_dir/secrets/app_master_key"
   fi
 fi
-if chown 1000:1000 "$script_dir/secrets/app_master_key" 2>/dev/null; then
-  chmod 600 "$script_dir/secrets/app_master_key"
-else
-  chmod 644 "$script_dir/secrets/app_master_key" 2>/dev/null || chmod 600 "$script_dir/secrets/app_master_key"
-fi
+ensure_secret_permissions "$script_dir/secrets/app_master_key" "app_master_key"
 
 # Ensure secrets/tts_internal_token file exists and is provisioned for UID 1000 containers
 tts_token_file="$script_dir/secrets/tts_internal_token"
@@ -94,15 +120,11 @@ if [[ ! -f "$tts_token_file" ]]; then
   if [[ -z "$token_val" ]]; then
     token_val="$(openssl rand -hex 32)"
   fi
-  tmp_token="$(mktemp "$script_dir/secrets/tts_internal_token.XXXXXX")"
+  tmp_token="$(mktemp "$script_dir/secrets/token_tmp.XXXXXX")"
   printf '%s\n' "$token_val" > "$tmp_token"
   mv -f "$tmp_token" "$tts_token_file"
 fi
-if chown 1000:1000 "$tts_token_file" 2>/dev/null; then
-  chmod 600 "$tts_token_file"
-else
-  chmod 644 "$tts_token_file" 2>/dev/null || chmod 600 "$tts_token_file"
-fi
+ensure_secret_permissions "$tts_token_file" "tts_internal_token"
 [[ -s "$tts_token_file" ]] || { printf 'TTS internal token file is empty: %s\n' "$tts_token_file" >&2; exit 1; }
 
 # 1. Execute pre-deployment offline backup

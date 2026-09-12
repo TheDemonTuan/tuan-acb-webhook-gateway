@@ -26,7 +26,6 @@ type HistoryPageResult struct {
 	NextAction   string
 	NextFields   map[string]string
 	TotalRows    int
-	Truncated    bool
 }
 
 // ParseHistoryPage parses an ACB history page, returning transactions and pagination signals.
@@ -119,14 +118,13 @@ func ParseHistoryPage(markup string) (HistoryPageResult, error) {
 		}
 	}
 
-	hasNext, nextAction, nextFields, totalRows, truncated := detectPagination(doc, markup, len(parsedTransactions))
+	hasNext, nextAction, nextFields, totalRows := detectPagination(doc, markup)
 	return HistoryPageResult{
 		Transactions: parsedTransactions,
 		HasNext:      hasNext,
 		NextAction:   nextAction,
 		NextFields:   nextFields,
 		TotalRows:    totalRows,
-		Truncated:    truncated,
 	}, nil
 }
 
@@ -312,7 +310,7 @@ func normalized(value string) string {
 	return strings.ReplaceAll(out.String(), " ", "")
 }
 
-func detectPagination(doc *html.Node, markup string, rowCount int) (hasNext bool, nextAction string, nextFields map[string]string, totalRows int, truncated bool) {
+func detectPagination(doc *html.Node, markup string) (hasNext bool, nextAction string, nextFields map[string]string, totalRows int) {
 	var docTextBuilder strings.Builder
 	var nextCandidates []*html.Node
 
@@ -383,9 +381,6 @@ func detectPagination(doc *html.Node, markup string, rowCount int) (hasNext bool
 
 	fullText := docTextBuilder.String()
 	totalRows = extractTotalRows(fullText)
-	if totalRows > 0 && rowCount > 0 && rowCount < totalRows && !hasNext {
-		truncated = true
-	}
 
 	return
 }
