@@ -91,7 +91,7 @@ services:
         max-file: "3"
 
   tts-gateway:
-    image: ${TTS_GATEWAY_IMAGE_REF:-ghcr.io/thedemontuan/acb-tts-gateway:latest}
+    image: ${TTS_GATEWAY_IMAGE_REF:-ghcr.io/thedemontuan/acb-transaction-webhook-tts-gateway:latest}
     container_name: acb-tts-gateway
     restart: unless-stopped
     read_only: true

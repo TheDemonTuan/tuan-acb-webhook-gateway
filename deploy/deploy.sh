@@ -6,16 +6,27 @@ env_file="${ENV_FILE:-$script_dir/.env.production}"
 compose_file="${COMPOSE_FILE:-$script_dir/compose.prod.yaml}"
 image_ref="${1:-${IMAGE_REF:-}}"
 browser_image_ref="${2:-${AUTH_BROWSER_IMAGE_REF:-}}"
-staged_compose="${3:-}"
 image_pattern='^[^[:space:]]+@sha256:[a-f0-9]{64}$'
+
+if [[ "${3:-}" =~ $image_pattern ]]; then
+  tts_image_ref="$3"
+  staged_compose="${4:-}"
+else
+  staged_compose="${3:-}"
+  tts_image_ref="${4:-${TTS_GATEWAY_IMAGE_REF:-}}"
+fi
 
 [[ -f "$env_file" ]] || { printf 'Missing production env file: %s\n' "$env_file" >&2; exit 1; }
 [[ "$image_ref" =~ $image_pattern ]] || { printf 'Pass an immutable gateway image digest as first argument.\n' >&2; exit 1; }
 [[ "$browser_image_ref" =~ $image_pattern ]] || { printf 'Pass an immutable auth-browser image digest as second argument.\n' >&2; exit 1; }
+[[ -z "$tts_image_ref" || "$tts_image_ref" =~ $image_pattern ]] || { printf 'Pass an immutable tts-gateway image digest.\n' >&2; exit 1; }
 [[ -z "$staged_compose" || -f "$staged_compose" ]] || { printf 'Staged compose file not found: %s\n' "$staged_compose" >&2; exit 1; }
 
 export IMAGE_REF="$image_ref"
 export AUTH_BROWSER_IMAGE_REF="$browser_image_ref"
+if [[ -n "$tts_image_ref" ]]; then
+  export TTS_GATEWAY_IMAGE_REF="$tts_image_ref"
+fi
 
 lock="$script_dir/.deploy.lock"
 # A cancelled SSH job can leave a Compose one-off container attached to an old deploy.
@@ -71,11 +82,17 @@ fi
 [[ -f "$compose_file" ]] || { printf 'Missing compose file: %s\n' "$compose_file" >&2; exit 1; }
 gateway_current_file="$script_dir/.deployed-image"
 browser_current_file="$script_dir/.deployed-browser-image"
+tts_current_file="$script_dir/.deployed-tts-image"
 gateway_current="$(cat "$gateway_current_file" 2>/dev/null || true)"
 browser_current="$(cat "$browser_current_file" 2>/dev/null || true)"
+tts_current="$(cat "$tts_current_file" 2>/dev/null || true)"
 
 # 2. Pull images and execute migration-only gate
-if ! docker compose --env-file "$env_file" -f "$compose_file" pull gateway auth-browser; then
+pull_targets=(gateway auth-browser)
+if [[ -n "${TTS_GATEWAY_IMAGE_REF:-}" ]]; then
+  pull_targets+=(tts-gateway)
+fi
+if ! docker compose --env-file "$env_file" -f "$compose_file" pull "${pull_targets[@]}"; then
   echo "Failed to pull deployment images." >&2
   exit 1
 fi
@@ -107,6 +124,12 @@ fi
 if [[ -n "$browser_current" && "$browser_current" != "$browser_image_ref" ]]; then
   printf '%s\n' "$browser_current" > "$script_dir/.previous-browser-image"
 fi
+if [[ -n "$tts_current" && -n "${tts_image_ref:-}" && "$tts_current" != "$tts_image_ref" ]]; then
+  printf '%s\n' "$tts_current" > "$script_dir/.previous-tts-image"
+fi
 printf '%s\n' "$image_ref" > "$gateway_current_file"
 printf '%s\n' "$browser_image_ref" > "$browser_current_file"
-printf 'Deployment successful: gateway=%s auth-browser=%s\n' "$image_ref" "$browser_image_ref"
+if [[ -n "${tts_image_ref:-}" ]]; then
+  printf '%s\n' "$tts_image_ref" > "$tts_current_file"
+fi
+printf 'Deployment successful: gateway=%s auth-browser=%s tts=%s\n' "$image_ref" "$browser_image_ref" "${tts_image_ref:-none}"
